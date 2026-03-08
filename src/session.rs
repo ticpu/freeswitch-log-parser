@@ -4,16 +4,31 @@ use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
+/// Mutable per-UUID state accumulator, updated as entries are processed.
+///
+/// Fields are `None` until the corresponding data is first seen in the stream.
+/// Variables accumulate from CHANNEL_DATA dumps, `set()`/`export()` executions,
+/// `SET`/`EXPORT` log lines, and inline `variable_*` lines.
 #[derive(Debug, Clone, Default)]
 pub struct SessionState {
+    /// `None` until a `Channel-Name` field is encountered.
     pub channel_name: Option<String>,
+    /// `None` until a state change or `Channel-State` field is encountered.
     pub channel_state: Option<String>,
+    /// `None` until a dialplan `parsing [context->target]` line is processed.
     pub dialplan_context: Option<String>,
+    /// Source extension in the dialplan routing; `None` until a dialplan line is processed.
     pub dialplan_from: Option<String>,
+    /// Target extension in the dialplan routing; `None` until a dialplan line is processed.
     pub dialplan_to: Option<String>,
+    /// All variables learned so far, with the `variable_` prefix stripped from names.
     pub variables: HashMap<String, String>,
 }
 
+/// Immutable point-in-time copy of a session's state, attached to each [`EnrichedEntry`].
+///
+/// Does not include `variables` to keep snapshots lightweight — access the full
+/// variable map via [`SessionTracker::sessions()`].
 #[derive(Debug, Clone)]
 pub struct SessionSnapshot {
     pub channel_name: Option<String>,
@@ -191,18 +206,27 @@ fn parse_state_change(detail: &str) -> Option<String> {
     Some(detail[arrow + 4..].trim().to_string())
 }
 
+/// A [`LogEntry`] paired with the session's state snapshot at that point in time.
 #[derive(Debug)]
 pub struct EnrichedEntry {
     pub entry: LogEntry,
+    /// `None` for system lines (entries with an empty UUID).
     pub session: Option<SessionSnapshot>,
 }
 
+/// Layer 3 per-session state machine — tracks per-UUID state (dialplan context,
+/// channel state, variables) across entries and yields [`EnrichedEntry`] values.
+///
+/// Wraps a [`LogStream`] and maintains a `HashMap<String, SessionState>` keyed by UUID.
+/// Sessions are never automatically cleaned up; call [`remove_session()`](SessionTracker::remove_session)
+/// when a call ends.
 pub struct SessionTracker<I> {
     inner: LogStream<I>,
     sessions: HashMap<String, SessionState>,
 }
 
 impl<I: Iterator<Item = String>> SessionTracker<I> {
+    /// Wrap a [`LogStream`] to add per-session state tracking.
     pub fn new(inner: LogStream<I>) -> Self {
         SessionTracker {
             inner,
@@ -210,18 +234,23 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         }
     }
 
+    /// All currently tracked sessions, keyed by UUID.
     pub fn sessions(&self) -> &HashMap<String, SessionState> {
         &self.sessions
     }
 
+    /// Remove and return a session's accumulated state. Call this when a call ends
+    /// (e.g. `CS_DESTROY` or hangup) to free memory.
     pub fn remove_session(&mut self, uuid: &str) -> Option<SessionState> {
         self.sessions.remove(uuid)
     }
 
+    /// Delegates to [`LogStream::stats()`].
     pub fn stats(&self) -> &ParseStats {
         self.inner.stats()
     }
 
+    /// Delegates to [`LogStream::drain_unclassified()`].
     pub fn drain_unclassified(&mut self) -> Vec<UnclassifiedLine> {
         self.inner.drain_unclassified()
     }

@@ -2,62 +2,100 @@ use crate::level::LogLevel;
 use crate::line::{parse_line, LineKind};
 use crate::message::{classify_message, MessageKind, SdpDirection};
 
+/// Structured data extracted from a multi-line dump that follows a primary log entry.
+///
+/// Each variant corresponds to a block type that the stream state machine
+/// recognizes and reassembles from continuation lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
+    /// Channel variable dump — `Channel-*` fields and `variable_*` key-value pairs.
+    /// Multi-line variable values (e.g. embedded SDP) are reassembled with `\n` separators.
     ChannelData {
         fields: Vec<(String, String)>,
         variables: Vec<(String, String)>,
     },
+    /// SDP session description body, collected line by line.
     Sdp {
         direction: SdpDirection,
         body: Vec<String>,
     },
+    /// Codec negotiation sequence — offered/local comparisons and selected matches.
     CodecNegotiation {
         comparisons: Vec<(String, String)>,
         selected: Vec<String>,
     },
 }
 
+/// Controls how much detail is recorded for lines that couldn't be fully classified.
+///
+/// Higher fidelity levels allocate more memory. The default is `CountOnly`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnclassifiedTracking {
+    /// Increment the counter only — zero allocation.
     CountOnly,
+    /// Record line number and reason for each unclassified line.
     TrackLines,
+    /// Like `TrackLines` plus the full line content.
     CaptureData,
 }
 
+/// Why a line was marked as unclassified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnclassifiedReason {
+    /// Bare continuation line arrived with no pending entry to attach to.
     OrphanContinuation,
+    /// Line was parsed but the message didn't match any known pattern.
     UnknownMessageFormat,
+    /// EXECUTE or variable line was only partially readable.
     TruncatedField,
 }
 
+/// Record of a single unclassified line, captured when tracking is enabled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnclassifiedLine {
     pub line_number: u64,
     pub reason: UnclassifiedReason,
+    /// The full line content; only populated under [`UnclassifiedTracking::CaptureData`].
     pub data: Option<String>,
 }
 
+/// Cumulative parsing statistics, updated as lines flow through the stream.
 #[derive(Debug, Clone, Default)]
 pub struct ParseStats {
     pub lines_processed: u64,
     pub lines_unclassified: u64,
+    /// Populated only when tracking is `TrackLines` or `CaptureData`.
     pub unclassified_lines: Vec<UnclassifiedLine>,
 }
 
+/// A complete parsed log entry with all context resolved.
+///
+/// Produced by [`LogStream`]. Continuation lines have been grouped,
+/// UUID/timestamp inherited from context where needed, and multi-line blocks
+/// reassembled.
 #[derive(Debug)]
 pub struct LogEntry {
+    /// Session UUID, or empty string for system lines.
     pub uuid: String,
+    /// Timestamp with microsecond precision; inherited from the previous entry for continuations.
     pub timestamp: String,
+    /// `None` for continuation and truncated lines.
     pub level: Option<LogLevel>,
+    /// Core scheduler idle percentage; `None` for continuations.
     pub idle_pct: Option<String>,
+    /// Source file:line; `None` for continuations.
     pub source: Option<String>,
+    /// The primary message text.
     pub message: String,
+    /// Which line format originated this entry.
     pub kind: LineKind,
+    /// Semantic classification of the message content.
     pub message_kind: MessageKind,
+    /// Typed, parsed multi-line block; `None` for entries without a trailing block.
     pub block: Option<Block>,
+    /// Raw continuation lines that followed the primary line.
     pub attached: Vec<String>,
+    /// 1-based line number in the input stream.
     pub line_number: u64,
 }
 
@@ -100,6 +138,15 @@ impl StreamState {
     }
 }
 
+/// Layer 2 structural state machine — groups continuation lines, classifies
+/// messages, and detects multi-line blocks (CHANNEL_DATA, SDP, codec negotiation).
+///
+/// Wraps any `Iterator<Item = String>` and yields [`LogEntry`] values.
+/// Maintains `last_uuid` and `last_timestamp` to fill in context for
+/// continuation lines that lack their own.
+///
+/// Use the builder method [`unclassified_tracking()`](LogStream::unclassified_tracking)
+/// to control diagnostic detail before iterating.
 pub struct LogStream<I> {
     lines: I,
     last_uuid: String,
@@ -112,6 +159,7 @@ pub struct LogStream<I> {
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
+    /// Create a new stream from any line iterator.
     pub fn new(lines: I) -> Self {
         LogStream {
             lines,
@@ -125,15 +173,20 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
     }
 
+    /// Set the unclassified line tracking level (builder pattern). Defaults to `CountOnly`.
     pub fn unclassified_tracking(mut self, level: UnclassifiedTracking) -> Self {
         self.tracking = level;
         self
     }
 
+    /// Cumulative parsing statistics up to the current position.
     pub fn stats(&self) -> &ParseStats {
         &self.stats
     }
 
+    /// Take all accumulated unclassified line records, leaving the internal vec empty.
+    ///
+    /// The `lines_unclassified` counter is not reset.
     pub fn drain_unclassified(&mut self) -> Vec<UnclassifiedLine> {
         std::mem::take(&mut self.stats.unclassified_lines)
     }

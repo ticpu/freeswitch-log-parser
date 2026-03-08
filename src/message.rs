@@ -1,9 +1,11 @@
 use std::fmt;
 
+/// Which end of a call an SDP body belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdpDirection {
     Local,
     Remote,
+    /// SDP reference that doesn't specify local or remote.
     Unknown,
 }
 
@@ -17,47 +19,45 @@ impl fmt::Display for SdpDirection {
     }
 }
 
+/// Semantic classification of a log message's content.
+///
+/// `Display` includes variant-specific detail (e.g. `execute(set)`, `var(sip_call_id)`)
+/// while [`label()`](MessageKind::label) returns just the category string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageKind {
+    /// Dialplan application execution trace (`EXECUTE [depth=N] channel app(args)`).
     Execute {
         depth: u32,
         channel: String,
         application: String,
         arguments: String,
     },
-    Dialplan {
-        channel: String,
-        detail: String,
-    },
+    /// Dialplan processing output — regex matching, actions, context routing.
+    Dialplan { channel: String, detail: String },
+    /// Start of a CHANNEL_DATA variable dump block.
     ChannelData,
-    ChannelField {
-        name: String,
-        value: String,
-    },
-    Variable {
-        name: String,
-        value: String,
-    },
-    SdpMarker {
-        direction: SdpDirection,
-    },
-    StateChange {
-        detail: String,
-    },
+    /// A `Channel-*` or similar hyphenated field from a CHANNEL_DATA dump.
+    ChannelField { name: String, value: String },
+    /// A `variable_*` field — from dumps, `SET`, `EXPORT`, `set()`, or `CoreSession::setVariable`.
+    Variable { name: String, value: String },
+    /// Start of an SDP body block (`Local SDP:`, `Remote SDP:`).
+    SdpMarker { direction: SdpDirection },
+    /// Channel state transition (`State Change`, `Callstate Change`, `SOFIA` state).
+    StateChange { detail: String },
+    /// `Audio Codec Compare` lines during codec negotiation.
     CodecNegotiation,
-    Media {
-        detail: String,
-    },
-    ChannelLifecycle {
-        detail: String,
-    },
-    EventSocket {
-        detail: String,
-    },
+    /// RTP, RTCP, recording, and other media-related messages.
+    Media { detail: String },
+    /// Channel lifecycle events — new/close/hangup, invite, bridge, ring.
+    ChannelLifecycle { detail: String },
+    /// Event socket commands from `mod_event_socket`.
+    EventSocket { detail: String },
+    /// Anything not matching a more specific pattern.
     General,
 }
 
 impl MessageKind {
+    /// Exhaustive list of all category label strings, in declaration order.
     pub const ALL_LABELS: &[&str] = &[
         "execute",
         "dialplan",
@@ -73,6 +73,7 @@ impl MessageKind {
         "general",
     ];
 
+    /// Returns the bare category string without variant-specific data.
     pub fn label(&self) -> &'static str {
         match self {
             MessageKind::Execute { .. } => "execute",
@@ -207,6 +208,10 @@ fn detect_sdp_direction(msg: &str) -> Option<SdpDirection> {
     }
 }
 
+/// Classify a log message's text into a [`MessageKind`].
+///
+/// Pure function — no state, no allocation beyond the returned enum. Works on
+/// the `message` field from [`RawLine`](crate::RawLine) or any raw message string.
 pub fn classify_message(msg: &str) -> MessageKind {
     if msg.starts_with("EXECUTE ") || msg.starts_with("Execute ") {
         return parse_execute(msg);

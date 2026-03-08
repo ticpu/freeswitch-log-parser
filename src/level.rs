@@ -1,19 +1,28 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// FreeSWITCH log severity level.
+///
+/// Variants are ordered from least to most severe, so `level >= LogLevel::Warning`
+/// works naturally for filtering. `FromStr` is case-insensitive.
+///
+/// Note: FreeSWITCH uses `Err` (not `Error`) as the severity name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LogLevel {
     Debug,
     Info,
     Notice,
     Warning,
+    /// Equivalent to syslog `ERR` — not `Error`.
     Err,
     Crit,
     Alert,
+    /// FreeSWITCH console output, highest severity in the ordering.
     Console,
 }
 
 impl LogLevel {
+    /// All level names in severity order, matching `Display` output.
     pub const ALL_LABELS: &[&str] = &[
         "debug", "info", "notice", "warning", "err", "crit", "alert", "console",
     ];
@@ -35,6 +44,7 @@ impl fmt::Display for LogLevel {
     }
 }
 
+/// Returned when a string doesn't match any known log level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseLevelError;
 
@@ -73,6 +83,9 @@ impl FromStr for LogLevel {
 }
 
 impl LogLevel {
+    /// Parses a bracketed level string like `[DEBUG]` or `[WARNING]`.
+    ///
+    /// Returns `None` if the input lacks brackets or contains an unrecognized level.
     pub fn from_bracketed(s: &str) -> Option<LogLevel> {
         let bytes = s.as_bytes();
         if bytes.len() < 3 || bytes[0] != b'[' || bytes[bytes.len() - 1] != b']' {

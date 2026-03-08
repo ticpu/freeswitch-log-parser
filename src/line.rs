@@ -2,13 +2,25 @@ use crate::level::LogLevel;
 
 use std::fmt;
 
+/// Classification of a single log line's structural format.
+///
+/// FreeSWITCH's `switch_log_printf` emits five distinct line shapes depending
+/// on whether a session UUID is active, whether the line has a timestamp, and
+/// whether a buffer collision truncated the output. See `docs/design-rationale.md`
+/// for the full anatomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
+    /// Format A — UUID, timestamp, idle%, level, source, and message.
     Full,
+    /// Format B — same as `Full` but without a UUID prefix (system/global events).
     System,
+    /// Format C — UUID and message only, no timestamp or level.
     UuidContinuation,
+    /// Format D — raw text with no UUID or timestamp; inherits context from the previous entry.
     BareContinuation,
+    /// Format E — buffer collision produced a garbage prefix before the UUID.
     Truncated,
+    /// Blank or whitespace-only line.
     Empty,
 }
 
@@ -25,14 +37,26 @@ impl fmt::Display for LineKind {
     }
 }
 
+/// Zero-copy result of parsing a single log line.
+///
+/// Fields are `None` when the line's format doesn't include them (e.g. a
+/// `BareContinuation` has no `uuid`, `timestamp`, `level`, or `source`).
+/// The `message` field always contains the remaining text.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RawLine<'a> {
+    /// Session UUID, present for `Full`, `UuidContinuation`, and `Truncated` lines.
     pub uuid: Option<&'a str>,
+    /// Microsecond-precision timestamp, present only for `Full` and `System` lines.
     pub timestamp: Option<&'a str>,
+    /// Core scheduler idle percentage (e.g. `"95.97%"`), a system health indicator.
     pub idle_pct: Option<&'a str>,
+    /// Log severity, present only for `Full` and `System` lines.
     pub level: Option<LogLevel>,
+    /// Source file and line (e.g. `"sofia.c:7624"`), present only for `Full` and `System` lines.
     pub source: Option<&'a str>,
+    /// The message text after all structured fields have been consumed.
     pub message: &'a str,
+    /// Which of the five line formats this line matched.
     pub kind: LineKind,
 }
 
@@ -132,6 +156,11 @@ fn parse_timestamped_fields(
     )
 }
 
+/// Layer 1 entry point: classify a single line and extract its fields.
+///
+/// Pure function — no state, no allocation. All returned string slices borrow
+/// from the input. Use [`classify_message`](crate::classify_message) on the
+/// `message` field for semantic classification.
 pub fn parse_line(line: &str) -> RawLine<'_> {
     if line.trim().is_empty() {
         return RawLine {

@@ -203,6 +203,86 @@ pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String
     Ok(Box::new(reader.lines().map(|l| l.expect("read error"))))
 }
 
+struct TailLines {
+    reader: BufReader<fs::File>,
+    buf: String,
+}
+
+impl TailLines {
+    fn new(file: fs::File) -> Self {
+        TailLines {
+            reader: BufReader::new(file),
+            buf: String::new(),
+        }
+    }
+}
+
+impl Iterator for TailLines {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        loop {
+            self.buf.clear();
+            match self.reader.read_line(&mut self.buf) {
+                Ok(0) => {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                Ok(_) => {
+                    let line = self.buf.trim_end_matches(['\n', '\r']).to_string();
+                    return Some(line);
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+}
+
+fn read_tail_context(path: &Path, n_lines: usize) -> io::Result<(Vec<String>, u64)> {
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+
+    if n_lines == 0 || len == 0 {
+        return Ok((Vec::new(), len));
+    }
+
+    let seek_back = (n_lines as u64).saturating_mul(1024).min(len);
+    let seek_pos = len - seek_back;
+
+    if seek_pos > 0 {
+        file.seek(SeekFrom::Start(seek_pos))?;
+    }
+
+    let reader = BufReader::new(file);
+    let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+
+    if seek_pos > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+
+    if lines.len() > n_lines {
+        lines.drain(..lines.len() - n_lines);
+    }
+
+    Ok((lines, len))
+}
+
+pub fn open_tail_reader(
+    path: &Path,
+    initial_lines: usize,
+) -> io::Result<Box<dyn Iterator<Item = String>>> {
+    use std::io::{Seek, SeekFrom};
+
+    let (context, file_len) = read_tail_context(path, initial_lines)?;
+
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(file_len))?;
+    let tail = TailLines::new(file);
+
+    Ok(Box::new(context.into_iter().chain(tail)))
+}
+
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

@@ -15,7 +15,7 @@ use freeswitch_log_parser::{
 
 use files::{
     discover_log_files, filter_files_by_date, format_size, normalize_date_from,
-    normalize_date_until, open_log_reader,
+    normalize_date_until, open_log_reader, open_tail_reader,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig};
 
@@ -55,6 +55,9 @@ enum Command {
 
     /// Parse and display a single log file
     Read(ReadArgs),
+
+    /// Follow the log file and display new entries in color
+    Tail(TailArgs),
 
     /// Generate shell completion script
     Completions {
@@ -134,6 +137,20 @@ struct ReadArgs {
     file: Option<String>,
 }
 
+#[derive(clap::Args)]
+struct TailArgs {
+    #[command(flatten)]
+    filter: FilterArgs,
+
+    /// Number of recent lines to show initially
+    #[arg(long, default_value = "50")]
+    lines: usize,
+
+    /// Log file to tail (default: freeswitch.log in --dir)
+    #[arg(value_name = "FILE")]
+    file: Option<String>,
+}
+
 fn resolve_color(when: ColorWhen, use_pager: bool) -> ColorMode {
     match when {
         ColorWhen::Always => ColorMode::Always,
@@ -187,7 +204,7 @@ fn setup_pager(cli: &Cli) -> Option<process::Child> {
     if cli.no_pager || !io::stdout().is_terminal() {
         return None;
     }
-    if matches!(cli.command, Command::Completions { .. }) {
+    if matches!(cli.command, Command::Completions { .. } | Command::Tail(_)) {
         return None;
     }
     let pager_cmd = std::env::var("FSLOG_PAGER").unwrap_or_else(|_| "less".to_string());
@@ -214,6 +231,7 @@ fn run_with_output(cli: Cli, use_pager: bool, out: &mut dyn Write) -> io::Result
         Command::List => cmd_list(&cli.dir, out),
         Command::Search(ref args) => cmd_search(&cli.dir, args, color, out),
         Command::Read(ref args) => cmd_read(&cli.dir, args, color, out),
+        Command::Tail(ref args) => cmd_tail(&cli.dir, args, color, out),
         Command::Completions { shell } => {
             let mut cmd = Cli::command();
             complete::generate_completions(shell, &mut cmd);
@@ -419,6 +437,45 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
 
     if args.filter.unclassified {
         printer.print_unclassified(&mut io::stderr(), stats)?;
+    }
+
+    Ok(())
+}
+
+fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
+    let filter = build_filter(&args.filter, None, None);
+    let tracking = if args.filter.unclassified {
+        UnclassifiedTracking::CaptureData
+    } else {
+        UnclassifiedTracking::CountOnly
+    };
+
+    let path = match args.file.as_deref() {
+        Some(p) => PathBuf::from(p),
+        None => dir.join("freeswitch.log"),
+    };
+
+    let lines = open_tail_reader(&path, args.lines)?;
+
+    let printer = EntryPrinter {
+        color,
+        show_blocks: args.filter.blocks,
+        show_session: args.filter.session,
+        show_filename: false,
+        show_line_numbers: args.filter.line_numbers,
+    };
+
+    let stream = LogStream::new(lines).unclassified_tracking(tracking);
+    let mut tracker = SessionTracker::new(stream);
+
+    for enriched in tracker.by_ref() {
+        if !filter.matches(&enriched.entry) {
+            continue;
+        }
+        if !args.filter.stats {
+            printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
+            out.flush()?;
+        }
     }
 
     Ok(())

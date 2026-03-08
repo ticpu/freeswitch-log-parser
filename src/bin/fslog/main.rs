@@ -9,11 +9,12 @@ use std::process;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use freeswitch_log_parser::{
-    LogLevel, LogStream, MessageKind, SessionTracker, UnclassifiedTracking,
+    LineKind, LogEntry, LogLevel, LogStream, MessageKind, SessionTracker, TrackedChain,
+    UnclassifiedTracking,
 };
 
 use files::{
-    chain_files, discover_log_files, filter_files_by_date, format_size, normalize_date_from,
+    discover_log_files, filter_files_by_date, format_size, normalize_date_from,
     normalize_date_until, open_log_reader,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig};
@@ -239,6 +240,22 @@ fn cmd_list(dir: &Path, out: &mut dyn Write) -> io::Result<()> {
     Ok(())
 }
 
+fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
+    LogEntry {
+        uuid: String::new(),
+        timestamp: String::new(),
+        level: None,
+        idle_pct: None,
+        source: None,
+        message: msg,
+        kind: LineKind::Full,
+        message_kind: kind,
+        block: None,
+        attached: Vec::new(),
+        line_number: 0,
+    }
+}
+
 fn cmd_search(
     dir: &Path,
     args: &SearchArgs,
@@ -252,13 +269,18 @@ fn cmd_search(
         UnclassifiedTracking::CountOnly
     };
 
-    let lines: Box<dyn Iterator<Item = String>> = if !args.files.is_empty() {
-        let iters: Vec<Box<dyn Iterator<Item = String>>> = args
-            .files
+    let segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = if !args.files.is_empty() {
+        args.files
             .iter()
-            .filter_map(|p| open_log_reader(p).ok())
-            .collect();
-        Box::new(iters.into_iter().flatten())
+            .filter_map(|p| {
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                open_log_reader(p).ok().map(|r| (name, r))
+            })
+            .collect()
     } else {
         let all_files = discover_log_files(dir)?;
         let selected =
@@ -267,20 +289,29 @@ fn cmd_search(
             eprintln!("no log files match the date range");
             return Ok(());
         }
-        chain_files(&selected)
+        selected
+            .iter()
+            .filter_map(|f| {
+                let name = f.path.file_name()?.to_string_lossy().into_owned();
+                open_log_reader(&f.path).ok().map(|r| (name, r))
+            })
+            .collect()
     };
 
-    let show_filename = args.files.len() > 1;
+    let (chain, seg_tracker) = TrackedChain::new(segments);
+
     let printer = EntryPrinter {
         color,
         show_blocks: args.filter.blocks,
         show_session: args.filter.session,
-        show_filename,
+        show_filename: false,
     };
 
-    let stream = LogStream::new(lines).unclassified_tracking(tracking);
+    let stream = LogStream::new(chain).unclassified_tracking(tracking);
     let mut tracker = SessionTracker::new(stream);
     let mut count: u64 = 0;
+    let mut last_seg: Option<usize> = None;
+    let mut last_date = String::new();
 
     for enriched in tracker.by_ref() {
         count += 1;
@@ -288,6 +319,21 @@ fn cmd_search(
             continue;
         }
         if !args.filter.stats {
+            if let Some((idx, name)) = seg_tracker.segment_for_line(enriched.entry.line_number) {
+                if last_seg != Some(idx) {
+                    last_seg = Some(idx);
+                    let sep = separator_entry(MessageKind::FileChange, name.to_string());
+                    printer.print_entry(out, &sep, None, None)?;
+                }
+            }
+            if enriched.entry.timestamp.len() >= 10 {
+                let date = &enriched.entry.timestamp[..10];
+                if date != last_date {
+                    last_date = date.to_string();
+                    let sep = separator_entry(MessageKind::DateChange, last_date.clone());
+                    printer.print_entry(out, &sep, None, None)?;
+                }
+            }
             printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
         }
     }
@@ -342,6 +388,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
     let stream = LogStream::new(lines).unclassified_tracking(tracking);
     let mut tracker = SessionTracker::new(stream);
     let mut count: u64 = 0;
+    let mut last_date = String::new();
 
     for enriched in tracker.by_ref() {
         count += 1;
@@ -349,6 +396,14 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
             continue;
         }
         if !args.filter.stats {
+            if enriched.entry.timestamp.len() >= 10 {
+                let date = &enriched.entry.timestamp[..10];
+                if date != last_date {
+                    last_date = date.to_string();
+                    let sep = separator_entry(MessageKind::DateChange, last_date.clone());
+                    printer.print_entry(out, &sep, None, None)?;
+                }
+            }
             printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
         }
     }

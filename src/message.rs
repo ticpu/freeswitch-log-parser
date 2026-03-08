@@ -54,6 +54,10 @@ pub enum MessageKind {
     EventSocket { detail: String },
     /// Anything not matching a more specific pattern.
     General,
+    /// Synthetic marker emitted at log file boundaries (never from `classify_message`).
+    FileChange,
+    /// Synthetic marker emitted at date boundaries (never from `classify_message`).
+    DateChange,
 }
 
 impl MessageKind {
@@ -71,6 +75,8 @@ impl MessageKind {
         "channel-lifecycle",
         "event-socket",
         "general",
+        "file-change",
+        "date-change",
     ];
 
     /// Returns the bare category string without variant-specific data.
@@ -88,6 +94,8 @@ impl MessageKind {
             MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
             MessageKind::EventSocket { .. } => "event-socket",
             MessageKind::General => "general",
+            MessageKind::FileChange => "file-change",
+            MessageKind::DateChange => "date-change",
         }
     }
 }
@@ -107,6 +115,8 @@ impl fmt::Display for MessageKind {
             MessageKind::ChannelLifecycle { .. } => f.pad("channel-lifecycle"),
             MessageKind::EventSocket { .. } => f.pad("event-socket"),
             MessageKind::General => f.pad("general"),
+            MessageKind::FileChange => f.pad("file-change"),
+            MessageKind::DateChange => f.pad("date-change"),
         }
     }
 }

@@ -43,12 +43,14 @@
 //!
 //! - **`cli`** — enables the `fslog` binary with clap, xz decompression, and regex filtering
 
+mod chain;
 mod level;
 mod line;
 mod message;
 mod session;
 mod stream;
 
+pub use chain::{SegmentTracker, TrackedChain};
 pub use level::{LogLevel, ParseLevelError};
 pub use line::{parse_line, LineKind, RawLine};
 pub use message::{classify_message, MessageKind, SdpDirection};

@@ -203,14 +203,6 @@ pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String
     Ok(Box::new(reader.lines().map(|l| l.expect("read error"))))
 }
 
-pub fn chain_files(files: &[&LogFile]) -> Box<dyn Iterator<Item = String>> {
-    let iters: Vec<Box<dyn Iterator<Item = String>>> = files
-        .iter()
-        .filter_map(|f| open_log_reader(&f.path).ok())
-        .collect();
-    Box::new(iters.into_iter().flatten())
-}
-
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

@@ -1,0 +1,16 @@
+[package]
+name = "freeswitch-log-parser"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+authors = ["Jérôme Poulin <jeromepoulin@gmail.com>"]
+description = "Parser for FreeSWITCH log files — handles compressed .xz files, multi-line dumps, truncated buffers, and stateful UUID/timestamp tracking"
+repository = "https://github.com/ticpu/freeswitch-log-parser"
+keywords = ["freeswitch", "log", "parser", "voip", "telephony"]
+categories = ["parser-implementations", "network-programming"]
+documentation = "https://docs.rs/freeswitch-log-parser"
+
+[lib]
+name = "freeswitch_log_parser"
+
+[dependencies]

@@ -31,6 +31,7 @@ Never copy production log lines verbatim into source.
 
 ### Workflow
 - `cargo check --message-format=short` → `cargo clippy --fix --allow-dirty --message-format=short` → `cargo fmt --all` → `cargo test -- --quiet`
+- Production fixture tests (`tests/production_log.rs`) must be run with `--release` for performance — debug builds are too slow on large xz-compressed logs
 
 ### Style
 - Zero dependencies — do not add crates without discussion

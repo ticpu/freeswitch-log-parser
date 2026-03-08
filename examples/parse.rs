@@ -52,7 +52,17 @@ fn main() {
                     );
                 }
                 freeswitch_log_parser::Block::Sdp { direction, body } => {
-                    println!("          block: sdp ({}, {} lines)", direction, body.len(),);
+                    println!("          block: sdp ({}, {} lines)", direction, body.len());
+                }
+                freeswitch_log_parser::Block::CodecNegotiation {
+                    comparisons,
+                    selected,
+                } => {
+                    println!(
+                        "          block: codec-negotiation ({} cmp, {} sel)",
+                        comparisons.len(),
+                        selected.len(),
+                    );
                 }
             }
         }

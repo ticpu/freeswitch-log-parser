@@ -44,6 +44,16 @@ pub enum MessageKind {
     StateChange {
         detail: String,
     },
+    CodecNegotiation,
+    Media {
+        detail: String,
+    },
+    ChannelLifecycle {
+        detail: String,
+    },
+    EventSocket {
+        detail: String,
+    },
     General,
 }
 
@@ -57,6 +67,10 @@ impl fmt::Display for MessageKind {
             MessageKind::Variable { name, .. } => write!(f, "var({})", name),
             MessageKind::SdpMarker { direction } => write!(f, "sdp({})", direction),
             MessageKind::StateChange { .. } => f.pad("state-change"),
+            MessageKind::CodecNegotiation => f.pad("codec-negotiation"),
+            MessageKind::Media { .. } => f.pad("media"),
+            MessageKind::ChannelLifecycle { .. } => f.pad("channel-lifecycle"),
+            MessageKind::EventSocket { .. } => f.pad("event-socket"),
             MessageKind::General => f.pad("general"),
         }
     }
@@ -201,6 +215,82 @@ pub fn classify_message(msg: &str) -> MessageKind {
         }
     }
 
+    if msg.starts_with("Audio Codec Compare ") {
+        return MessageKind::CodecNegotiation;
+    }
+
+    if msg.starts_with("CoreSession::setVariable(") {
+        return parse_core_session_set_variable(msg);
+    }
+
+    if msg.starts_with("UNSET ") {
+        return parse_unset(msg);
+    }
+
+    // Pre-dialplan set action: "set variable name=value"
+    if let Some(rest) = msg.strip_prefix("set variable ") {
+        if let Some((name, value)) = rest.split_once('=') {
+            return MessageKind::Variable {
+                name: format!("variable_{name}"),
+                value: value.to_string(),
+            };
+        }
+    }
+
+    if msg.starts_with("Transfer ") {
+        return MessageKind::Dialplan {
+            channel: String::new(),
+            detail: msg.to_string(),
+        };
+    }
+
+    // (channel) State STATE — parenthesized channel state
+    if msg.starts_with('(') {
+        if msg.contains(") State ") {
+            return MessageKind::StateChange {
+                detail: msg.to_string(),
+            };
+        }
+        return MessageKind::ChannelLifecycle {
+            detail: msg.to_string(),
+        };
+    }
+
+    // SOFIA STATE (no channel prefix) — e.g. "SOFIA EXCHANGE_MEDIA"
+    if msg.starts_with("SOFIA ") {
+        return MessageKind::StateChange {
+            detail: msg.to_string(),
+        };
+    }
+
+    // Pre-dialplan: checking condition / action results from sofia_pre_dialplan.c
+    if msg.starts_with("checking condition") || msg.starts_with("action(") {
+        return MessageKind::ChannelLifecycle {
+            detail: msg.to_string(),
+        };
+    }
+
+    if msg.starts_with("Event Socket Command") {
+        return MessageKind::EventSocket {
+            detail: msg.to_string(),
+        };
+    }
+
+    // Media patterns (no channel prefix)
+    if let Some(kind) = detect_media(msg) {
+        return kind;
+    }
+
+    // Channel lifecycle patterns (no channel prefix)
+    if let Some(kind) = detect_channel_lifecycle(msg) {
+        return kind;
+    }
+
+    // Channel-prefixed messages: sofia/..., loopback/... prefix
+    if let Some((_, rest)) = strip_channel_prefix(msg) {
+        return classify_channel_prefixed(rest);
+    }
+
     // Channel-* fields and other Key: [value] patterns from CHANNEL_DATA dumps
     // Must come after more specific checks to avoid false positives
     if let Some((name, value)) = parse_bracketed_value(msg, 0) {
@@ -218,6 +308,184 @@ pub fn classify_message(msg: &str) -> MessageKind {
     }
 
     MessageKind::General
+}
+
+fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
+    if !msg.starts_with("sofia/") && !msg.starts_with("loopback/") {
+        return None;
+    }
+    let bytes = msg.as_bytes();
+    let mut i = 0;
+    let mut bracket_depth: u32 = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => bracket_depth += 1,
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+            }
+            b' ' if bracket_depth == 0 => {
+                return Some((&msg[..i], &msg[i + 1..]));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn classify_channel_prefixed(rest: &str) -> MessageKind {
+    // SOFIA STATE / Standard STATE
+    if rest.starts_with("SOFIA ") || rest.starts_with("Standard ") {
+        return MessageKind::StateChange {
+            detail: rest.to_string(),
+        };
+    }
+
+    if let Some(kind) = detect_media(rest) {
+        return kind;
+    }
+
+    // Channel-prefixed lifecycle: receiving/sending invite, destroy/unlink, etc.
+    MessageKind::ChannelLifecycle {
+        detail: rest.to_string(),
+    }
+}
+
+fn detect_media(msg: &str) -> Option<MessageKind> {
+    let media_prefixes = [
+        "AUDIO RTP ",
+        "VIDEO RTP ",
+        "Activating ",
+        "RTCP ",
+        "Starting timer",
+        "Record session",
+        "Correct audio",
+        "No silence detection",
+        "Audio params",
+        "Codec ",
+        "Attaching BUG",
+        "Removing BUG",
+        "rtcp_stats_init",
+        "Send middle packet",
+        "Send end packet",
+        "Send first packet",
+        "START_RECORDING",
+        "Stop recording",
+        "Engaging Write Buffer",
+        "rtcp_stats:",
+    ];
+    for prefix in &media_prefixes {
+        if msg.starts_with(prefix) {
+            return Some(MessageKind::Media {
+                detail: msg.to_string(),
+            });
+        }
+    }
+
+    if msg.starts_with("Setting RTCP") || msg.starts_with("Setting BUG Codec") {
+        return Some(MessageKind::Media {
+            detail: msg.to_string(),
+        });
+    }
+
+    if msg.starts_with("Set ") {
+        return Some(MessageKind::Media {
+            detail: msg.to_string(),
+        });
+    }
+
+    if msg.starts_with("Original read codec set to")
+        || msg.starts_with("Forcing crypto_mode")
+        || msg.starts_with("Parsing global variables")
+        || msg.starts_with("Parsing session specific variables")
+    {
+        return Some(MessageKind::Media {
+            detail: msg.to_string(),
+        });
+    }
+
+    None
+}
+
+fn detect_channel_lifecycle(msg: &str) -> Option<MessageKind> {
+    let lifecycle_prefixes = [
+        "New Channel ",
+        "Close Channel ",
+        "Hangup ",
+        "Ring-Ready ",
+        "Ring Ready ",
+        "Pre-Answer ",
+        "Sending early media",
+        "Sending BYE",
+        "Sending CANCEL",
+        "Channel is hung up",
+        "Call appears",
+        "Found channel",
+        "3PCC ",
+        "Subscribed to 3PCC",
+        "New log started",
+        "Received a ",
+        "Session ",
+        "BRIDGE ",
+        "Originate ",
+        "USAGE:",
+        "Split into",
+        "Part ",
+        "Responding to INVITE",
+        "Redirecting to",
+        "subscribing to",
+        "Queue digit delay",
+    ];
+    for prefix in &lifecycle_prefixes {
+        if msg.starts_with(prefix) {
+            return Some(MessageKind::ChannelLifecycle {
+                detail: msg.to_string(),
+            });
+        }
+    }
+
+    if msg.starts_with("Channel ") {
+        return Some(MessageKind::ChannelLifecycle {
+            detail: msg.to_string(),
+        });
+    }
+
+    if msg.starts_with("Application ") && msg.contains("Requires media") {
+        return Some(MessageKind::ChannelLifecycle {
+            detail: msg.to_string(),
+        });
+    }
+
+    None
+}
+
+fn parse_core_session_set_variable(msg: &str) -> MessageKind {
+    let rest = &msg["CoreSession::setVariable(".len()..];
+    if let Some(end) = rest.strip_suffix(')') {
+        if let Some(comma) = end.find(", ") {
+            return MessageKind::Variable {
+                name: format!("variable_{}", &end[..comma]),
+                value: end[comma + 2..].to_string(),
+            };
+        }
+    }
+    MessageKind::Variable {
+        name: String::new(),
+        value: msg.to_string(),
+    }
+}
+
+fn parse_unset(msg: &str) -> MessageKind {
+    let rest = &msg["UNSET ".len()..];
+    let name = if let Some(inner) = rest.strip_prefix('[') {
+        inner.strip_suffix(']').unwrap_or(inner)
+    } else {
+        rest
+    };
+    MessageKind::Variable {
+        name: format!("variable_{name}"),
+        value: String::new(),
+    }
 }
 
 fn parse_dialplan_processing(msg: &str) -> MessageKind {
@@ -473,11 +741,14 @@ mod tests {
     }
 
     #[test]
-    fn general_unknown() {
-        assert_eq!(
-            classify_message("CoreSession::setVariable(X-City, ST GEORGES)"),
-            MessageKind::General,
-        );
+    fn core_session_set_variable() {
+        match classify_message("CoreSession::setVariable(X-City, ST GEORGES)") {
+            MessageKind::Variable { name, value } => {
+                assert_eq!(name, "variable_X-City");
+                assert_eq!(value, "ST GEORGES");
+            }
+            other => panic!("expected Variable, got {other:?}"),
+        }
     }
 
     #[test]
@@ -486,13 +757,13 @@ mod tests {
     }
 
     #[test]
-    fn general_plain_text() {
-        assert_eq!(
-            classify_message(
-                "Hangup sofia/internal/+15550001234@192.0.2.1 [CS_CONSUME_MEDIA] [NORMAL_CLEARING]"
-            ),
-            MessageKind::General,
-        );
+    fn hangup_is_channel_lifecycle() {
+        match classify_message(
+            "Hangup sofia/internal/+15550001234@192.0.2.1 [CS_CONSUME_MEDIA] [NORMAL_CLEARING]",
+        ) {
+            MessageKind::ChannelLifecycle { .. } => {}
+            other => panic!("expected ChannelLifecycle, got {other:?}"),
+        }
     }
 
     #[test]
@@ -659,18 +930,18 @@ mod tests {
     }
 
     #[test]
-    fn action_success_still_general() {
-        assert_eq!(
-            classify_message("action(1:3pcc_force_dialplan:1:set_tflag) success"),
-            MessageKind::General,
-        );
+    fn action_is_pre_dialplan_lifecycle() {
+        match classify_message("action(1:3pcc_force_dialplan:1:set_tflag) success") {
+            MessageKind::ChannelLifecycle { .. } => {}
+            other => panic!("expected ChannelLifecycle, got {other:?}"),
+        }
     }
 
     #[test]
-    fn free_form_message_still_general() {
-        assert_eq!(
-            classify_message("Channel [sofia/internal] has been answered"),
-            MessageKind::General,
-        );
+    fn channel_answered_is_lifecycle() {
+        match classify_message("Channel [sofia/internal] has been answered") {
+            MessageKind::ChannelLifecycle { .. } => {}
+            other => panic!("expected ChannelLifecycle, got {other:?}"),
+        }
     }
 }

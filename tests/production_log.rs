@@ -163,6 +163,10 @@ fn message_kind_label(kind: &MessageKind) -> &'static str {
         MessageKind::Variable { .. } => "variable",
         MessageKind::SdpMarker { .. } => "sdp-marker",
         MessageKind::StateChange { .. } => "state-change",
+        MessageKind::CodecNegotiation => "codec-negotiation",
+        MessageKind::Media { .. } => "media",
+        MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
+        MessageKind::EventSocket { .. } => "event-socket",
         MessageKind::General => "general",
     }
 }
@@ -206,6 +210,9 @@ fn comprehensive_parse_report() {
                     *block_counts.entry("channel-data").or_default() += 1
                 }
                 Some(Block::Sdp { .. }) => *block_counts.entry("sdp").or_default() += 1,
+                Some(Block::CodecNegotiation { .. }) => {
+                    *block_counts.entry("codec-negotiation").or_default() += 1
+                }
                 None => no_block_count += 1,
             }
 

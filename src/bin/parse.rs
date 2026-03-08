@@ -126,6 +126,22 @@ fn main() {
                             println!("         sdp    {line}");
                         }
                     }
+                    Block::CodecNegotiation {
+                        comparisons,
+                        selected,
+                    } => {
+                        println!(
+                            "         codec  {} comparisons, {} selected",
+                            comparisons.len(),
+                            selected.len()
+                        );
+                        for (offered, local) in comparisons {
+                            println!("         codec  {offered} vs {local}");
+                        }
+                        for s in selected {
+                            println!("         codec  MATCH {s}");
+                        }
+                    }
                 }
             }
         }

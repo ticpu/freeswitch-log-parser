@@ -12,6 +12,10 @@ pub enum Block {
         direction: SdpDirection,
         body: Vec<String>,
     },
+    CodecNegotiation {
+        comparisons: Vec<(String, String)>,
+        selected: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +87,10 @@ enum StreamState {
     InSdp {
         direction: SdpDirection,
         body: Vec<String>,
+    },
+    InCodecNegotiation {
+        comparisons: Vec<(String, String)>,
+        selected: Vec<String>,
     },
 }
 
@@ -166,6 +174,13 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 Some(Block::ChannelData { fields, variables })
             }
             StreamState::InSdp { direction, body } => Some(Block::Sdp { direction, body }),
+            StreamState::InCodecNegotiation {
+                comparisons,
+                selected,
+            } => Some(Block::CodecNegotiation {
+                comparisons,
+                selected,
+            }),
         }
     }
 
@@ -189,8 +204,30 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 direction: direction.clone(),
                 body: Vec::new(),
             },
+            MessageKind::CodecNegotiation => StreamState::InCodecNegotiation {
+                comparisons: Vec::new(),
+                selected: Vec::new(),
+            },
             _ => StreamState::Idle,
         };
+    }
+
+    fn accumulate_codec_entry(&mut self, msg: &str) {
+        if let StreamState::InCodecNegotiation {
+            comparisons,
+            selected,
+        } = &mut self.state
+        {
+            let rest = msg.strip_prefix("Audio Codec Compare ").unwrap_or(msg);
+            if rest.contains("is saved as a match") {
+                let codec = rest.find(']').map(|end| &rest[1..end]).unwrap_or(rest);
+                selected.push(codec.to_string());
+            } else if let Some(slash) = rest.find("]/[") {
+                let offered = &rest[1..slash];
+                let local = &rest[slash + 3..rest.len().saturating_sub(1)];
+                comparisons.push((offered.to_string(), local.to_string()));
+            }
+        }
     }
 
     fn accumulate_continuation(&mut self, msg: &str, line: &str) {
@@ -235,6 +272,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             StreamState::InSdp { body, .. } => {
                 body.push(msg.to_string());
             }
+            StreamState::InCodecNegotiation { .. } => {}
             StreamState::Idle => {}
         }
         if let Some(ref mut pending) = self.pending {
@@ -282,14 +320,30 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
             match parsed.kind {
                 LineKind::Full | LineKind::System | LineKind::Truncated => {
+                    let uuid = parsed.uuid.unwrap_or("").to_string();
+                    let message_kind = classify_message(parsed.message);
+
+                    // Merge consecutive codec negotiation entries with same UUID
+                    if message_kind == MessageKind::CodecNegotiation {
+                        if let (Some(ref pending), StreamState::InCodecNegotiation { .. }) =
+                            (&self.pending, &self.state)
+                        {
+                            if uuid == pending.uuid {
+                                self.accumulate_codec_entry(parsed.message);
+                                if let Some(ref mut p) = self.pending {
+                                    p.attached.push(line);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
                     let yielded = self.finalize_pending();
 
-                    let uuid = parsed.uuid.unwrap_or("").to_string();
                     let timestamp = parsed
                         .timestamp
                         .map(|t| t.to_string())
                         .unwrap_or_else(|| self.last_timestamp.clone());
-                    let message_kind = classify_message(parsed.message);
 
                     if !uuid.is_empty() {
                         self.last_uuid = uuid.clone();
@@ -299,6 +353,9 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     }
 
                     self.start_block_for_message(&message_kind);
+                    if message_kind == MessageKind::CodecNegotiation {
+                        self.accumulate_codec_entry(parsed.message);
+                    }
 
                     let mut entry = self.new_entry(
                         uuid,
@@ -801,8 +858,8 @@ mod tests {
     }
 
     #[test]
-    fn no_block_for_general_message() {
-        let lines = vec![full_line(UUID1, TS1, "CoreSession::setVariable(foo, bar)")];
+    fn no_block_for_non_block_message() {
+        let lines = vec![full_line(UUID1, TS1, "some random freeswitch log message")];
         let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].block.is_none());

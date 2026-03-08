@@ -100,6 +100,10 @@ struct FilterArgs {
     /// Report unclassified lines
     #[arg(long)]
     unclassified: bool,
+
+    /// Show line numbers in output
+    #[arg(short = 'n', long)]
+    line_numbers: bool,
 }
 
 #[derive(clap::Args)]
@@ -305,6 +309,7 @@ fn cmd_search(
         show_blocks: args.filter.blocks,
         show_session: args.filter.session,
         show_filename: false,
+        show_line_numbers: args.filter.line_numbers,
     };
 
     let stream = LogStream::new(chain).unclassified_tracking(tracking);
@@ -383,6 +388,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
         show_blocks: args.filter.blocks,
         show_session: args.filter.session,
         show_filename: false,
+        show_line_numbers: args.filter.line_numbers,
     };
 
     let stream = LogStream::new(lines).unclassified_tracking(tracking);

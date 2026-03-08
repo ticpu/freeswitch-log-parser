@@ -38,6 +38,7 @@ pub struct EntryPrinter {
     pub show_blocks: bool,
     pub show_session: bool,
     pub show_filename: bool,
+    pub show_line_numbers: bool,
 }
 
 impl EntryPrinter {
@@ -76,10 +77,13 @@ impl EntryPrinter {
             write!(w, "{dim}{fname}{reset} ")?;
         }
 
+        if self.show_line_numbers {
+            write!(w, "{lc}L{line:>6} ", line = entry.line_number)?;
+        }
+
         writeln!(
             w,
-            "{lc}L{line:>6} {kind:>9} {level:>7}{reset} {time} {dim}{uuid}{reset} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
-            line = entry.line_number,
+            "{lc}{kind:>9} {level:>7}{reset} {time} {dim}{uuid}{reset} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
             kind = entry.kind,
             mkind = entry.message_kind,
             msg = entry.message,

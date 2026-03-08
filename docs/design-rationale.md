@@ -104,9 +104,19 @@ the previous buffer's truncated output. The UUID is extractable by scanning
 for the pattern within the line. The prefix length varies — we've observed
 `varia`, `variab`, `var`, and `variable` prefixes before the UUID.
 
-## Two-layer architecture
+## Three-layer architecture
 
-The parser is split into two layers that can be used independently:
+The parser follows the same iterator-adapter composition pattern proven in
+the `freeswitch-sofia-trace-parser` crate: each layer wraps the previous
+one, can be used independently, and never discards raw data.
+
+```
+Layer 1: parse_line()          &str → RawLine<'a>              (stateless, zero-alloc)
+          ↓
+Layer 2: LogStream<I>          Iterator<String> → LogEntry      (structural state machine)
+          ↓
+Layer 3: SessionTracker<I>     LogStream<I> → EnrichedEntry     (per-UUID state machine)
+```
 
 **Layer 1: Stateless line parser** (`parse_line`). Takes a single `&str`
 line, returns a `RawLine` with whatever fields are directly extractable.
@@ -114,18 +124,121 @@ No allocation, no state, no context from other lines. This is the unit
 that gets the most test coverage — every line format and edge case has a
 dedicated test.
 
-**Layer 2: Stateful stream parser** (`LogStream`). An iterator adapter that
-wraps any `Iterator<Item = String>`, maintains `last_uuid` and
-`last_timestamp` context, and yields `LogEntry` structs where every entry
-has a UUID and timestamp (inherited if the line didn't have its own). It also
-collects multi-line continuations into `attached` data on the parent entry.
+**Layer 2: Structural state machine** (`LogStream`). An iterator adapter
+that wraps any `Iterator<Item = String>`. Maintains `last_uuid` and
+`last_timestamp` context, classifies messages into semantic types
+(`MessageKind`), detects multi-line block boundaries (CHANNEL_DATA dumps,
+SDP bodies), and yields `LogEntry` structs with both typed `Block` content
+and raw `attached` lines. The state machine tracks whether it's currently
+inside a CHANNEL_DATA dump, an SDP body, or idle — transitions are driven
+by line classification and UUID continuity.
 
-The two-layer split exists because consumers have different needs:
+**Layer 3: Per-session state machine** (`SessionTracker`). An iterator
+adapter wrapping `LogStream`. Maintains a `HashMap<String, SessionState>`
+keyed by UUID, propagating learned context (dialplan context, channel
+state, variables) across entries for the same call session. Yields
+`EnrichedEntry` structs containing both the raw `LogEntry` and a
+`SessionSnapshot` of what was known about the session at that point.
+
+The three-layer split exists because consumers have different needs:
 
 - A grep tool only needs layer 1 — match lines by UUID prefix
-- A fluent-bit filter needs layer 2 — every record needs uuid/timestamp
-- An Elasticsearch indexer needs layer 2 — structured documents with
-  attached data for CHANNEL_DATA blocks
+- A fluent-bit replacement needs layer 2 — every record needs
+  uuid/timestamp and classified message type
+- An Elasticsearch indexer needs layer 3 — structured documents with
+  session context propagated across entries
+
+## Message classification
+
+Layer 2 classifies the message portion of each log line into semantic
+types via `classify_message()`. This is a pure function — no state, no
+allocation beyond the returned enum — that uses positional byte checks:
+
+- `EXECUTE [depth=N] channel app(args)` — dialplan execution trace
+- `Dialplan: channel ...` — dialplan processing output
+- `CHANNEL_DATA` — start of a channel variable dump block
+- `Channel-Name: [value]` — channel field within a dump
+- `variable_name: [value]` — channel variable within a dump
+- `Local SDP:` / `Remote SDP:` — start of an SDP body block
+- `State Change ...` — channel state transition
+- Everything else — `General`
+
+The classifier is exposed as a public function so Layer 1 consumers can
+call it directly on `RawLine.message` without using the stream parser.
+
+## Block detection and multi-line reassembly
+
+The stream state machine (`LogStream`) uses an explicit `StreamState` enum
+to track block boundaries:
+
+```
+StreamState::Idle
+    → sees CHANNEL_DATA primary line → StreamState::InChannelData
+    → sees SDP marker primary line   → StreamState::InSdp
+
+StreamState::InChannelData
+    → continuation with Channel-X or variable_ → accumulate into block
+    → bare continuation while variable value is "open" ([ without ]) → append to value
+    → primary line or different UUID → finalize Block::ChannelData, yield, transition
+
+StreamState::InSdp
+    → continuation matching SDP line patterns → accumulate into body
+    → primary line or non-SDP content → finalize Block::Sdp, yield, transition
+```
+
+Multi-line variable values (like `variable_switch_r_sdp: [v=0` followed
+by SDP lines and `]`) are reassembled: the parser tracks open brackets
+and concatenates continuation lines into the variable's value with `\n`
+separators. The raw lines remain in `attached` for consumers who need the
+original format.
+
+Every `LogEntry` carries both `block: Option<Block>` (typed, parsed view)
+and `attached: Vec<String>` (raw continuation lines). The consumer always
+has access to both representations. This follows the same transparency
+principle as `freeswitch-sofia-trace-parser`, where raw frame bytes are
+always available alongside parsed SIP messages.
+
+## Unclassified data tracking
+
+Following the three-tier tracking pattern from `freeswitch-sofia-trace-parser`
+(where it's called `SkipTracking`), the log parser tracks lines that
+couldn't be fully classified:
+
+- `UnclassifiedTracking::CountOnly` — default, zero allocation. Just
+  increment `lines_unclassified` counter.
+- `UnclassifiedTracking::TrackLines` — record line number and reason
+  for each unclassified line.
+- `UnclassifiedTracking::CaptureData` — like `TrackLines` plus the
+  actual line content.
+
+`ParseStats` accumulates `lines_processed`, `lines_unclassified`, and
+(when tracking is enabled) a `Vec<UnclassifiedLine>` with reasons like
+`OrphanContinuation` (bare line with no pending entry) or
+`TruncatedField` (partially parsed EXECUTE or variable).
+
+Stats bubble up through layers: `SessionTracker.stats()` delegates to
+`LogStream.stats()`. The consumer at any layer can account for every
+input line.
+
+## Per-session state propagation
+
+Layer 3's `SessionTracker` maintains a `SessionState` per UUID containing:
+
+- `channel_name`, `channel_state` — from CHANNEL_DATA blocks
+- `dialplan_context`, `dialplan_from`, `dialplan_to` — from dialplan
+  processing messages ("Processing X→Y in context Z")
+- `variables: HashMap<String, String>` — all variables learned from
+  CHANNEL_DATA dumps, `set()`, `export()`, and variable lines
+
+The variables map is generic — the library stores everything it encounters.
+Business-specific lookups (like `variables["ngcs_incident_id"]` or
+`variables["sip_call_id"]`) are the consumer's responsibility. No
+application-specific logic lives in the library.
+
+Sessions are never automatically cleaned up. The consumer calls
+`remove_session(uuid)` when a call ends (detected via channel state
+`CS_DESTROY` or a hangup message). This is transparent — the library
+doesn't make retention policy decisions.
 
 ## No regex
 
@@ -149,15 +262,22 @@ This is deliberate:
 
 ## Stateful stream: continuation grouping
 
-The `LogStream` iterator buffers one entry at a time. When it sees a new
-"primary" line (Full, System, or Truncated), it yields the buffered entry
-and starts a new one. Continuation lines (UuidContinuation with same UUID,
-BareContinuation, Empty) are appended to the buffered entry's `attached`
-vec.
+The `LogStream` iterator buffers one entry at a time and maintains an
+explicit `StreamState` (Idle, InChannelData, InSdp). When it sees a new
+"primary" line (Full, System, or Truncated), it finalizes any in-progress
+block, yields the buffered entry, and starts a new one. Continuation lines
+(UuidContinuation with same UUID, BareContinuation, Empty) are both
+appended to the raw `attached` vec and routed to the appropriate block
+accumulator based on the current state.
 
 A UUID continuation with a *different* UUID also triggers yielding the
 buffered entry and starting a new one — the UUID change means we've moved
 to a different session's output.
+
+EXECUTE UUID continuations are treated as primary lines — they yield the
+previous pending entry and start a new one. This separates execution
+traces from their parent CHANNEL_DATA blocks, matching the production
+semantics where each EXECUTE is a distinct event.
 
 This means the iterator always yields entries one behind the current parse
 position. The final entry is yielded when the underlying line iterator is

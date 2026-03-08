@@ -14,3 +14,15 @@ documentation = "https://docs.rs/freeswitch-log-parser"
 name = "freeswitch_log_parser"
 
 [dependencies]
+clap = { version = "4", features = ["derive"], optional = true }
+
+[[bin]]
+name = "freeswitch-log-parse"
+path = "src/bin/parse.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["dep:clap"]
+
+[dev-dependencies]
+xz2 = "0.1"

@@ -155,20 +155,7 @@ fn sdp_has_typed_block() {
 }
 
 fn message_kind_label(kind: &MessageKind) -> &'static str {
-    match kind {
-        MessageKind::Execute { .. } => "execute",
-        MessageKind::Dialplan { .. } => "dialplan",
-        MessageKind::ChannelData => "channel-data",
-        MessageKind::ChannelField { .. } => "channel-field",
-        MessageKind::Variable { .. } => "variable",
-        MessageKind::SdpMarker { .. } => "sdp-marker",
-        MessageKind::StateChange { .. } => "state-change",
-        MessageKind::CodecNegotiation => "codec-negotiation",
-        MessageKind::Media { .. } => "media",
-        MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
-        MessageKind::EventSocket { .. } => "event-socket",
-        MessageKind::General => "general",
-    }
+    kind.label()
 }
 
 #[test]

@@ -14,15 +14,18 @@ documentation = "https://docs.rs/freeswitch-log-parser"
 name = "freeswitch_log_parser"
 
 [dependencies]
-clap = { version = "4", features = ["derive"], optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+clap_complete = { version = "4", optional = true }
+xz2 = { version = "0.1", optional = true }
+regex = { version = "1", optional = true }
 
 [[bin]]
-name = "freeswitch-log-parse"
-path = "src/bin/parse.rs"
+name = "fslog"
+path = "src/bin/fslog/main.rs"
 required-features = ["cli"]
 
 [features]
-cli = ["dep:clap"]
+cli = ["dep:clap", "dep:clap_complete", "dep:xz2", "dep:regex"]
 
 [dev-dependencies]
 xz2 = "0.1"

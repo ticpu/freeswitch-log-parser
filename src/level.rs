@@ -13,6 +13,12 @@ pub enum LogLevel {
     Console,
 }
 
+impl LogLevel {
+    pub const ALL_LABELS: &[&str] = &[
+        "debug", "info", "notice", "warning", "err", "crit", "alert", "console",
+    ];
+}
+
 impl fmt::Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {

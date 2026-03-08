@@ -1,0 +1,389 @@
+mod complete;
+mod files;
+mod output;
+
+use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::process;
+
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+
+use freeswitch_log_parser::{
+    LogLevel, LogStream, MessageKind, SessionTracker, UnclassifiedTracking,
+};
+
+use files::{
+    chain_files, discover_log_files, filter_files_by_date, format_size, normalize_date_from,
+    normalize_date_until, open_log_reader,
+};
+use output::{ColorMode, EntryPrinter, FilterConfig};
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ColorWhen {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Parser)]
+#[command(name = "fslog", about = "FreeSWITCH log file query tool")]
+struct Cli {
+    /// Log directory
+    #[arg(long, default_value = "/var/log/freeswitch", env = "FSLOG_DIR")]
+    dir: PathBuf,
+
+    /// Color output: auto, always, never
+    #[arg(long, default_value = "auto", value_enum)]
+    color: ColorWhen,
+
+    /// Disable auto-pager
+    #[arg(long)]
+    no_pager: bool,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// List log files with dates and sizes
+    List,
+
+    /// Search/filter entries across multiple files
+    Search(SearchArgs),
+
+    /// Parse and display a single log file
+    Read(ReadArgs),
+
+    /// Generate shell completion script
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::aot::Shell,
+    },
+}
+
+#[derive(clap::Args)]
+struct FilterArgs {
+    /// UUID substring filter (case-insensitive)
+    #[arg(short, long, value_name = "UUID")]
+    uuid: Option<String>,
+
+    /// Minimum log level
+    #[arg(short, long, value_name = "LEVEL")]
+    level: Option<String>,
+
+    /// Message category filter
+    #[arg(short, long, value_name = "KIND")]
+    category: Option<String>,
+
+    /// Fixed string substring search (case-insensitive)
+    #[arg(long, value_name = "PATTERN")]
+    fgrep: Option<String>,
+
+    /// Regex pattern search
+    #[arg(long, value_name = "PATTERN")]
+    grep: Option<String>,
+
+    /// Show typed block details
+    #[arg(long)]
+    blocks: bool,
+
+    /// Show session state snapshots
+    #[arg(long)]
+    session: bool,
+
+    /// Summary only, no per-entry output
+    #[arg(long)]
+    stats: bool,
+
+    /// Report unclassified lines
+    #[arg(long)]
+    unclassified: bool,
+}
+
+#[derive(clap::Args)]
+struct SearchArgs {
+    /// Start date (progressive tab-complete from filenames)
+    #[arg(long)]
+    from: Option<String>,
+
+    /// End date (progressive tab-complete from filenames)
+    #[arg(long)]
+    until: Option<String>,
+
+    #[command(flatten)]
+    filter: FilterArgs,
+
+    /// Explicit files (overrides --from/--until auto-discovery)
+    #[arg(value_name = "FILES")]
+    files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct ReadArgs {
+    #[command(flatten)]
+    filter: FilterArgs,
+
+    /// Log file to read (default: freeswitch.log in --dir, or stdin if `-`)
+    #[arg(value_name = "FILE")]
+    file: Option<String>,
+}
+
+fn resolve_color(when: ColorWhen, use_pager: bool) -> ColorMode {
+    match when {
+        ColorWhen::Always => ColorMode::Always,
+        ColorWhen::Never => ColorMode::Never,
+        ColorWhen::Auto => {
+            if use_pager || io::stdout().is_terminal() {
+                ColorMode::Always
+            } else {
+                ColorMode::Never
+            }
+        }
+    }
+}
+
+fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) -> FilterConfig {
+    let min_level: Option<LogLevel> = filter.level.as_ref().map(|l| {
+        l.parse().unwrap_or_else(|_| {
+            eprintln!("invalid log level: {l}");
+            eprintln!("valid levels: {}", LogLevel::ALL_LABELS.join(", "));
+            process::exit(2);
+        })
+    });
+
+    if let Some(ref cat) = filter.category {
+        if !MessageKind::ALL_LABELS.contains(&cat.as_str()) {
+            eprintln!("invalid category: {cat}");
+            eprintln!("valid categories: {}", MessageKind::ALL_LABELS.join(", "));
+            process::exit(2);
+        }
+    }
+
+    let grep = filter.grep.as_ref().map(|pattern| {
+        regex::Regex::new(pattern).unwrap_or_else(|e| {
+            eprintln!("invalid regex: {e}");
+            process::exit(2);
+        })
+    });
+
+    FilterConfig {
+        uuid_filter: filter.uuid.as_deref().map(|u| u.to_lowercase()),
+        min_level,
+        category: filter.category.clone(),
+        fgrep: filter.fgrep.clone(),
+        grep,
+        from_ts: from.map(normalize_date_from),
+        until_ts: until.map(normalize_date_until),
+    }
+}
+
+fn setup_pager(cli: &Cli) -> Option<process::Child> {
+    if cli.no_pager || !io::stdout().is_terminal() {
+        return None;
+    }
+    if matches!(cli.command, Command::Completions { .. }) {
+        return None;
+    }
+    let pager_cmd = std::env::var("FSLOG_PAGER").unwrap_or_else(|_| "less".to_string());
+    let mut parts = pager_cmd.split_whitespace();
+    let program = parts.next()?;
+    let args: Vec<&str> = parts.collect();
+    let default_args;
+    let final_args = if args.is_empty() && program == "less" {
+        default_args = ["-RFX"];
+        &default_args[..]
+    } else {
+        &args[..]
+    };
+    process::Command::new(program)
+        .args(final_args)
+        .stdin(process::Stdio::piped())
+        .spawn()
+        .ok()
+}
+
+fn run_with_output(cli: Cli, use_pager: bool, out: &mut dyn Write) -> io::Result<()> {
+    let color = resolve_color(cli.color, use_pager);
+    match cli.command {
+        Command::List => cmd_list(&cli.dir, out),
+        Command::Search(ref args) => cmd_search(&cli.dir, args, color, out),
+        Command::Read(ref args) => cmd_read(&cli.dir, args, color, out),
+        Command::Completions { shell } => {
+            let mut cmd = Cli::command();
+            complete::generate_completions(shell, &mut cmd);
+            Ok(())
+        }
+    }
+}
+
+fn cmd_list(dir: &Path, out: &mut dyn Write) -> io::Result<()> {
+    let files = discover_log_files(dir)?;
+    for f in &files {
+        let date = f
+            .date
+            .as_deref()
+            .map(|d| {
+                // "2026-03-08-16-52-07" → "2026-03-08 16:52"
+                if d.len() >= 16 {
+                    format!("{} {}:{}", &d[..10], &d[11..13], &d[14..16])
+                } else {
+                    d.to_string()
+                }
+            })
+            .unwrap_or_else(|| "(current)".to_string());
+        let size = format_size(f.size);
+        let name = f.path.file_name().unwrap().to_string_lossy();
+        writeln!(out, "{date:<17} {size:>6}  {name}")?;
+    }
+    Ok(())
+}
+
+fn cmd_search(
+    dir: &Path,
+    args: &SearchArgs,
+    color: ColorMode,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let filter = build_filter(&args.filter, args.from.as_deref(), args.until.as_deref());
+    let tracking = if args.filter.unclassified {
+        UnclassifiedTracking::CaptureData
+    } else {
+        UnclassifiedTracking::CountOnly
+    };
+
+    let lines: Box<dyn Iterator<Item = String>> = if !args.files.is_empty() {
+        let iters: Vec<Box<dyn Iterator<Item = String>>> = args
+            .files
+            .iter()
+            .filter_map(|p| open_log_reader(p).ok())
+            .collect();
+        Box::new(iters.into_iter().flatten())
+    } else {
+        let all_files = discover_log_files(dir)?;
+        let selected =
+            filter_files_by_date(&all_files, args.from.as_deref(), args.until.as_deref());
+        if selected.is_empty() {
+            eprintln!("no log files match the date range");
+            return Ok(());
+        }
+        chain_files(&selected)
+    };
+
+    let show_filename = args.files.len() > 1;
+    let printer = EntryPrinter {
+        color,
+        show_blocks: args.filter.blocks,
+        show_session: args.filter.session,
+        show_filename,
+    };
+
+    let stream = LogStream::new(lines).unclassified_tracking(tracking);
+    let mut tracker = SessionTracker::new(stream);
+    let mut count: u64 = 0;
+
+    for enriched in tracker.by_ref() {
+        count += 1;
+        if !filter.matches(&enriched.entry) {
+            continue;
+        }
+        if !args.filter.stats {
+            printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
+        }
+    }
+
+    let stats = tracker.stats();
+    printer.print_stats(&mut io::stderr(), stats, count, tracker.sessions().len())?;
+
+    if args.filter.unclassified {
+        printer.print_unclassified(&mut io::stderr(), stats)?;
+    }
+
+    Ok(())
+}
+
+fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
+    let filter = build_filter(&args.filter, None, None);
+    let tracking = if args.filter.unclassified {
+        UnclassifiedTracking::CaptureData
+    } else {
+        UnclassifiedTracking::CountOnly
+    };
+
+    let lines: Box<dyn Iterator<Item = String>> = match args.file.as_deref() {
+        Some("-") => {
+            let stdin = io::stdin();
+            Box::new(
+                stdin
+                    .lock()
+                    .lines()
+                    .map(|l| l.expect("read error"))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )
+        }
+        Some(path) => {
+            let p = PathBuf::from(path);
+            open_log_reader(&p)?
+        }
+        None => {
+            let p = dir.join("freeswitch.log");
+            open_log_reader(&p)?
+        }
+    };
+
+    let printer = EntryPrinter {
+        color,
+        show_blocks: args.filter.blocks,
+        show_session: args.filter.session,
+        show_filename: false,
+    };
+
+    let stream = LogStream::new(lines).unclassified_tracking(tracking);
+    let mut tracker = SessionTracker::new(stream);
+    let mut count: u64 = 0;
+
+    for enriched in tracker.by_ref() {
+        count += 1;
+        if !filter.matches(&enriched.entry) {
+            continue;
+        }
+        if !args.filter.stats {
+            printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
+        }
+    }
+
+    let stats = tracker.stats();
+    printer.print_stats(&mut io::stderr(), stats, count, tracker.sessions().len())?;
+
+    if args.filter.unclassified {
+        printer.print_unclassified(&mut io::stderr(), stats)?;
+    }
+
+    Ok(())
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let mut pager = setup_pager(&cli);
+    let use_pager = pager.is_some();
+
+    let result = if let Some(ref mut child) = pager {
+        let mut stdin = child.stdin.take().expect("pager stdin");
+        let result = run_with_output(cli, use_pager, &mut stdin);
+        drop(stdin);
+        let _ = child.wait();
+        result
+    } else {
+        let stdout = io::stdout();
+        let mut lock = stdout.lock();
+        run_with_output(cli, use_pager, &mut lock)
+    };
+
+    if let Err(e) = result {
+        if e.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("fslog: {e}");
+            process::exit(1);
+        }
+    }
+}

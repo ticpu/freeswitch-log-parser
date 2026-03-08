@@ -57,6 +57,40 @@ pub enum MessageKind {
     General,
 }
 
+impl MessageKind {
+    pub const ALL_LABELS: &[&str] = &[
+        "execute",
+        "dialplan",
+        "channel-data",
+        "channel-field",
+        "variable",
+        "sdp-marker",
+        "state-change",
+        "codec-negotiation",
+        "media",
+        "channel-lifecycle",
+        "event-socket",
+        "general",
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MessageKind::Execute { .. } => "execute",
+            MessageKind::Dialplan { .. } => "dialplan",
+            MessageKind::ChannelData => "channel-data",
+            MessageKind::ChannelField { .. } => "channel-field",
+            MessageKind::Variable { .. } => "variable",
+            MessageKind::SdpMarker { .. } => "sdp-marker",
+            MessageKind::StateChange { .. } => "state-change",
+            MessageKind::CodecNegotiation => "codec-negotiation",
+            MessageKind::Media { .. } => "media",
+            MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
+            MessageKind::EventSocket { .. } => "event-socket",
+            MessageKind::General => "general",
+        }
+    }
+}
+
 impl fmt::Display for MessageKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

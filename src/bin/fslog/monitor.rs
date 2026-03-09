@@ -109,6 +109,7 @@ struct AppState {
     page_size: usize,
     context_filter: ContextFilter,
     latest_log_ts: String,
+    latest_log_ts_at: Instant,
 }
 
 impl AppState {
@@ -319,6 +320,7 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
 
     if !timestamp.is_empty() {
         state.latest_log_ts = timestamp.clone();
+        state.latest_log_ts_at = Instant::now();
     }
 
     if !state.context_filter.matches(context.as_deref()) {
@@ -439,8 +441,12 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
                 .as_deref()
                 .map(|u| if u.len() > 8 { &u[..8] } else { u })
                 .unwrap_or("-");
-            let end_ts = r.log_end.as_deref().unwrap_or(&state.latest_log_ts);
-            let age = format_age(log_age(&r.log_start, end_ts));
+            let age = if let Some(end_ts) = r.log_end.as_deref() {
+                log_age(&r.log_start, end_ts)
+            } else {
+                log_age(&r.log_start, &state.latest_log_ts) + state.latest_log_ts_at.elapsed()
+            };
+            let age = format_age(age);
             let st = r
                 .channel_state
                 .as_deref()
@@ -772,6 +778,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         page_size: 20,
         context_filter,
         latest_log_ts: String::new(),
+        latest_log_ts_at: Instant::now(),
     };
 
     let mut table_state = TableState::default();

@@ -661,6 +661,25 @@ mod tests {
     }
 
     #[test]
+    fn channel_data_other_leg_uuid() {
+        // Other-Leg-Unique-ID in CHANNEL_DATA (post-bridge info dump) sets other_leg_uuid
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Other-Leg-Unique-ID: [{UUID2}]"),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let state = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            state.other_leg_uuid.as_deref(),
+            Some(UUID2),
+            "other_leg_uuid set from Other-Leg-Unique-ID CHANNEL_DATA field"
+        );
+    }
+
+    #[test]
     fn channel_data_populates_session() {
         let lines = vec![
             full_line(UUID1, TS1, "CHANNEL_DATA:"),

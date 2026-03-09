@@ -127,6 +127,10 @@ struct SearchArgs {
     #[arg(long)]
     until: Option<String>,
 
+    /// Skip confirmation prompt for large file sets
+    #[arg(short = 'y', long)]
+    yes: bool,
+
     #[command(flatten)]
     filter: FilterArgs,
 
@@ -320,6 +324,19 @@ fn cmd_search(
         if selected.is_empty() {
             eprintln!("no log files match the date range");
             return Ok(());
+        }
+        if !args.yes && selected.len() > 20 && io::stdin().is_terminal() {
+            let total_size: u64 = selected.iter().map(|f| f.size).sum();
+            eprint!(
+                "about to scan {} files ({}), proceed? [Y/n] ",
+                selected.len(),
+                format_size(total_size)
+            );
+            let mut answer = String::new();
+            io::stdin().read_line(&mut answer)?;
+            if answer.trim().eq_ignore_ascii_case("n") {
+                return Ok(());
+            }
         }
         selected
             .iter()

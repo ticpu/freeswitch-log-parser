@@ -392,8 +392,9 @@ fn cmd_search(
         (stream.stats().clone(), 0)
     };
 
-    printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
-
+    if args.filter.stats || args.filter.unclassified {
+        printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
+    }
     if args.filter.unclassified {
         printer.print_unclassified(&mut io::stderr(), &stats)?;
     }
@@ -479,8 +480,9 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
         (stream.stats().clone(), 0)
     };
 
-    printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
-
+    if args.filter.stats || args.filter.unclassified {
+        printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
+    }
     if args.filter.unclassified {
         printer.print_unclassified(&mut io::stderr(), &stats)?;
     }

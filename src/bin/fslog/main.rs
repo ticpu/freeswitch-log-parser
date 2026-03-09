@@ -325,16 +325,23 @@ fn cmd_search(
             eprintln!("no log files match the date range");
             return Ok(());
         }
-        if !args.yes && selected.len() > 20 && io::stdin().is_terminal() {
+        if !args.yes && selected.len() > 20 {
             let total_size: u64 = selected.iter().map(|f| f.size).sum();
+            if !io::stdin().is_terminal() {
+                return Err(io::Error::other(format!(
+                    "refusing to scan {} files ({}) without confirmation; pass -y to override",
+                    selected.len(),
+                    format_size(total_size)
+                )));
+            }
             eprint!(
-                "about to scan {} files ({}), proceed? [Y/n] ",
+                "about to scan {} files ({}), proceed? [y/N] ",
                 selected.len(),
                 format_size(total_size)
             );
             let mut answer = String::new();
             io::stdin().read_line(&mut answer)?;
-            if answer.trim().eq_ignore_ascii_case("n") {
+            if !answer.trim().eq_ignore_ascii_case("y") {
                 return Ok(());
             }
         }

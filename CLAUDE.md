@@ -31,7 +31,7 @@ Production log fixtures live in `tests/fixtures/` (xz-compressed rotated files +
 ```
 `--session` shows accumulated state (context, channel state, channel name) per entry.
 `--blocks` expands CHANNEL_DATA fields/variables and SDP bodies inline.
-Add `--from`/`--until` to avoid scanning the full fixture set (a month of logs).
+Add `--from` to avoid scanning the full fixture set (a month of logs), you are NOT allowed to override with `--yes`, no meaningful search requires reading >20 logs files.
 
 Use RFC 5737 IPs (192.0.2.x, 198.51.100.x) and RFC 3849 IPv6 (2001:db8::/32) in tests.
 Use fictional UUIDs — generate consistent ones for test fixtures.

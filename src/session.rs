@@ -21,6 +21,12 @@ pub struct SessionState {
     pub dialplan_from: Option<String>,
     /// Target extension in the dialplan routing; `None` until a dialplan line is processed.
     pub dialplan_to: Option<String>,
+    /// Call direction from `Call-Direction` CHANNEL_DATA field; `None` until seen.
+    pub call_direction: Option<String>,
+    /// Caller ID number from `Caller-Caller-ID-Number` CHANNEL_DATA field; `None` until seen.
+    pub caller_id_number: Option<String>,
+    /// Destination number from `Caller-Destination-Number` CHANNEL_DATA field; `None` until seen.
+    pub destination_number: Option<String>,
     /// All variables learned so far, with the `variable_` prefix stripped from names.
     pub variables: HashMap<String, String>,
 }
@@ -36,6 +42,9 @@ pub struct SessionSnapshot {
     pub dialplan_context: Option<String>,
     pub dialplan_from: Option<String>,
     pub dialplan_to: Option<String>,
+    pub call_direction: Option<String>,
+    pub caller_id_number: Option<String>,
+    pub destination_number: Option<String>,
 }
 
 impl SessionState {
@@ -46,6 +55,9 @@ impl SessionState {
             dialplan_context: self.dialplan_context.clone(),
             dialplan_from: self.dialplan_from.clone(),
             dialplan_to: self.dialplan_to.clone(),
+            call_direction: self.call_direction.clone(),
+            caller_id_number: self.caller_id_number.clone(),
+            destination_number: self.destination_number.clone(),
         }
     }
 
@@ -55,6 +67,13 @@ impl SessionState {
                 match name.as_str() {
                     "Channel-Name" => self.channel_name = Some(value.clone()),
                     "Channel-State" => self.channel_state = Some(value.clone()),
+                    "Call-Direction" => self.call_direction = Some(value.clone()),
+                    "Caller-Caller-ID-Number" => {
+                        self.caller_id_number = Some(value.clone());
+                    }
+                    "Caller-Destination-Number" => {
+                        self.destination_number = Some(value.clone());
+                    }
                     _ => {}
                 }
             }

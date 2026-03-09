@@ -18,6 +18,9 @@ clap = { version = "4", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4", optional = true }
 xz2 = { version = "0.1", optional = true }
 regex = { version = "1", optional = true }
+ratatui = { version = "0.30", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_yml = { version = "0.0.12", optional = true }
 
 [[bin]]
 name = "fslog"
@@ -26,6 +29,7 @@ required-features = ["cli"]
 
 [features]
 cli = ["dep:clap", "dep:clap_complete", "dep:xz2", "dep:regex"]
+tui = ["cli", "dep:ratatui", "dep:serde", "dep:serde_yml"]
 
 [dev-dependencies]
 xz2 = "0.1"

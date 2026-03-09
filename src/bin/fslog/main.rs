@@ -1,5 +1,9 @@
 mod complete;
+#[cfg(feature = "tui")]
+mod config;
 mod files;
+#[cfg(feature = "tui")]
+mod monitor;
 mod output;
 
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -58,6 +62,10 @@ enum Command {
 
     /// Follow the log file and display new entries in color
     Tail(TailArgs),
+
+    /// Live TUI dashboard of active calls
+    #[cfg(feature = "tui")]
+    Monitor(monitor::MonitorArgs),
 
     /// Generate shell completion script
     Completions {
@@ -232,6 +240,8 @@ fn run_with_output(cli: Cli, use_pager: bool, out: &mut dyn Write) -> io::Result
         Command::Search(ref args) => cmd_search(&cli.dir, args, color, out),
         Command::Read(ref args) => cmd_read(&cli.dir, args, color, out),
         Command::Tail(ref args) => cmd_tail(&cli.dir, args, color, out),
+        #[cfg(feature = "tui")]
+        Command::Monitor(_) => unreachable!("handled in main()"),
         Command::Completions { shell } => {
             let mut cmd = Cli::command();
             complete::generate_completions(shell, &mut cmd);
@@ -483,6 +493,16 @@ fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) 
 
 fn main() {
     let cli = Cli::parse();
+
+    #[cfg(feature = "tui")]
+    if let Command::Monitor(args) = cli.command {
+        if let Err(e) = monitor::run(&cli.dir, args) {
+            eprintln!("fslog: {e}");
+            process::exit(1);
+        }
+        return;
+    }
+
     let mut pager = setup_pager(&cli);
     let use_pager = pager.is_some();
 

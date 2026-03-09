@@ -18,7 +18,7 @@ use freeswitch_log_parser::{
 };
 
 use files::{
-    discover_log_files, filter_files_by_date, format_size, normalize_date_from,
+    discover_log_files, filter_files_by_date, format_size, lazy_log_reader, normalize_date_from,
     normalize_date_until, open_log_reader, open_tail_reader,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig};
@@ -304,13 +304,13 @@ fn cmd_search(
     let segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = if !args.files.is_empty() {
         args.files
             .iter()
-            .filter_map(|p| {
+            .map(|p| {
                 let name = p
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
-                open_log_reader(p).ok().map(|r| (name, r))
+                (name, lazy_log_reader(p.clone()))
             })
             .collect()
     } else {
@@ -323,9 +323,13 @@ fn cmd_search(
         }
         selected
             .iter()
-            .filter_map(|f| {
-                let name = f.path.file_name()?.to_string_lossy().into_owned();
-                open_log_reader(&f.path).ok().map(|r| (name, r))
+            .map(|f| {
+                let name = f
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (name, lazy_log_reader(f.path.clone()))
             })
             .collect()
     };

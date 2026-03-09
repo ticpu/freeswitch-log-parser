@@ -203,6 +203,30 @@ pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String
     Ok(Box::new(reader.lines().map(|l| l.expect("read error"))))
 }
 
+pub fn lazy_log_reader(path: PathBuf) -> Box<dyn Iterator<Item = String>> {
+    Box::new(LazyLogReader { path, inner: None })
+}
+
+struct LazyLogReader {
+    path: PathBuf,
+    inner: Option<Box<dyn Iterator<Item = String>>>,
+}
+
+impl Iterator for LazyLogReader {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        if self.inner.is_none() {
+            self.inner = Some(open_log_reader(&self.path).ok()?);
+        }
+        let result = self.inner.as_mut()?.next();
+        if result.is_none() {
+            self.inner = None;
+        }
+        result
+    }
+}
+
 struct TailLines {
     reader: BufReader<fs::File>,
     buf: String,

@@ -45,11 +45,14 @@ pub struct MonitorArgs {
 
 struct CallRow {
     uuid: String,
+    other_leg_uuid: Option<String>,
     direction: Option<String>,
     caller: Option<String>,
     callee: Option<String>,
     channel_state: Option<String>,
     context: Option<String>,
+    log_start: String,
+    log_end: Option<String>,
     first_seen: Instant,
     ended: Option<Instant>,
 }
@@ -95,6 +98,9 @@ struct AppState {
     calls: Vec<CallRow>,
     selected_uuid: Option<String>,
     show_menu: bool,
+    show_leg_picker: bool,
+    leg_picker_selected: usize,
+    target_uuid: Option<String>,
     menu_selected: usize,
     tools: Vec<Tool>,
     linger: Duration,
@@ -102,6 +108,7 @@ struct AppState {
     dir: PathBuf,
     page_size: usize,
     context_filter: ContextFilter,
+    latest_log_ts: String,
 }
 
 impl AppState {
@@ -132,6 +139,8 @@ impl AppState {
 enum ReaderMsg {
     Update {
         uuid: String,
+        timestamp: String,
+        other_leg_uuid: Option<String>,
         channel_state: Option<String>,
         context: Option<String>,
         direction: Option<String>,
@@ -157,6 +166,32 @@ fn format_state(raw: &str) -> String {
         cs.to_string()
     } else {
         raw.to_string()
+    }
+}
+
+fn parse_timestamp_secs(ts: &str) -> Option<u64> {
+    if ts.len() < 19 {
+        return None;
+    }
+    let year: u64 = ts[0..4].parse().ok()?;
+    let month: u64 = ts[5..7].parse().ok()?;
+    let day: u64 = ts[8..10].parse().ok()?;
+    let hour: u64 = ts[11..13].parse().ok()?;
+    let min: u64 = ts[14..16].parse().ok()?;
+    let sec: u64 = ts[17..19].parse().ok()?;
+    let (y, m) = if month > 2 {
+        (year, month - 3)
+    } else {
+        (year - 1, month + 9)
+    };
+    let days = 365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + day - 1;
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+fn log_age(start: &str, end: &str) -> Duration {
+    match (parse_timestamp_secs(start), parse_timestamp_secs(end)) {
+        (Some(s), Some(e)) if e >= s => Duration::from_secs(e - s),
+        _ => Duration::ZERO,
     }
 }
 
@@ -236,6 +271,10 @@ fn spawn_reader(
             let state = tracker.sessions().get(&uuid);
 
             let msg = ReaderMsg::Update {
+                timestamp: enriched.entry.timestamp.clone(),
+                other_leg_uuid: state
+                    .and_then(|s| s.other_leg_uuid.clone())
+                    .or_else(|| snap.and_then(|s| s.other_leg_uuid.clone())),
                 channel_state: state
                     .and_then(|s| s.channel_state.clone())
                     .or_else(|| snap.and_then(|s| s.channel_state.clone())),
@@ -268,6 +307,8 @@ fn spawn_reader(
 fn apply_update(state: &mut AppState, msg: ReaderMsg) {
     let ReaderMsg::Update {
         uuid,
+        timestamp,
+        other_leg_uuid,
         channel_state,
         context,
         direction,
@@ -275,6 +316,10 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         callee,
         is_hangup,
     } = msg;
+
+    if !timestamp.is_empty() {
+        state.latest_log_ts = timestamp.clone();
+    }
 
     if !state.context_filter.matches(context.as_deref()) {
         return;
@@ -296,17 +341,24 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         if callee.is_some() {
             row.callee = callee;
         }
+        if other_leg_uuid.is_some() {
+            row.other_leg_uuid = other_leg_uuid;
+        }
         if is_hangup && row.ended.is_none() {
             row.ended = Some(Instant::now());
+            row.log_end = Some(timestamp);
         }
     } else if !is_hangup {
         state.calls.push(CallRow {
             uuid,
+            other_leg_uuid,
             direction,
             caller,
             callee,
             channel_state,
             context,
+            log_start: timestamp,
+            log_end: None,
             first_seen: Instant::now(),
             ended: None,
         });
@@ -352,7 +404,8 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
     f.render_widget(Paragraph::new(status), chunks[0]);
 
     let header = Row::new([
-        Cell::from("UUID"),
+        Cell::from("A-Leg"),
+        Cell::from("B-Leg"),
         Cell::from("Dir"),
         Cell::from("Caller"),
         Cell::from("Callee"),
@@ -381,7 +434,13 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
             } else {
                 &r.uuid
             };
-            let age = format_age(r.first_seen.elapsed());
+            let bleg_short = r
+                .other_leg_uuid
+                .as_deref()
+                .map(|u| if u.len() > 8 { &u[..8] } else { u })
+                .unwrap_or("-");
+            let end_ts = r.log_end.as_deref().unwrap_or(&state.latest_log_ts);
+            let age = format_age(log_age(&r.log_start, end_ts));
             let st = r
                 .channel_state
                 .as_deref()
@@ -399,6 +458,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
                 .unwrap_or("-");
             Row::new([
                 Cell::from(uuid_short.to_string()),
+                Cell::from(bleg_short.to_string()),
                 Cell::from(dir),
                 Cell::from(r.caller.as_deref().unwrap_or("-")),
                 Cell::from(r.callee.as_deref().unwrap_or("-")),
@@ -411,6 +471,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
         .collect();
 
     let widths = [
+        Constraint::Length(8),
         Constraint::Length(8),
         Constraint::Length(3),
         Constraint::Min(12),
@@ -427,20 +488,61 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
 
     f.render_stateful_widget(table, chunks[1], table_state);
 
-    if state.show_menu {
+    if state.show_leg_picker {
+        render_leg_picker(f, state, area);
+    } else if state.show_menu {
         render_menu(f, state, area);
     }
 }
 
+fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
+    let row = match state.calls.get(state.selected_index()) {
+        Some(r) => r,
+        None => return,
+    };
+    let a_short = if row.uuid.len() > 8 {
+        &row.uuid[..8]
+    } else {
+        &row.uuid
+    };
+    let b_short = row
+        .other_leg_uuid
+        .as_deref()
+        .map(|u| if u.len() > 8 { &u[..8] } else { u })
+        .unwrap_or("?");
+    let items = vec![
+        ListItem::new(format!("A-leg: {a_short}...")),
+        ListItem::new(format!("B-leg: {b_short}...")),
+    ];
+    let menu_height = 4;
+    let menu_width = 30.min(area.width.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(menu_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(menu_height)) / 2;
+    let menu_area = Rect::new(x, y, menu_width, menu_height);
+    f.render_widget(Clear, menu_area);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Select Leg ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut list_state = ratatui::widgets::ListState::default();
+    list_state.select(Some(state.leg_picker_selected));
+    f.render_stateful_widget(list, menu_area, &mut list_state);
+}
+
 fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
-    let uuid = match state.calls.get(state.selected_index()) {
-        Some(r) => &r.uuid,
+    let uuid = match &state.target_uuid {
+        Some(u) => u,
         None => return,
     };
 
+    let uuid_short = if uuid.len() > 8 { &uuid[..8] } else { uuid };
     let mut items: Vec<ListItem> = vec![
-        ListItem::new(format!("search  (fslog search --uuid {:.8}...)", uuid)),
-        ListItem::new(format!("tail    (fslog tail --uuid {:.8}...)", uuid)),
+        ListItem::new(format!("search  (fslog search --uuid {uuid_short}...)")),
+        ListItem::new(format!("tail    (fslog tail --uuid {uuid_short}...)")),
     ];
     for tool in &state.tools {
         items.push(ListItem::new(format!("{}  ({})", tool.name, tool.command)));
@@ -471,10 +573,17 @@ fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
 fn execute_action(state: &AppState, action_index: usize) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    let uuid = match state.calls.get(state.selected_index()) {
-        Some(r) => &r.uuid,
+    let uuid = match &state.target_uuid {
+        Some(u) => u.as_str(),
         None => return Ok(()),
     };
+
+    let from_date = state
+        .calls
+        .get(state.selected_index())
+        .map(|r| &r.log_start)
+        .and_then(|ts| ts.get(..10))
+        .unwrap_or("");
 
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
@@ -483,9 +592,11 @@ fn execute_action(state: &AppState, action_index: usize) -> io::Result<()> {
         0 => {
             let exe = std::env::current_exe()?;
             let dir_str = state.dir.to_string_lossy().into_owned();
-            std::process::Command::new(&exe)
-                .args(["--dir", &dir_str, "search", "--uuid", uuid])
-                .exec()
+            let mut args = vec!["--dir", &dir_str, "search", "--uuid", uuid];
+            if !from_date.is_empty() {
+                args.extend(["--from", from_date]);
+            }
+            std::process::Command::new(&exe).args(args).exec()
         }
         1 => {
             let exe = std::env::current_exe()?;
@@ -509,7 +620,9 @@ fn execute_action(state: &AppState, action_index: usize) -> io::Result<()> {
 }
 
 fn handle_key(state: &mut AppState, code: KeyCode) {
-    if state.show_menu {
+    if state.show_leg_picker {
+        handle_leg_picker_key(state, code);
+    } else if state.show_menu {
         handle_menu_key(state, code);
     } else {
         handle_table_key(state, code);
@@ -550,7 +663,45 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
             }
         }
         KeyCode::Enter => {
-            if !state.calls.is_empty() {
+            if let Some(row) = state.calls.get(state.selected_index()) {
+                if row.other_leg_uuid.is_some() {
+                    state.show_leg_picker = true;
+                    state.leg_picker_selected = 0;
+                } else {
+                    state.target_uuid = Some(row.uuid.clone());
+                    state.show_menu = true;
+                    state.menu_selected = 0;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_leg_picker_key(state: &mut AppState, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => state.show_leg_picker = false,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if state.leg_picker_selected > 0 {
+                state.leg_picker_selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if state.leg_picker_selected == 0 {
+                state.leg_picker_selected = 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(row) = state.calls.get(state.selected_index()) {
+                let uuid = if state.leg_picker_selected == 0 {
+                    row.uuid.clone()
+                } else {
+                    row.other_leg_uuid
+                        .clone()
+                        .unwrap_or_else(|| row.uuid.clone())
+                };
+                state.target_uuid = Some(uuid);
+                state.show_leg_picker = false;
                 state.show_menu = true;
                 state.menu_selected = 0;
             }
@@ -562,7 +713,10 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
 fn handle_menu_key(state: &mut AppState, code: KeyCode) {
     let item_count = 2 + state.tools.len();
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => state.show_menu = false,
+        KeyCode::Esc | KeyCode::Char('q') => {
+            state.show_menu = false;
+            state.target_uuid = None;
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if state.menu_selected > 0 {
                 state.menu_selected -= 1;
@@ -607,6 +761,9 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         calls: Vec::new(),
         selected_uuid: None,
         show_menu: false,
+        show_leg_picker: false,
+        leg_picker_selected: 0,
+        target_uuid: None,
         menu_selected: 0,
         tools: cfg.tools,
         linger: Duration::from_secs(cfg.monitor.hangup_linger_seconds),
@@ -614,6 +771,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         dir: dir.to_path_buf(),
         page_size: 20,
         context_filter,
+        latest_log_ts: String::new(),
     };
 
     let mut table_state = TableState::default();
@@ -642,7 +800,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
                         continue;
                     }
 
-                    if state.show_menu && key.code == KeyCode::Enter {
+                    if state.show_menu && !state.show_leg_picker && key.code == KeyCode::Enter {
                         state.show_menu = false;
                         execute_action(&state, state.menu_selected)?;
                     }

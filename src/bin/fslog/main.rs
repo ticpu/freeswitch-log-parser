@@ -341,41 +341,57 @@ fn cmd_search(
     };
 
     let stream = LogStream::new(chain).unclassified_tracking(tracking);
-    let mut tracker = SessionTracker::new(stream);
     let mut count: u64 = 0;
     let mut last_seg: Option<usize> = None;
     let mut last_date = String::new();
 
-    for enriched in tracker.by_ref() {
+    let mut print_matching = |out: &mut dyn Write,
+                              entry: &LogEntry,
+                              session: Option<&freeswitch_log_parser::SessionSnapshot>|
+     -> io::Result<()> {
         count += 1;
-        if !filter.matches(&enriched.entry) {
-            continue;
+        if !filter.matches(entry) {
+            return Ok(());
         }
-        if !args.filter.stats {
-            if let Some((idx, name)) = seg_tracker.segment_for_line(enriched.entry.line_number) {
-                if last_seg != Some(idx) {
-                    last_seg = Some(idx);
-                    let sep = separator_entry(MessageKind::FileChange, name.to_string());
-                    printer.print_entry(out, &sep, None, None)?;
-                }
-            }
-            if enriched.entry.timestamp.len() >= 10 {
-                let date = &enriched.entry.timestamp[..10];
-                if date != last_date {
-                    last_date = date.to_string();
-                    let sep = separator_entry(MessageKind::DateChange, last_date.clone());
-                    printer.print_entry(out, &sep, None, None)?;
-                }
-            }
-            printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
+        if args.filter.stats {
+            return Ok(());
         }
-    }
+        if let Some((idx, name)) = seg_tracker.segment_for_line(entry.line_number) {
+            if last_seg != Some(idx) {
+                last_seg = Some(idx);
+                let sep = separator_entry(MessageKind::FileChange, name.to_string());
+                printer.print_entry(out, &sep, None, None)?;
+            }
+        }
+        if entry.timestamp.len() >= 10 {
+            let date = &entry.timestamp[..10];
+            if date != last_date {
+                last_date = date.to_string();
+                let sep = separator_entry(MessageKind::DateChange, last_date.clone());
+                printer.print_entry(out, &sep, None, None)?;
+            }
+        }
+        printer.print_entry(out, entry, session, None)
+    };
 
-    let stats = tracker.stats();
-    printer.print_stats(&mut io::stderr(), stats, count, tracker.sessions().len())?;
+    let (stats, session_count) = if args.filter.session {
+        let mut tracker = SessionTracker::new(stream);
+        for enriched in tracker.by_ref() {
+            print_matching(out, &enriched.entry, enriched.session.as_ref())?;
+        }
+        (tracker.stats().clone(), tracker.sessions().len())
+    } else {
+        let mut stream = stream;
+        for entry in stream.by_ref() {
+            print_matching(out, &entry, None)?;
+        }
+        (stream.stats().clone(), 0)
+    };
+
+    printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
 
     if args.filter.unclassified {
-        printer.print_unclassified(&mut io::stderr(), stats)?;
+        printer.print_unclassified(&mut io::stderr(), &stats)?;
     }
 
     Ok(())
@@ -420,33 +436,49 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
     };
 
     let stream = LogStream::new(lines).unclassified_tracking(tracking);
-    let mut tracker = SessionTracker::new(stream);
     let mut count: u64 = 0;
     let mut last_date = String::new();
 
-    for enriched in tracker.by_ref() {
+    let mut print_matching = |out: &mut dyn Write,
+                              entry: &LogEntry,
+                              session: Option<&freeswitch_log_parser::SessionSnapshot>|
+     -> io::Result<()> {
         count += 1;
-        if !filter.matches(&enriched.entry) {
-            continue;
+        if !filter.matches(entry) {
+            return Ok(());
         }
-        if !args.filter.stats {
-            if enriched.entry.timestamp.len() >= 10 {
-                let date = &enriched.entry.timestamp[..10];
-                if date != last_date {
-                    last_date = date.to_string();
-                    let sep = separator_entry(MessageKind::DateChange, last_date.clone());
-                    printer.print_entry(out, &sep, None, None)?;
-                }
+        if args.filter.stats {
+            return Ok(());
+        }
+        if entry.timestamp.len() >= 10 {
+            let date = &entry.timestamp[..10];
+            if date != last_date {
+                last_date = date.to_string();
+                let sep = separator_entry(MessageKind::DateChange, last_date.clone());
+                printer.print_entry(out, &sep, None, None)?;
             }
-            printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
         }
-    }
+        printer.print_entry(out, entry, session, None)
+    };
 
-    let stats = tracker.stats();
-    printer.print_stats(&mut io::stderr(), stats, count, tracker.sessions().len())?;
+    let (stats, session_count) = if args.filter.session {
+        let mut tracker = SessionTracker::new(stream);
+        for enriched in tracker.by_ref() {
+            print_matching(out, &enriched.entry, enriched.session.as_ref())?;
+        }
+        (tracker.stats().clone(), tracker.sessions().len())
+    } else {
+        let mut stream = stream;
+        for entry in stream.by_ref() {
+            print_matching(out, &entry, None)?;
+        }
+        (stream.stats().clone(), 0)
+    };
+
+    printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
 
     if args.filter.unclassified {
-        printer.print_unclassified(&mut io::stderr(), stats)?;
+        printer.print_unclassified(&mut io::stderr(), &stats)?;
     }
 
     Ok(())

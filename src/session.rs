@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::str::FromStr;
+
+use freeswitch_types::CallDirection;
 
 use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
@@ -15,14 +18,16 @@ pub struct SessionState {
     pub channel_name: Option<String>,
     /// `None` until a state change or `Channel-State` field is encountered.
     pub channel_state: Option<String>,
-    /// `None` until a dialplan `parsing [context->target]` line is processed.
+    /// First dialplan context seen; set once and never overwritten.
+    pub initial_context: Option<String>,
+    /// Current dialplan context; updated on each transfer/continue.
     pub dialplan_context: Option<String>,
     /// Source extension in the dialplan routing; `None` until a dialplan line is processed.
     pub dialplan_from: Option<String>,
     /// Target extension in the dialplan routing; `None` until a dialplan line is processed.
     pub dialplan_to: Option<String>,
     /// Call direction from `Call-Direction` CHANNEL_DATA field; `None` until seen.
-    pub call_direction: Option<String>,
+    pub call_direction: Option<CallDirection>,
     /// Caller ID number from `Caller-Caller-ID-Number` CHANNEL_DATA field; `None` until seen.
     pub caller_id_number: Option<String>,
     /// Destination number from `Caller-Destination-Number` CHANNEL_DATA field; `None` until seen.
@@ -39,10 +44,11 @@ pub struct SessionState {
 pub struct SessionSnapshot {
     pub channel_name: Option<String>,
     pub channel_state: Option<String>,
+    pub initial_context: Option<String>,
     pub dialplan_context: Option<String>,
     pub dialplan_from: Option<String>,
     pub dialplan_to: Option<String>,
-    pub call_direction: Option<String>,
+    pub call_direction: Option<CallDirection>,
     pub caller_id_number: Option<String>,
     pub destination_number: Option<String>,
 }
@@ -52,10 +58,11 @@ impl SessionState {
         SessionSnapshot {
             channel_name: self.channel_name.clone(),
             channel_state: self.channel_state.clone(),
+            initial_context: self.initial_context.clone(),
             dialplan_context: self.dialplan_context.clone(),
             dialplan_from: self.dialplan_from.clone(),
             dialplan_to: self.dialplan_to.clone(),
-            call_direction: self.call_direction.clone(),
+            call_direction: self.call_direction,
             caller_id_number: self.caller_id_number.clone(),
             destination_number: self.destination_number.clone(),
         }
@@ -67,7 +74,9 @@ impl SessionState {
                 match name.as_str() {
                     "Channel-Name" => self.channel_name = Some(value.clone()),
                     "Channel-State" => self.channel_state = Some(value.clone()),
-                    "Call-Direction" => self.call_direction = Some(value.clone()),
+                    "Call-Direction" => {
+                        self.call_direction = CallDirection::from_str(value).ok();
+                    }
                     "Caller-Caller-ID-Number" => {
                         self.caller_id_number = Some(value.clone());
                     }
@@ -86,6 +95,7 @@ impl SessionState {
         match &entry.message_kind {
             MessageKind::Dialplan { detail, .. } => {
                 if let Some(dp) = parse_dialplan_context(detail) {
+                    self.initial_context.get_or_insert(dp.context.clone());
                     self.dialplan_context = Some(dp.context);
                     self.dialplan_from = Some(dp.from);
                     self.dialplan_to = Some(dp.to);
@@ -117,11 +127,19 @@ impl SessionState {
                     self.channel_state = Some(new_state);
                 }
             }
+            MessageKind::ChannelLifecycle { detail } => {
+                if let Some(name) = parse_new_channel(detail) {
+                    if self.channel_name.is_none() {
+                        self.channel_name = Some(name);
+                    }
+                }
+            }
             _ => {}
         }
 
         if entry.message.contains("Processing ") && entry.message.contains(" in context ") {
             if let Some(dp) = parse_processing_line(&entry.message) {
+                self.initial_context.get_or_insert(dp.context.clone());
                 self.dialplan_context = Some(dp.context);
                 self.dialplan_from = Some(dp.from);
                 self.dialplan_to = Some(dp.to);
@@ -139,6 +157,7 @@ impl SessionState {
         match &kind {
             MessageKind::Dialplan { detail, .. } => {
                 if let Some(dp) = parse_dialplan_context(detail) {
+                    self.initial_context.get_or_insert(dp.context.clone());
                     self.dialplan_context = Some(dp.context);
                     self.dialplan_from = Some(dp.from);
                     self.dialplan_to = Some(dp.to);
@@ -218,6 +237,12 @@ fn parse_processing_line(msg: &str) -> Option<DialplanContext> {
         to: to.to_string(),
         context: context.to_string(),
     })
+}
+
+fn parse_new_channel(detail: &str) -> Option<String> {
+    let rest = detail.strip_prefix("New Channel ")?;
+    let bracket = rest.rfind(" [")?;
+    Some(rest[..bracket].to_string())
 }
 
 fn parse_state_change(detail: &str) -> Option<String> {
@@ -356,6 +381,61 @@ mod tests {
         assert_eq!(session.dialplan_context.as_deref(), Some("public"));
         assert_eq!(session.dialplan_from.as_deref(), Some("5551234567"));
         assert_eq!(session.dialplan_to.as_deref(), Some("5559876543"));
+    }
+
+    #[test]
+    fn initial_context_preserved_across_transfers() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Processing 5551234567->5559876543 in context public",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Processing 5551234567->start_recording in context recordings",
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let entries: Vec<_> = tracker.by_ref().collect();
+
+        let first = entries[0].session.as_ref().unwrap();
+        assert_eq!(
+            first.initial_context.as_deref(),
+            Some("public"),
+            "initial_context set on first Processing line"
+        );
+        assert_eq!(first.dialplan_context.as_deref(), Some("public"));
+
+        let state = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            state.initial_context.as_deref(),
+            Some("public"),
+            "initial_context keeps the first context seen"
+        );
+        assert_eq!(
+            state.dialplan_context.as_deref(),
+            Some("recordings"),
+            "dialplan_context tracks the current context"
+        );
+        assert_eq!(state.dialplan_to.as_deref(), Some("start_recording"));
+    }
+
+    #[test]
+    fn new_channel_sets_channel_name() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "New Channel sofia/internal-v4/sos [a1b2c3d4-e5f6-7890-abcd-ef1234567890]",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(
+            session.channel_name.as_deref(),
+            Some("sofia/internal-v4/sos")
+        );
     }
 
     #[test]

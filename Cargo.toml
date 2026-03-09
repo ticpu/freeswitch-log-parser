@@ -14,6 +14,7 @@ documentation = "https://docs.rs/freeswitch-log-parser"
 name = "freeswitch_log_parser"
 
 [dependencies]
+freeswitch-types = { version = "0.15", default-features = false }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4", optional = true }
 xz2 = { version = "0.1", optional = true }

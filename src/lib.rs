@@ -51,6 +51,7 @@ mod session;
 mod stream;
 
 pub use chain::{SegmentTracker, TrackedChain};
+pub use freeswitch_types::{CallDirection, CallState, ChannelState};
 pub use level::{LogLevel, ParseLevelError};
 pub use line::{parse_line, LineKind, RawLine};
 pub use message::{classify_message, MessageKind, SdpDirection};

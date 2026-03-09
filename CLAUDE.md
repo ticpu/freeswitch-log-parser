@@ -7,7 +7,7 @@ Library crate for parsing FreeSWITCH log files. Three-layer design:
 - **Layer 2**: Structural state machine (`LogStream`) — groups continuations, classifies messages (`MessageKind`), detects block boundaries (CHANNEL_DATA, SDP), tracks unclassified lines
 - **Layer 3**: Per-session state machine (`SessionTracker`) — tracks per-UUID state (dialplan context, channel state, variables), propagates context across entries
 
-Zero dependencies. No regex — all positional byte parsing.
+Single dependency: `freeswitch-types` (same author) for typed enums (`CallDirection`, `ChannelState`, `CallState`). No regex — all positional byte parsing.
 
 ## Architecture
 
@@ -23,6 +23,16 @@ See `docs/design-rationale.md` for full design prose including the five line for
 
 ## Test Data
 
+Production log fixtures live in `tests/fixtures/` (xz-compressed rotated files + uncompressed `freeswitch.log`).
+
+**Always prefer `fslog` over raw grep/rg** when investigating log data:
+```
+./target/release/fslog --dir tests/fixtures/ search --from YYYY-MM-DD -u <uuid> --session --blocks
+```
+`--session` shows accumulated state (context, channel state, channel name) per entry.
+`--blocks` expands CHANNEL_DATA fields/variables and SDP bodies inline.
+Add `--from`/`--until` to avoid scanning the full fixture set (a month of logs).
+
 Use RFC 5737 IPs (192.0.2.x, 198.51.100.x) and RFC 3849 IPv6 (2001:db8::/32) in tests.
 Use fictional UUIDs — generate consistent ones for test fixtures.
 Never copy production log lines verbatim into source.
@@ -34,7 +44,7 @@ Never copy production log lines verbatim into source.
 - Always run tests with `--release` — debug builds are too slow on xz-compressed production fixture tests
 
 ### Style
-- Zero dependencies — do not add crates without discussion
+- Minimal dependencies (`freeswitch-types` only) — do not add crates without discussion
 - No regex — all parsing is positional byte checks
 - `pub use` re-exports in `lib.rs` for clean public API
 - Every line format and edge case gets its own `#[test]`

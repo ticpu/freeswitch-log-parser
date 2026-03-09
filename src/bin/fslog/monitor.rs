@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,9 @@ use ratatui::widgets::{
 };
 use ratatui::Terminal;
 
-use freeswitch_log_parser::{LogStream, MessageKind, SessionTracker, TrackedChain};
+use freeswitch_log_parser::{
+    CallDirection, CallState, ChannelState, LogStream, MessageKind, SessionTracker, TrackedChain,
+};
 
 use crate::config::{self, Tool};
 use crate::files::{discover_log_files, open_log_reader, open_tail_reader};
@@ -32,7 +35,7 @@ pub struct MonitorArgs {
     lines: usize,
 
     /// Filter by dialplan context (comma-separated, prefix with - to exclude)
-    #[arg(long, value_name = "CTX")]
+    #[arg(long, value_name = "CTX", allow_hyphen_values = true)]
     context: Option<String>,
 
     /// Log file to tail (default: freeswitch.log in --dir)
@@ -51,6 +54,43 @@ struct CallRow {
     ended: Option<Instant>,
 }
 
+enum ContextFilter {
+    None,
+    Include(Vec<String>),
+    Exclude(Vec<String>),
+}
+
+impl ContextFilter {
+    fn parse(spec: &str) -> Self {
+        let tokens: Vec<&str> = spec
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return Self::None;
+        }
+        if tokens[0].starts_with('-') {
+            Self::Exclude(
+                tokens
+                    .iter()
+                    .map(|t| t.strip_prefix('-').unwrap_or(t).to_string())
+                    .collect(),
+            )
+        } else {
+            Self::Include(tokens.iter().map(|t| t.to_string()).collect())
+        }
+    }
+
+    fn matches(&self, context: Option<&str>) -> bool {
+        match self {
+            Self::None => true,
+            Self::Include(list) => context.is_some_and(|c| list.iter().any(|f| c == f)),
+            Self::Exclude(list) => context.is_none_or(|c| !list.iter().any(|f| c == f)),
+        }
+    }
+}
+
 struct AppState {
     calls: Vec<CallRow>,
     selected_uuid: Option<String>,
@@ -61,6 +101,7 @@ struct AppState {
     should_quit: bool,
     dir: PathBuf,
     page_size: usize,
+    context_filter: ContextFilter,
 }
 
 impl AppState {
@@ -100,22 +141,22 @@ enum ReaderMsg {
     },
 }
 
-fn abbreviate_state(state: &str) -> &str {
-    match state {
-        "CS_NEW" => "NEW",
-        "CS_INIT" => "INIT",
-        "CS_ROUTING" => "ROUTE",
-        "CS_SOFT_EXECUTE" => "SFTEX",
-        "CS_EXECUTE" => "EXEC",
-        "CS_EXCHANGE_MEDIA" => "MEDIA",
-        "CS_PARK" => "PARK",
-        "CS_CONSUME_MEDIA" => "CONSU",
-        "CS_HIBERNATE" => "HIBER",
-        "CS_RESET" => "RESET",
-        "CS_HANGUP" => "HNGUP",
-        "CS_REPORTING" => "REPRT",
-        "CS_DESTROY" => "DESTR",
-        other => other,
+fn format_state(raw: &str) -> String {
+    if let Ok(cs) = ChannelState::from_str(raw) {
+        match cs {
+            ChannelState::CsExchangeMedia => "MEDIA".to_string(),
+            ChannelState::CsConsumeMedia => "CONSUME".to_string(),
+            ChannelState::CsSoftExecute => "SOFTEX".to_string(),
+            ChannelState::CsReporting => "REPORT".to_string(),
+            _ => {
+                let s = cs.to_string();
+                s.strip_prefix("CS_").unwrap_or(&s).to_string()
+            }
+        }
+    } else if let Ok(cs) = CallState::from_str(raw) {
+        cs.to_string()
+    } else {
+        raw.to_string()
     }
 }
 
@@ -199,21 +240,19 @@ fn spawn_reader(
                     .and_then(|s| s.channel_state.clone())
                     .or_else(|| snap.and_then(|s| s.channel_state.clone())),
                 context: state
-                    .and_then(|s| s.dialplan_context.clone())
-                    .or_else(|| snap.and_then(|s| s.dialplan_context.clone())),
-                direction: state.and_then(|s| s.variables.get("direction").cloned()),
-                caller: state.and_then(|s| {
-                    s.variables
-                        .get("sip_from_user")
-                        .or_else(|| s.variables.get("caller_id_number"))
-                        .cloned()
-                }),
-                callee: state.and_then(|s| {
-                    s.variables
-                        .get("sip_to_user")
-                        .or_else(|| s.variables.get("dialed_extension"))
-                        .cloned()
-                }),
+                    .and_then(|s| s.initial_context.clone())
+                    .or_else(|| snap.and_then(|s| s.initial_context.clone())),
+                direction: state
+                    .and_then(|s| s.call_direction.map(|d| d.to_string()))
+                    .or_else(|| state.and_then(|s| s.variables.get("direction").cloned())),
+                caller: state
+                    .and_then(|s| s.caller_id_number.clone())
+                    .or_else(|| state.and_then(|s| s.variables.get("sip_from_user").cloned()))
+                    .or_else(|| state.and_then(|s| s.dialplan_from.clone())),
+                callee: state
+                    .and_then(|s| s.destination_number.clone())
+                    .or_else(|| state.and_then(|s| s.variables.get("sip_to_user").cloned()))
+                    .or_else(|| state.and_then(|s| s.dialplan_to.clone())),
                 uuid,
                 is_hangup,
             };
@@ -236,6 +275,10 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         callee,
         is_hangup,
     } = msg;
+
+    if !state.context_filter.matches(context.as_deref()) {
+        return;
+    }
 
     if let Some(row) = state.calls.iter_mut().find(|r| r.uuid == uuid) {
         if channel_state.is_some() {
@@ -342,16 +385,21 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
             let st = r
                 .channel_state
                 .as_deref()
-                .map(abbreviate_state)
+                .map(format_state)
+                .unwrap_or_else(|| "-".to_string());
+            let dir = r
+                .direction
+                .as_deref()
+                .and_then(|d| CallDirection::from_str(d).ok())
+                .map(|d| match d {
+                    CallDirection::Inbound => "IN",
+                    CallDirection::Outbound => "OUT",
+                    _ => "?",
+                })
                 .unwrap_or("-");
             Row::new([
                 Cell::from(uuid_short.to_string()),
-                Cell::from(
-                    r.direction
-                        .as_deref()
-                        .map(|d| if d == "inbound" { "IN" } else { "OUT" })
-                        .unwrap_or("-"),
-                ),
+                Cell::from(dir),
                 Cell::from(r.caller.as_deref().unwrap_or("-")),
                 Cell::from(r.callee.as_deref().unwrap_or("-")),
                 Cell::from(st),
@@ -367,7 +415,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
         Constraint::Length(3),
         Constraint::Min(12),
         Constraint::Min(12),
-        Constraint::Length(5),
+        Constraint::Length(7),
         Constraint::Length(7),
         Constraint::Min(8),
     ];
@@ -549,6 +597,12 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
+    let context_filter = args
+        .context
+        .as_deref()
+        .map(ContextFilter::parse)
+        .unwrap_or(ContextFilter::None);
+
     let mut state = AppState {
         calls: Vec::new(),
         selected_uuid: None,
@@ -559,6 +613,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         should_quit: false,
         dir: dir.to_path_buf(),
         page_size: 20,
+        context_filter,
     };
 
     let mut table_state = TableState::default();

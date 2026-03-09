@@ -307,6 +307,20 @@ pub fn open_tail_reader(
     Ok(Box::new(context.into_iter().chain(tail)))
 }
 
+pub fn open_full_tail_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String>>> {
+    use std::io::{Seek, SeekFrom};
+
+    let reader = open_log_file(path)?;
+    let end_pos = fs::File::open(path)?.metadata()?.len();
+    let lines = reader.lines().map(|l| l.expect("read error"));
+
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(end_pos))?;
+    let tail = TailLines::new(file);
+
+    Ok(Box::new(lines.chain(tail)))
+}
+
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

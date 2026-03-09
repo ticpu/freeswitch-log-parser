@@ -366,6 +366,16 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 return self.finalize_pending();
             };
 
+            if line.starts_with('\x00') {
+                let yielded = self.finalize_pending();
+                self.last_uuid.clear();
+                self.last_timestamp.clear();
+                if yielded.is_some() {
+                    return yielded;
+                }
+                continue;
+            }
+
             self.line_number += 1;
             self.stats.lines_processed += 1;
 
@@ -1019,5 +1029,57 @@ mod tests {
         assert_eq!(drained.len(), 1);
         assert!(stream.stats().unclassified_lines.is_empty());
         assert_eq!(stream.stats().lines_unclassified, 1);
+    }
+
+    // BUG 1: When LogStream processes a TrackedChain of multiple file segments,
+    // last_timestamp from the previous segment bleeds into continuation lines
+    // at the start of the next segment. This causes entries to get timestamps
+    // from a completely different file (potentially hours earlier).
+    //
+    // Reproduces: f2cb66d4 getting timestamp 23:58:03 from the rotated file
+    // when freeswitch.log starts with its continuation lines.
+    #[test]
+    fn continuation_lines_at_file_boundary_must_not_inherit_previous_timestamp() {
+        use crate::TrackedChain;
+
+        let uuid_a = "aaaaaaaa-1111-2222-3333-444444444444";
+        let uuid_b = "bbbbbbbb-1111-2222-3333-444444444444";
+        let ts_old = "2025-01-15 23:58:03.000000";
+        let ts_new = "2025-01-16 08:37:12.000000";
+
+        let seg1: Vec<String> = vec![format!(
+            "{uuid_a} {ts_old} 95.00% [DEBUG] test.c:1 Last line in rotated file"
+        )];
+
+        // Segment 2 starts with UUID-continuation lines (Format C: UUID + message, no timestamp)
+        // followed by a real timestamped line
+        let seg2: Vec<String> = vec![
+            format!("{uuid_b} CHANNEL_DATA:"),
+            format!("{uuid_b} Channel-State: [CS_EXECUTE]"),
+            format!("{uuid_b} {ts_new} 95.00% [DEBUG] test.c:1 First timestamped line in new file"),
+        ];
+
+        let segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = vec![
+            ("rotated.log".to_string(), Box::new(seg1.into_iter())),
+            ("freeswitch.log".to_string(), Box::new(seg2.into_iter())),
+        ];
+
+        let (chain, _) = TrackedChain::new(segments);
+        let entries: Vec<_> = LogStream::new(chain).collect();
+
+        let b_entry = entries
+            .iter()
+            .find(|e| e.uuid == uuid_b)
+            .expect("should find entry for uuid_b");
+
+        // The CHANNEL_DATA entry for uuid_b must NOT have the timestamp from
+        // segment 1 — it should either have the new file's first real timestamp
+        // or be empty (indicating unknown).
+        assert_ne!(
+            b_entry.timestamp, ts_old,
+            "continuation lines in a new file segment inherited timestamp \
+             '{ts_old}' from the previous segment — timestamps must not bleed \
+             across file boundaries"
+        );
     }
 }

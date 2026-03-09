@@ -9,6 +9,7 @@ pub struct TrackedChain {
     current: usize,
     lines_emitted: u64,
     starts: Rc<RefCell<Vec<u64>>>,
+    emit_sentinel: bool,
 }
 
 /// Handle for looking up which segment a line number belongs to.
@@ -43,6 +44,7 @@ impl TrackedChain {
             current: 0,
             lines_emitted: 0,
             starts,
+            emit_sentinel: false,
         };
         (chain, tracker)
     }
@@ -52,6 +54,10 @@ impl Iterator for TrackedChain {
     type Item = String;
 
     fn next(&mut self) -> Option<String> {
+        if self.emit_sentinel {
+            self.emit_sentinel = false;
+            return Some("\x00".to_string());
+        }
         loop {
             if self.current >= self.segments.len() {
                 return None;
@@ -63,6 +69,8 @@ impl Iterator for TrackedChain {
             self.current += 1;
             if self.current < self.segments.len() {
                 self.starts.borrow_mut().push(self.lines_emitted + 1);
+                self.emit_sentinel = true;
+                return self.next();
             }
         }
     }
@@ -111,7 +119,7 @@ mod tests {
             seg("b.log", vec!["b1"]),
         ]);
         let lines: Vec<_> = chain.collect();
-        assert_eq!(lines, ["a1", "a2", "b1"]);
+        assert_eq!(lines, ["a1", "a2", "\x00", "b1"]);
         assert_eq!(tracker.segment_for_line(1), Some((0, "a.log")));
         assert_eq!(tracker.segment_for_line(2), Some((0, "a.log")));
         assert_eq!(tracker.segment_for_line(3), Some((1, "b.log")));
@@ -125,7 +133,7 @@ mod tests {
             seg("c.log", vec!["c1"]),
         ]);
         let lines: Vec<_> = chain.collect();
-        assert_eq!(lines, ["a1", "c1"]);
+        assert_eq!(lines, ["a1", "\x00", "\x00", "c1"]);
         assert_eq!(tracker.segment_for_line(1), Some((0, "a.log")));
         assert_eq!(tracker.segment_for_line(2), Some((2, "c.log")));
     }

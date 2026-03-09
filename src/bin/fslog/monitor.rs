@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -18,11 +19,12 @@ use ratatui::widgets::{
 use ratatui::Terminal;
 
 use freeswitch_log_parser::{
-    CallDirection, CallState, ChannelState, LogStream, MessageKind, SessionTracker, TrackedChain,
+    CallDirection, CallState, ChannelState, ChannelVariable, EnrichedEntry, LogStream, MessageKind,
+    SessionState, SessionTracker, SofiaVariable, TrackedChain,
 };
 
 use crate::config::{self, Tool};
-use crate::files::{discover_log_files, open_log_reader, open_tail_reader};
+use crate::files::{discover_log_files, open_full_tail_reader, open_log_reader};
 
 #[derive(clap::Args)]
 pub struct MonitorArgs {
@@ -30,13 +32,13 @@ pub struct MonitorArgs {
     #[arg(long, env = "FSLOG_CONFIG")]
     config: Option<PathBuf>,
 
-    /// Number of recent lines to show initially
-    #[arg(long, default_value = "50")]
-    lines: usize,
-
     /// Filter by dialplan context (comma-separated, prefix with - to exclude)
     #[arg(long, value_name = "CTX", allow_hyphen_values = true)]
     context: Option<String>,
+
+    /// Print call table to stdout and exit (no TUI)
+    #[arg(long)]
+    dump: bool,
 
     /// Log file to tail (default: freeswitch.log in --dir)
     #[arg(value_name = "FILE")]
@@ -52,6 +54,7 @@ struct CallRow {
     channel_state: Option<String>,
     context: Option<String>,
     log_start: String,
+    log_last: String,
     log_end: Option<String>,
     first_seen: Instant,
     ended: Option<Instant>,
@@ -108,8 +111,7 @@ struct AppState {
     dir: PathBuf,
     page_size: usize,
     context_filter: ContextFilter,
-    latest_log_ts: String,
-    latest_log_ts_at: Instant,
+    filtered_uuids: HashSet<String>,
 }
 
 impl AppState {
@@ -148,6 +150,7 @@ enum ReaderMsg {
         caller: Option<String>,
         callee: Option<String>,
         is_hangup: bool,
+        is_new_channel: bool,
     },
 }
 
@@ -168,6 +171,92 @@ fn format_state(raw: &str) -> String {
     } else {
         raw.to_string()
     }
+}
+
+fn format_direction(raw: Option<&str>) -> &'static str {
+    raw.and_then(|d| CallDirection::from_str(d).ok())
+        .map(|d| match d {
+            CallDirection::Inbound => "IN",
+            CallDirection::Outbound => "OUT",
+            _ => "?",
+        })
+        .unwrap_or("-")
+}
+
+fn call_age(row: &CallRow) -> Duration {
+    let end = row.log_end.as_deref().unwrap_or(&row.log_last);
+    log_age(&row.log_start, end)
+}
+
+fn build_update(
+    enriched: &EnrichedEntry,
+    sessions: &std::collections::HashMap<String, SessionState>,
+) -> Option<ReaderMsg> {
+    let uuid = enriched.entry.uuid.clone();
+    if uuid.is_empty() || enriched.entry.timestamp.is_empty() {
+        return None;
+    }
+
+    let cs_destroy = ChannelState::CsDestroy.to_string();
+    let is_hangup = matches!(
+        &enriched.entry.message_kind,
+        MessageKind::ChannelLifecycle { detail }
+            if detail.contains("Hangup") || detail.contains("Destroy")
+    ) || matches!(
+        &enriched.entry.message_kind,
+        MessageKind::StateChange { detail }
+            if detail.contains(cs_destroy.as_str())
+    );
+
+    let is_new_channel = matches!(
+        &enriched.entry.message_kind,
+        MessageKind::ChannelLifecycle { detail }
+            if detail.starts_with("New Channel ")
+    );
+
+    let snap = enriched.session.as_ref();
+    let state = sessions.get(&uuid);
+
+    Some(ReaderMsg::Update {
+        timestamp: enriched.entry.timestamp.clone(),
+        other_leg_uuid: state
+            .and_then(|s| s.other_leg_uuid.clone())
+            .or_else(|| snap.and_then(|s| s.other_leg_uuid.clone())),
+        channel_state: state
+            .and_then(|s| s.channel_state.clone())
+            .or_else(|| snap.and_then(|s| s.channel_state.clone())),
+        context: state
+            .and_then(|s| s.initial_context.clone())
+            .or_else(|| snap.and_then(|s| s.initial_context.clone())),
+        direction: state
+            .and_then(|s| s.call_direction.map(|d| d.to_string()))
+            .or_else(|| {
+                state.and_then(|s| {
+                    s.variables
+                        .get(ChannelVariable::Direction.as_str())
+                        .cloned()
+                })
+            }),
+        caller: state
+            .and_then(|s| s.caller_id_number.clone())
+            .or_else(|| {
+                state.and_then(|s| {
+                    s.variables
+                        .get(SofiaVariable::SipFromUser.as_str())
+                        .cloned()
+                })
+            })
+            .or_else(|| state.and_then(|s| s.dialplan_from.clone())),
+        callee: state
+            .and_then(|s| s.destination_number.clone())
+            .or_else(|| {
+                state.and_then(|s| s.variables.get(SofiaVariable::SipToUser.as_str()).cloned())
+            })
+            .or_else(|| state.and_then(|s| s.dialplan_to.clone())),
+        uuid,
+        is_hangup,
+        is_new_channel,
+    })
 }
 
 fn parse_timestamp_secs(ts: &str) -> Option<u64> {
@@ -208,7 +297,6 @@ fn format_age(d: Duration) -> String {
 fn spawn_reader(
     dir: PathBuf,
     path: PathBuf,
-    initial_lines: usize,
     tx: mpsc::Sender<ReaderMsg>,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     if !path.exists() {
@@ -234,7 +322,7 @@ fn spawn_reader(
             }
         }
 
-        let tail = match open_tail_reader(&path, initial_lines) {
+        let tail = match open_full_tail_reader(&path) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("fslog: {}: {e}", path.display());
@@ -253,52 +341,10 @@ fn spawn_reader(
         let mut tracker = SessionTracker::new(stream);
 
         while let Some(enriched) = tracker.next() {
-            let uuid = enriched.entry.uuid.clone();
-            if uuid.is_empty() {
-                continue;
-            }
-
-            let is_hangup = matches!(
-                &enriched.entry.message_kind,
-                MessageKind::ChannelLifecycle { detail }
-                    if detail.contains("Hangup") || detail.contains("Destroy")
-            ) || matches!(
-                &enriched.entry.message_kind,
-                MessageKind::StateChange { detail }
-                    if detail.contains("CS_DESTROY")
-            );
-
-            let snap = enriched.session.as_ref();
-            let state = tracker.sessions().get(&uuid);
-
-            let msg = ReaderMsg::Update {
-                timestamp: enriched.entry.timestamp.clone(),
-                other_leg_uuid: state
-                    .and_then(|s| s.other_leg_uuid.clone())
-                    .or_else(|| snap.and_then(|s| s.other_leg_uuid.clone())),
-                channel_state: state
-                    .and_then(|s| s.channel_state.clone())
-                    .or_else(|| snap.and_then(|s| s.channel_state.clone())),
-                context: state
-                    .and_then(|s| s.initial_context.clone())
-                    .or_else(|| snap.and_then(|s| s.initial_context.clone())),
-                direction: state
-                    .and_then(|s| s.call_direction.map(|d| d.to_string()))
-                    .or_else(|| state.and_then(|s| s.variables.get("direction").cloned())),
-                caller: state
-                    .and_then(|s| s.caller_id_number.clone())
-                    .or_else(|| state.and_then(|s| s.variables.get("sip_from_user").cloned()))
-                    .or_else(|| state.and_then(|s| s.dialplan_from.clone())),
-                callee: state
-                    .and_then(|s| s.destination_number.clone())
-                    .or_else(|| state.and_then(|s| s.variables.get("sip_to_user").cloned()))
-                    .or_else(|| state.and_then(|s| s.dialplan_to.clone())),
-                uuid,
-                is_hangup,
-            };
-
-            if tx.send(msg).is_err() {
-                break;
+            if let Some(msg) = build_update(&enriched, tracker.sessions()) {
+                if tx.send(msg).is_err() {
+                    break;
+                }
             }
         }
     });
@@ -316,15 +362,18 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         caller,
         callee,
         is_hangup,
+        is_new_channel,
     } = msg;
 
-    if !timestamp.is_empty() {
-        state.latest_log_ts = timestamp.clone();
-        state.latest_log_ts_at = Instant::now();
+    if state.filtered_uuids.contains(&uuid) {
+        return;
     }
 
     let uuid_key = uuid.clone();
     if let Some(row) = state.calls.iter_mut().find(|r| r.uuid == uuid_key) {
+        if !timestamp.is_empty() {
+            row.log_last = timestamp.clone();
+        }
         if channel_state.is_some() {
             row.channel_state = channel_state;
         }
@@ -347,7 +396,7 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
             row.ended = Some(Instant::now());
             row.log_end = Some(timestamp);
         }
-    } else if !is_hangup {
+    } else if is_new_channel {
         state.calls.push(CallRow {
             uuid,
             other_leg_uuid,
@@ -356,6 +405,7 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
             callee,
             channel_state,
             context,
+            log_last: timestamp.clone(),
             log_start: timestamp,
             log_end: None,
             first_seen: Instant::now(),
@@ -365,13 +415,13 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         return;
     }
 
-    // Remove row once its context is known and filtered out
     if let Some(pos) = state.calls.iter().position(|r| r.uuid == uuid_key) {
         if !state
             .context_filter
             .matches(state.calls[pos].context.as_deref())
         {
             state.calls.remove(pos);
+            state.filtered_uuids.insert(uuid_key);
             return;
         }
     }
@@ -449,27 +499,13 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
                 .as_deref()
                 .map(|u| if u.len() > 8 { &u[..8] } else { u })
                 .unwrap_or("-");
-            let age = if let Some(end_ts) = r.log_end.as_deref() {
-                log_age(&r.log_start, end_ts)
-            } else {
-                log_age(&r.log_start, &state.latest_log_ts) + state.latest_log_ts_at.elapsed()
-            };
-            let age = format_age(age);
+            let age = format_age(call_age(r));
             let st = r
                 .channel_state
                 .as_deref()
                 .map(format_state)
                 .unwrap_or_else(|| "-".to_string());
-            let dir = r
-                .direction
-                .as_deref()
-                .and_then(|d| CallDirection::from_str(d).ok())
-                .map(|d| match d {
-                    CallDirection::Inbound => "IN",
-                    CallDirection::Outbound => "OUT",
-                    _ => "?",
-                })
-                .unwrap_or("-");
+            let dir = format_direction(r.direction.as_deref());
             Row::new([
                 Cell::from(uuid_short.to_string()),
                 Cell::from(bleg_short.to_string()),
@@ -748,7 +784,114 @@ fn handle_menu_key(state: &mut AppState, code: KeyCode) {
     }
 }
 
+fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Result<AppState> {
+    let mut segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = Vec::new();
+
+    if let Ok(files) = discover_log_files(dir) {
+        if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
+            if let Ok(reader) = open_log_reader(&prev.path) {
+                let name = prev
+                    .path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                segments.push((name, reader));
+            }
+        }
+    }
+
+    let reader = open_log_reader(path)?;
+    let current_name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    segments.push((current_name, reader));
+
+    let (chain, _) = TrackedChain::new(segments);
+    let stream = LogStream::new(chain);
+    let mut tracker = SessionTracker::new(stream);
+
+    let mut state = AppState {
+        calls: Vec::new(),
+        selected_uuid: None,
+        show_menu: false,
+        show_leg_picker: false,
+        leg_picker_selected: 0,
+        target_uuid: None,
+        menu_selected: 0,
+        tools: Vec::new(),
+        linger: Duration::from_secs(3600),
+        should_quit: false,
+        dir: dir.to_path_buf(),
+        page_size: 20,
+        context_filter,
+        filtered_uuids: HashSet::new(),
+    };
+
+    while let Some(enriched) = tracker.next() {
+        if let Some(msg) = build_update(&enriched, tracker.sessions()) {
+            apply_update(&mut state, msg);
+        }
+    }
+
+    Ok(state)
+}
+
+pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
+    let path = match args.file.as_deref() {
+        Some(p) => PathBuf::from(p),
+        None => dir.join("freeswitch.log"),
+    };
+
+    let context_filter = args
+        .context
+        .as_deref()
+        .map(ContextFilter::parse)
+        .unwrap_or(ContextFilter::None);
+
+    let state = process_log(dir, &path, context_filter)?;
+
+    for r in &state.calls {
+        let uuid_short = if r.uuid.len() > 8 {
+            &r.uuid[..8]
+        } else {
+            &r.uuid
+        };
+        let bleg_short = r
+            .other_leg_uuid
+            .as_deref()
+            .map(|u| if u.len() > 8 { &u[..8] } else { u })
+            .unwrap_or("-");
+        let age_str = format_age(call_age(r));
+        let st = r
+            .channel_state
+            .as_deref()
+            .map(format_state)
+            .unwrap_or_else(|| "-".to_string());
+        let dir = format_direction(r.direction.as_deref());
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            uuid_short,
+            bleg_short,
+            dir,
+            r.caller.as_deref().unwrap_or("-"),
+            r.callee.as_deref().unwrap_or("-"),
+            st,
+            age_str,
+            r.context.as_deref().unwrap_or("-"),
+        );
+    }
+
+    Ok(())
+}
+
 pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
+    if args.dump {
+        return run_dump(dir, &args);
+    }
+
     let cfg = config::load_config(args.config.as_deref())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -758,7 +901,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
     };
 
     let (tx, rx) = mpsc::channel();
-    let _reader = spawn_reader(dir.to_path_buf(), path, args.lines, tx)?;
+    let _reader = spawn_reader(dir.to_path_buf(), path, tx)?;
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -785,8 +928,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         dir: dir.to_path_buf(),
         page_size: 20,
         context_filter,
-        latest_log_ts: String::new(),
-        latest_log_ts_at: Instant::now(),
+        filtered_uuids: HashSet::new(),
     };
 
     let mut table_state = TableState::default();
@@ -950,5 +1092,250 @@ mod tests {
         let f = ContextFilter::parse("");
         assert!(f.matches(Some("anything")));
         assert!(f.matches(None));
+    }
+
+    fn make_state() -> AppState {
+        AppState {
+            calls: Vec::new(),
+            selected_uuid: None,
+            show_menu: false,
+            show_leg_picker: false,
+            leg_picker_selected: 0,
+            target_uuid: None,
+            menu_selected: 0,
+            tools: Vec::new(),
+            linger: Duration::from_secs(3600),
+            should_quit: false,
+            dir: PathBuf::from("."),
+            page_size: 20,
+            context_filter: ContextFilter::None,
+            filtered_uuids: HashSet::new(),
+        }
+    }
+
+    fn make_update(uuid: &str, ts: &str, is_hangup: bool) -> ReaderMsg {
+        ReaderMsg::Update {
+            uuid: uuid.to_string(),
+            timestamp: ts.to_string(),
+            other_leg_uuid: None,
+            channel_state: Some("CS_EXECUTE".to_string()),
+            context: Some("public".to_string()),
+            direction: Some("inbound".to_string()),
+            caller: Some("1234".to_string()),
+            callee: Some("5678".to_string()),
+            is_hangup,
+            is_new_channel: !is_hangup,
+        }
+    }
+
+    // BUG 3: A call whose New Channel we never saw (only caught its tail end)
+    // should not produce a row. Currently, any non-hangup message creates a row,
+    // even a mid-call state change from a partially-visible call.
+    // Reproduces 54ad0773/7ddcede7 showing 0:00 instead of not appearing at all.
+    #[test]
+    fn no_row_for_call_first_seen_in_terminal_state() {
+        let mut state = make_state();
+        // First message is a state change to CS_HANGUP (not is_hangup per current rules)
+        let msg = ReaderMsg::Update {
+            uuid: "aaaa".to_string(),
+            timestamp: "2025-01-15 10:30:45.000000".to_string(),
+            other_leg_uuid: None,
+            channel_state: Some("CS_HANGUP".to_string()),
+            context: None,
+            direction: None,
+            caller: None,
+            callee: None,
+            is_hangup: false,
+            is_new_channel: false,
+        };
+        apply_update(&mut state, msg);
+        // Then CS_DESTROY arrives
+        let msg = ReaderMsg::Update {
+            uuid: "aaaa".to_string(),
+            timestamp: "2025-01-15 10:30:45.000000".to_string(),
+            other_leg_uuid: None,
+            channel_state: Some("CS_DESTROY".to_string()),
+            context: None,
+            direction: None,
+            caller: None,
+            callee: None,
+            is_hangup: true,
+            is_new_channel: false,
+        };
+        apply_update(&mut state, msg);
+        assert!(
+            state.calls.is_empty(),
+            "call first seen in CS_HANGUP should not produce a row (age would be 0:00)"
+        );
+    }
+
+    // BUG 1: f2cb66d4 gets log_start from the rotated file's last timestamp
+    // (23:58:03) because LogStream carries last_timestamp across file segments.
+    // When the call DESTROYs at 08:37:32 the next day, age = 8:39:29.
+    // Real duration is ~19 seconds.
+    #[test]
+    fn timestamp_not_contaminated_across_file_segments() {
+        use freeswitch_log_parser::LogStream;
+
+        let uuid = "f2cb66d4-aaaa-bbbb-cccc-dddddddddddd";
+        // Segment 1 (rotated file): ends with a timestamped line for a different UUID
+        let seg1_lines: Vec<String> = vec![
+            format!(
+                "eeeeeeee-1111-2222-3333-444444444444 2025-01-15 23:58:03.000000 95.00% [DEBUG] test.c:1 Last line in rotated file"
+            ),
+        ];
+        // Segment 2 (current file): starts with UUID-continuation lines (no timestamp)
+        // followed by a full timestamped line
+        let seg2_lines: Vec<String> = vec![
+            format!("{uuid} CHANNEL_DATA:"),
+            format!("{uuid} Channel-State: [CS_EXECUTE]"),
+            format!(
+                "{uuid} 2025-01-16 08:37:12.000000 95.00% [DEBUG] test.c:1 First real line in new file"
+            ),
+        ];
+
+        let segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = vec![
+            ("rotated.log".to_string(), Box::new(seg1_lines.into_iter())),
+            (
+                "freeswitch.log".to_string(),
+                Box::new(seg2_lines.into_iter()),
+            ),
+        ];
+
+        let (chain, _) = freeswitch_log_parser::TrackedChain::new(segments);
+        let stream = LogStream::new(chain);
+        let entries: Vec<_> = stream.collect();
+
+        // Find the CHANNEL_DATA entry for our UUID — its timestamp must NOT be
+        // inherited from the rotated file's last line (23:58:03).
+        let cd_entry = entries
+            .iter()
+            .find(|e| e.uuid == uuid)
+            .expect("should find entry for test UUID");
+
+        assert_ne!(
+            cd_entry.timestamp, "2025-01-15 23:58:03.000000",
+            "continuation lines in new file segment must not inherit timestamp from previous file"
+        );
+    }
+
+    // BUG 2: Calls that appear only in the rotated file (never seen in freeswitch.log)
+    // have their age grow against latest_log_ts from the current file.
+    // 031193dc started at 23:58:02 in the rotated file, latest_log_ts advances
+    // to 09:06:41 the next day -> age 9:08:39. Should end at the rotated file's
+    // last timestamp instead.
+    #[test]
+    fn call_from_previous_file_not_seen_again_gets_bounded_age() {
+        let mut state = make_state();
+        // Call appears during rotated file processing
+        apply_update(
+            &mut state,
+            make_update("bbbb", "2025-01-15 23:58:02.000000", false),
+        );
+        // latest_log_ts advances as we process the current file (different calls)
+        apply_update(
+            &mut state,
+            make_update("cccc", "2025-01-16 09:06:41.000000", false),
+        );
+
+        let row = state
+            .calls
+            .iter()
+            .find(|r| r.uuid == "bbbb")
+            .expect("should have row for bbbb");
+        let age = call_age(row);
+
+        // The call was only seen at 23:58:02. 9+ hours of age is wrong —
+        // it should not exceed the call's actual log span.
+        assert!(
+            age < Duration::from_secs(3600),
+            "call from rotated file not seen in current file should not age against \
+             latest_log_ts (got {age:?}, expected < 1h)"
+        );
+    }
+
+    // BUG 4: process_log reads the full freeswitch.log via open_log_reader,
+    // but spawn_reader reads only the tail via open_tail_reader.
+    // This test verifies via fixture data that process_log produces the same
+    // results as what the TUI would show (i.e., calls outside the tail window
+    // should either both appear or both be absent).
+    #[test]
+    fn fixture_dump_all_calls_have_valid_timestamps() {
+        use std::path::Path;
+
+        let dir = Path::new("tests/fixtures");
+        let path = dir.join("freeswitch.log");
+        if !path.exists() {
+            return; // skip if fixtures not available
+        }
+
+        let state = process_log(dir, &path, ContextFilter::None)
+            .expect("process_log should succeed on fixtures");
+
+        let bad: Vec<_> = state
+            .calls
+            .iter()
+            .filter(|r| parse_timestamp_secs(&r.log_start).is_none())
+            .map(|r| &r.uuid)
+            .collect();
+
+        assert!(
+            bad.is_empty(),
+            "all calls should have parseable log_start timestamps: {bad:?}"
+        );
+    }
+
+    // BUG 1 via fixture data: f2cb66d4 should have ~19s age, not 8:39:29.
+    // The timestamp contamination from the rotated file inflates its age.
+    #[test]
+    fn fixture_no_cross_file_timestamp_inflation() {
+        use std::path::Path;
+
+        let dir = Path::new("tests/fixtures");
+        let path = dir.join("freeswitch.log");
+        if !path.exists() {
+            return;
+        }
+
+        let state = process_log(dir, &path, ContextFilter::None)
+            .expect("process_log should succeed on fixtures");
+
+        let row = state.calls.iter().find(|r| r.uuid.starts_with("f2cb66d4"));
+
+        if let Some(row) = row {
+            let age = call_age(row);
+            assert!(
+                age < Duration::from_secs(300),
+                "f2cb66d4 age should be ~19s (actual call duration), \
+                 not {age:?} (inflated by timestamp from previous file segment)"
+            );
+        }
+    }
+
+    // BUG 2 via fixture data: 031193dc and 0a962643 should have ~1s age,
+    // not 9:08:39. They exist only in the rotated file.
+    #[test]
+    fn fixture_rotated_only_calls_bounded_age() {
+        use std::path::Path;
+
+        let dir = Path::new("tests/fixtures");
+        let path = dir.join("freeswitch.log");
+        if !path.exists() {
+            return;
+        }
+
+        let state = process_log(dir, &path, ContextFilter::None)
+            .expect("process_log should succeed on fixtures");
+
+        for prefix in &["031193dc", "0a962643"] {
+            if let Some(row) = state.calls.iter().find(|r| r.uuid.starts_with(prefix)) {
+                let age = call_age(row);
+                assert!(
+                    age < Duration::from_secs(300),
+                    "{prefix} age should be ~1s (only seen in rotated file), \
+                     not {age:?} (inflated by latest_log_ts from current file)"
+                );
+            }
+        }
     }
 }

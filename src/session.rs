@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use freeswitch_types::CallDirection;
+use freeswitch_types::{BridgeDialString, CallDirection, DialString};
 
 use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
@@ -35,6 +35,8 @@ pub struct SessionState {
     /// Other leg's UUID; `None` until bridged. Set from `Originate Resulted in Success` on A-leg,
     /// and from `New Channel` on B-leg (back-pointing to A-leg via originate context).
     pub other_leg_uuid: Option<String>,
+    /// Pending bridge target channel from `EXECUTE bridge()`, consumed when B-leg `New Channel` matches.
+    pub(crate) pending_bridge_target: Option<String>,
     /// All variables learned so far, with the `variable_` prefix stripped from names.
     pub variables: HashMap<String, String>,
 }
@@ -88,6 +90,9 @@ impl SessionState {
                     "Caller-Destination-Number" => {
                         self.destination_number = Some(value.clone());
                     }
+                    "Other-Leg-Unique-ID" => {
+                        self.other_leg_uuid = Some(value.clone());
+                    }
                     _ => {}
                 }
             }
@@ -114,6 +119,14 @@ impl SessionState {
                 "set" | "export" => {
                     if let Some((name, value)) = arguments.split_once('=') {
                         self.variables.insert(name.to_string(), value.to_string());
+                    }
+                }
+                "bridge" => {
+                    if let Some(info) = parse_bridge_args(arguments) {
+                        if let Some(uuid) = &info.origination_uuid {
+                            self.other_leg_uuid = Some(uuid.clone());
+                        }
+                        self.pending_bridge_target = Some(info.target_channel);
                     }
                 }
                 _ => {}
@@ -255,6 +268,42 @@ fn parse_state_change(detail: &str) -> Option<String> {
     Some(detail[arrow + 4..].trim().to_string())
 }
 
+/// Extract `origination_uuid` and the bridge target channel from bridge() arguments.
+/// Uses `BridgeDialString` from freeswitch-types for correct parsing of `[]`, `{}`,
+/// `|` failover, and `,` simultaneous ring syntax.
+fn parse_bridge_args(arguments: &str) -> Option<BridgeInfo> {
+    let dial = BridgeDialString::from_str(arguments).ok()?;
+    let first_ep = dial.groups.first()?.first()?;
+    let origination_uuid = first_ep
+        .variables()
+        .and_then(|v| v.get("origination_uuid"))
+        .map(|s| s.to_string());
+    let mut bare = first_ep.clone();
+    bare.set_variables(None);
+    let target_channel = bare.to_string();
+    Some(BridgeInfo {
+        origination_uuid,
+        target_channel,
+    })
+}
+
+struct BridgeInfo {
+    origination_uuid: Option<String>,
+    target_channel: String,
+}
+
+/// Parse "Originate Resulted in Success: [channel] Peer UUID: uuid"
+fn parse_originate_success(msg: &str) -> Option<String> {
+    let marker = "Peer UUID: ";
+    let idx = msg.find(marker)?;
+    let uuid = msg[idx + marker.len()..].trim();
+    if uuid.is_empty() {
+        None
+    } else {
+        Some(uuid.to_string())
+    }
+}
+
 /// A [`LogEntry`] paired with the session's state snapshot at that point in time.
 #[derive(Debug)]
 pub struct EnrichedEntry {
@@ -303,6 +352,59 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     pub fn drain_unclassified(&mut self) -> Vec<UnclassifiedLine> {
         self.inner.drain_unclassified()
     }
+
+    /// Cross-session leg linking. Called after `update_from_entry` so per-session
+    /// state (bridge target, channel name) is already populated.
+    fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
+        // 1. "Originate Resulted in Success ... Peer UUID: BLEG" — authoritative
+        if entry.message.contains("Originate Resulted in Success") {
+            if let Some(peer_uuid) = parse_originate_success(&entry.message) {
+                let a_uuid = uuid.to_string();
+                if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
+                    a_state.other_leg_uuid = Some(peer_uuid.clone());
+                    a_state.pending_bridge_target = None;
+                }
+                let b_state = self.sessions.entry(peer_uuid).or_default();
+                b_state.other_leg_uuid = Some(a_uuid);
+            }
+            return;
+        }
+
+        // 2. New Channel on this UUID — check if any other session has a pending bridge
+        //    with origination_uuid matching this UUID, or target matching this channel name.
+        if let MessageKind::ChannelLifecycle { detail } = &entry.message_kind {
+            if let Some(channel_name) = parse_new_channel(detail) {
+                let b_uuid = uuid.to_string();
+                let mut a_uuid_found = None;
+
+                for (a_uuid, a_state) in &self.sessions {
+                    if *a_uuid == b_uuid {
+                        continue;
+                    }
+                    // origination_uuid match: A-leg already set other_leg_uuid during bridge parse
+                    if a_state.other_leg_uuid.as_deref() == Some(&b_uuid) {
+                        a_uuid_found = Some(a_uuid.clone());
+                        break;
+                    }
+                    // Target channel match
+                    if a_state.pending_bridge_target.as_deref() == Some(channel_name.as_str()) {
+                        a_uuid_found = Some(a_uuid.clone());
+                        break;
+                    }
+                }
+
+                if let Some(a_uuid) = a_uuid_found {
+                    if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
+                        a_state.other_leg_uuid = Some(b_uuid.clone());
+                        a_state.pending_bridge_target = None;
+                    }
+                    if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
+                        b_state.other_leg_uuid = Some(a_uuid);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
@@ -318,9 +420,13 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
             });
         }
 
-        let state = self.sessions.entry(entry.uuid.clone()).or_default();
+        let uuid = entry.uuid.clone();
+        let state = self.sessions.entry(uuid.clone()).or_default();
         state.update_from_entry(&entry);
-        let snapshot = state.snapshot();
+
+        self.link_legs(&uuid, &entry);
+
+        let snapshot = self.sessions.get(&uuid).unwrap().snapshot();
 
         Some(EnrichedEntry {
             entry,

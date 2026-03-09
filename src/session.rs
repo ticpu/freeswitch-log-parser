@@ -779,11 +779,181 @@ mod tests {
     }
 
     #[test]
+    fn processing_line_with_regex_type_and_angle_bracket_caller() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "Processing Emergency S R <5550001234>->start_recording in context recordings",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(session.initial_context.as_deref(), Some("recordings"));
+        assert_eq!(session.dialplan_context.as_deref(), Some("recordings"));
+        assert_eq!(
+            session.dialplan_from.as_deref(),
+            Some("Emergency S R <5550001234>")
+        );
+        assert_eq!(session.dialplan_to.as_deref(), Some("start_recording"));
+    }
+
+    #[test]
+    fn processing_line_extension_format() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "Processing Extension 1263 <1263>->start_recording in context recordings",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(session.initial_context.as_deref(), Some("recordings"));
+        assert_eq!(
+            session.dialplan_from.as_deref(),
+            Some("Extension 1263 <1263>")
+        );
+        assert_eq!(session.dialplan_to.as_deref(), Some("start_recording"));
+    }
+
+    #[test]
     fn state_change_updates_channel_state() {
         let lines = vec![full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING")];
         let entries = collect_enriched(lines);
         let session = entries[0].session.as_ref().unwrap();
         assert_eq!(session.channel_state.as_deref(), Some("CS_ROUTING"));
+    }
+
+    #[test]
+    fn callstate_change_updates_channel_state() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "(sofia/internal-v4/sos) Callstate Change DOWN -> RINGING",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(session.channel_state.as_deref(), Some("RINGING"));
+    }
+
+    #[test]
+    fn state_change_overrides_callstate() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "(sofia/internal-v4/sos) Callstate Change DOWN -> RINGING",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "(sofia/internal-v4/sos) State Change CS_CONSUME_MEDIA -> CS_EXCHANGE_MEDIA",
+            ),
+        ];
+        let entries = collect_enriched(lines);
+        assert_eq!(
+            entries[0]
+                .session
+                .as_ref()
+                .unwrap()
+                .channel_state
+                .as_deref(),
+            Some("RINGING")
+        );
+        assert_eq!(
+            entries[1]
+                .session
+                .as_ref()
+                .unwrap()
+                .channel_state
+                .as_deref(),
+            Some("CS_EXCHANGE_MEDIA")
+        );
+    }
+
+    #[test]
+    fn bleg_lifecycle_extracts_data_from_processing() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "New Channel sofia/internal-v4/sos [a1b2c3d4-e5f6-7890-abcd-ef1234567890]",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "(sofia/internal-v4/sos) State Change CS_NEW -> CS_INIT",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "(sofia/internal-v4/sos) State Change CS_INIT -> CS_ROUTING",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "(sofia/internal-v4/sos) State Change CS_ROUTING -> CS_CONSUME_MEDIA",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "(sofia/internal-v4/sos) Callstate Change DOWN -> RINGING",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "(sofia/internal-v4/sos) State Change CS_CONSUME_MEDIA -> CS_EXCHANGE_MEDIA",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Processing Emergency S R <5550001234>->start_recording in context recordings",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "(sofia/internal-v4/sos) State Change CS_EXCHANGE_MEDIA -> CS_HANGUP",
+            ),
+        ];
+        let entries = collect_enriched(lines);
+
+        let after_ringing = entries[4].session.as_ref().unwrap();
+        assert_eq!(after_ringing.channel_state.as_deref(), Some("RINGING"));
+        assert!(after_ringing.initial_context.is_none());
+
+        let after_processing = entries[6].session.as_ref().unwrap();
+        assert_eq!(
+            after_processing.channel_state.as_deref(),
+            Some("CS_EXCHANGE_MEDIA")
+        );
+        assert_eq!(
+            after_processing.initial_context.as_deref(),
+            Some("recordings")
+        );
+        assert_eq!(
+            after_processing.dialplan_from.as_deref(),
+            Some("Emergency S R <5550001234>")
+        );
+        assert_eq!(
+            after_processing.dialplan_to.as_deref(),
+            Some("start_recording")
+        );
+
+        let after_hangup = entries[7].session.as_ref().unwrap();
+        assert_eq!(after_hangup.channel_state.as_deref(), Some("CS_HANGUP"));
+        assert_eq!(after_hangup.initial_context.as_deref(), Some("recordings"));
+    }
+
+    #[test]
+    fn channel_name_from_new_channel() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "New Channel sofia/internal-v4/sos [a1b2c3d4-e5f6-7890-abcd-ef1234567890]",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(
+            session.channel_name.as_deref(),
+            Some("sofia/internal-v4/sos")
+        );
     }
 
     #[test]

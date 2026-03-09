@@ -323,11 +323,8 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         state.latest_log_ts_at = Instant::now();
     }
 
-    if !state.context_filter.matches(context.as_deref()) {
-        return;
-    }
-
-    if let Some(row) = state.calls.iter_mut().find(|r| r.uuid == uuid) {
+    let uuid_key = uuid.clone();
+    if let Some(row) = state.calls.iter_mut().find(|r| r.uuid == uuid_key) {
         if channel_state.is_some() {
             row.channel_state = channel_state;
         }
@@ -366,6 +363,17 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         });
     } else {
         return;
+    }
+
+    // Remove row once its context is known and filtered out
+    if let Some(pos) = state.calls.iter().position(|r| r.uuid == uuid_key) {
+        if !state
+            .context_filter
+            .matches(state.calls[pos].context.as_deref())
+        {
+            state.calls.remove(pos);
+            return;
+        }
     }
 
     state.sort_calls();
@@ -826,4 +834,121 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_timestamp_basic() {
+        let secs = parse_timestamp_secs("2025-01-15 10:30:45.123456").unwrap();
+        assert_eq!(secs % 86400, 10 * 3600 + 30 * 60 + 45);
+    }
+
+    #[test]
+    fn parse_timestamp_midnight() {
+        let secs = parse_timestamp_secs("2025-06-01 00:00:00.000000").unwrap();
+        assert_eq!(secs % 86400, 0);
+    }
+
+    #[test]
+    fn parse_timestamp_too_short() {
+        assert!(parse_timestamp_secs("2025-01-15").is_none());
+        assert!(parse_timestamp_secs("").is_none());
+    }
+
+    #[test]
+    fn log_age_same_timestamp() {
+        let d = log_age("2025-01-15 10:30:45.123456", "2025-01-15 10:30:45.999999");
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn log_age_one_minute() {
+        let d = log_age("2025-01-15 10:30:00.000000", "2025-01-15 10:31:00.000000");
+        assert_eq!(d, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn log_age_across_midnight() {
+        let d = log_age("2025-01-15 23:59:00.000000", "2025-01-16 00:01:00.000000");
+        assert_eq!(d, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn log_age_across_month() {
+        let d = log_age("2025-01-31 23:00:00.000000", "2025-02-01 01:00:00.000000");
+        assert_eq!(d, Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn log_age_reversed_returns_zero() {
+        let d = log_age("2025-01-15 10:31:00.000000", "2025-01-15 10:30:00.000000");
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn format_age_seconds() {
+        assert_eq!(format_age(Duration::from_secs(5)), "0:05");
+        assert_eq!(format_age(Duration::from_secs(59)), "0:59");
+    }
+
+    #[test]
+    fn format_age_minutes() {
+        assert_eq!(format_age(Duration::from_secs(60)), "1:00");
+        assert_eq!(format_age(Duration::from_secs(754)), "12:34");
+    }
+
+    #[test]
+    fn format_age_hours() {
+        assert_eq!(format_age(Duration::from_secs(3600)), "1:00:00");
+        assert_eq!(format_age(Duration::from_secs(3661)), "1:01:01");
+    }
+
+    #[test]
+    fn format_state_cs_prefix() {
+        assert_eq!(format_state("CS_EXECUTE"), "EXECUTE");
+        assert_eq!(format_state("CS_ROUTING"), "ROUTING");
+        assert_eq!(format_state("CS_HANGUP"), "HANGUP");
+        assert_eq!(format_state("CS_DESTROY"), "DESTROY");
+    }
+
+    #[test]
+    fn format_state_abbreviations() {
+        assert_eq!(format_state("CS_EXCHANGE_MEDIA"), "MEDIA");
+        assert_eq!(format_state("CS_CONSUME_MEDIA"), "CONSUME");
+        assert_eq!(format_state("CS_SOFT_EXECUTE"), "SOFTEX");
+        assert_eq!(format_state("CS_REPORTING"), "REPORT");
+    }
+
+    #[test]
+    fn format_state_unknown_passthrough() {
+        assert_eq!(format_state("SOMETHING_ELSE"), "SOMETHING_ELSE");
+    }
+
+    #[test]
+    fn context_filter_exclude() {
+        let f = ContextFilter::parse("-recordings,-default");
+        assert!(!f.matches(Some("recordings")));
+        assert!(!f.matches(Some("default")));
+        assert!(f.matches(Some("public")));
+        assert!(f.matches(None));
+    }
+
+    #[test]
+    fn context_filter_include() {
+        let f = ContextFilter::parse("public,private");
+        assert!(f.matches(Some("public")));
+        assert!(f.matches(Some("private")));
+        assert!(!f.matches(Some("recordings")));
+        assert!(!f.matches(None));
+    }
+
+    #[test]
+    fn context_filter_none() {
+        let f = ContextFilter::parse("");
+        assert!(f.matches(Some("anything")));
+        assert!(f.matches(None));
+    }
 }

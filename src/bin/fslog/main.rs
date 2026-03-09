@@ -88,11 +88,11 @@ struct FilterArgs {
     #[arg(long, value_name = "PATTERN")]
     grep: Option<String>,
 
-    /// Show typed block details
+    /// Expand structured blocks inline (CHANNEL_DATA fields/variables, SDP bodies, codec negotiation)
     #[arg(long)]
     blocks: bool,
 
-    /// Show session state snapshots
+    /// Annotate entries with tracked session state (dialplan context, channel state, channel name)
     #[arg(long)]
     session: bool,
 

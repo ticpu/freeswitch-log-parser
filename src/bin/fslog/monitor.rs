@@ -112,6 +112,7 @@ struct AppState {
     page_size: usize,
     context_filter: ContextFilter,
     filtered_uuids: HashSet<String>,
+    latest_timestamp: String,
 }
 
 impl AppState {
@@ -183,9 +184,14 @@ fn format_direction(raw: Option<&str>) -> &'static str {
         .unwrap_or("-")
 }
 
-fn call_age(row: &CallRow) -> Duration {
+fn call_duration(row: &CallRow) -> Duration {
     let end = row.log_end.as_deref().unwrap_or(&row.log_last);
     log_age(&row.log_start, end)
+}
+
+fn call_age(row: &CallRow, latest: &str) -> Duration {
+    let ts = row.log_end.as_deref().unwrap_or(&row.log_last);
+    log_age(ts, latest)
 }
 
 fn build_update(
@@ -285,12 +291,26 @@ fn log_age(start: &str, end: &str) -> Duration {
     }
 }
 
-fn format_age(d: Duration) -> String {
+fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
     if secs >= 3600 {
         format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
     } else {
         format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+fn format_age(d: Duration) -> String {
+    let secs = d.as_secs();
+    let days = secs / 86400;
+    let hours = secs / 3600;
+    let minutes = secs / 60;
+    if days > 0 {
+        format!("{}d", days)
+    } else if hours > 0 {
+        format!("{}h", hours)
+    } else {
+        format!("{}m", minutes)
     }
 }
 
@@ -364,6 +384,10 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         is_hangup,
         is_new_channel,
     } = msg;
+
+    if !timestamp.is_empty() && timestamp > state.latest_timestamp {
+        state.latest_timestamp.clone_from(&timestamp);
+    }
 
     if state.filtered_uuids.contains(&uuid) {
         return;
@@ -470,6 +494,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
         Cell::from("Caller"),
         Cell::from("Callee"),
         Cell::from("State"),
+        Cell::from("Duration"),
         Cell::from("Age"),
         Cell::from("Context"),
     ])
@@ -499,7 +524,8 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
                 .as_deref()
                 .map(|u| if u.len() > 8 { &u[..8] } else { u })
                 .unwrap_or("-");
-            let age = format_age(call_age(r));
+            let duration = format_duration(call_duration(r));
+            let age = format_age(call_age(r, &state.latest_timestamp));
             let st = r
                 .channel_state
                 .as_deref()
@@ -513,6 +539,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
                 Cell::from(r.caller.as_deref().unwrap_or("-")),
                 Cell::from(r.callee.as_deref().unwrap_or("-")),
                 Cell::from(st),
+                Cell::from(duration),
                 Cell::from(age),
                 Cell::from(r.context.as_deref().unwrap_or("-")),
             ])
@@ -528,6 +555,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
         Constraint::Min(12),
         Constraint::Length(7),
         Constraint::Length(7),
+        Constraint::Length(4),
         Constraint::Min(8),
     ];
 
@@ -828,6 +856,7 @@ fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Re
         page_size: 20,
         context_filter,
         filtered_uuids: HashSet::new(),
+        latest_timestamp: String::new(),
     };
 
     while let Some(enriched) = tracker.next() {
@@ -864,7 +893,8 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
             .as_deref()
             .map(|u| if u.len() > 8 { &u[..8] } else { u })
             .unwrap_or("-");
-        let age_str = format_age(call_age(r));
+        let duration_str = format_duration(call_duration(r));
+        let age_str = format_age(call_age(r, &state.latest_timestamp));
         let st = r
             .channel_state
             .as_deref()
@@ -872,13 +902,14 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
             .unwrap_or_else(|| "-".to_string());
         let dir = format_direction(r.direction.as_deref());
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             uuid_short,
             bleg_short,
             dir,
             r.caller.as_deref().unwrap_or("-"),
             r.callee.as_deref().unwrap_or("-"),
             st,
+            duration_str,
             age_str,
             r.context.as_deref().unwrap_or("-"),
         );
@@ -929,6 +960,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         page_size: 20,
         context_filter,
         filtered_uuids: HashSet::new(),
+        latest_timestamp: String::new(),
     };
 
     let mut table_state = TableState::default();
@@ -1031,21 +1063,42 @@ mod tests {
     }
 
     #[test]
-    fn format_age_seconds() {
-        assert_eq!(format_age(Duration::from_secs(5)), "0:05");
-        assert_eq!(format_age(Duration::from_secs(59)), "0:59");
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(Duration::from_secs(5)), "0:05");
+        assert_eq!(format_duration(Duration::from_secs(59)), "0:59");
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        assert_eq!(format_duration(Duration::from_secs(60)), "1:00");
+        assert_eq!(format_duration(Duration::from_secs(754)), "12:34");
+    }
+
+    #[test]
+    fn format_duration_hours() {
+        assert_eq!(format_duration(Duration::from_secs(3600)), "1:00:00");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "1:01:01");
     }
 
     #[test]
     fn format_age_minutes() {
-        assert_eq!(format_age(Duration::from_secs(60)), "1:00");
-        assert_eq!(format_age(Duration::from_secs(754)), "12:34");
+        assert_eq!(format_age(Duration::from_secs(0)), "0m");
+        assert_eq!(format_age(Duration::from_secs(59)), "0m");
+        assert_eq!(format_age(Duration::from_secs(1800)), "30m");
+        assert_eq!(format_age(Duration::from_secs(3599)), "59m");
     }
 
     #[test]
     fn format_age_hours() {
-        assert_eq!(format_age(Duration::from_secs(3600)), "1:00:00");
-        assert_eq!(format_age(Duration::from_secs(3661)), "1:01:01");
+        assert_eq!(format_age(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_age(Duration::from_secs(7200)), "2h");
+        assert_eq!(format_age(Duration::from_secs(86399)), "23h");
+    }
+
+    #[test]
+    fn format_age_days() {
+        assert_eq!(format_age(Duration::from_secs(86400)), "1d");
+        assert_eq!(format_age(Duration::from_secs(259200)), "3d");
     }
 
     #[test]
@@ -1110,6 +1163,7 @@ mod tests {
             page_size: 20,
             context_filter: ContextFilter::None,
             filtered_uuids: HashSet::new(),
+            latest_timestamp: String::new(),
         }
     }
 
@@ -1165,7 +1219,7 @@ mod tests {
         apply_update(&mut state, msg);
         assert!(
             state.calls.is_empty(),
-            "call first seen in CS_HANGUP should not produce a row (age would be 0:00)"
+            "call first seen in CS_HANGUP should not produce a row (duration would be 0:00)"
         );
     }
 
@@ -1243,14 +1297,14 @@ mod tests {
             .iter()
             .find(|r| r.uuid == "bbbb")
             .expect("should have row for bbbb");
-        let age = call_age(row);
+        let dur = call_duration(row);
 
-        // The call was only seen at 23:58:02. 9+ hours of age is wrong —
+        // The call was only seen at 23:58:02. 9+ hours of duration is wrong —
         // it should not exceed the call's actual log span.
         assert!(
-            age < Duration::from_secs(3600),
-            "call from rotated file not seen in current file should not age against \
-             latest_log_ts (got {age:?}, expected < 1h)"
+            dur < Duration::from_secs(3600),
+            "call from rotated file not seen in current file should not grow duration against \
+             latest_log_ts (got {dur:?}, expected < 1h)"
         );
     }
 
@@ -1285,8 +1339,8 @@ mod tests {
         );
     }
 
-    // BUG 1 via fixture data: f2cb66d4 should have ~19s age, not 8:39:29.
-    // The timestamp contamination from the rotated file inflates its age.
+    // BUG 1 via fixture data: f2cb66d4 should have ~19s duration, not 8:39:29.
+    // The timestamp contamination from the rotated file inflates its duration.
     #[test]
     fn fixture_no_cross_file_timestamp_inflation() {
         use std::path::Path;
@@ -1303,19 +1357,19 @@ mod tests {
         let row = state.calls.iter().find(|r| r.uuid.starts_with("f2cb66d4"));
 
         if let Some(row) = row {
-            let age = call_age(row);
+            let dur = call_duration(row);
             assert!(
-                age < Duration::from_secs(300),
-                "f2cb66d4 age should be ~19s (actual call duration), \
-                 not {age:?} (inflated by timestamp from previous file segment)"
+                dur < Duration::from_secs(300),
+                "f2cb66d4 duration should be ~19s (actual call duration), \
+                 not {dur:?} (inflated by timestamp from previous file segment)"
             );
         }
     }
 
-    // BUG 2 via fixture data: 031193dc and 0a962643 should have ~1s age,
+    // BUG 2 via fixture data: 031193dc and 0a962643 should have ~1s duration,
     // not 9:08:39. They exist only in the rotated file.
     #[test]
-    fn fixture_rotated_only_calls_bounded_age() {
+    fn fixture_rotated_only_calls_bounded_duration() {
         use std::path::Path;
 
         let dir = Path::new("tests/fixtures");
@@ -1329,11 +1383,11 @@ mod tests {
 
         for prefix in &["031193dc", "0a962643"] {
             if let Some(row) = state.calls.iter().find(|r| r.uuid.starts_with(prefix)) {
-                let age = call_age(row);
+                let dur = call_duration(row);
                 assert!(
-                    age < Duration::from_secs(300),
-                    "{prefix} age should be ~1s (only seen in rotated file), \
-                     not {age:?} (inflated by latest_log_ts from current file)"
+                    dur < Duration::from_secs(300),
+                    "{prefix} duration should be ~1s (only seen in rotated file), \
+                     not {dur:?} (inflated by latest_log_ts from current file)"
                 );
             }
         }

@@ -102,6 +102,56 @@ fn is_date_at(s: &str, offset: usize) -> bool {
     bytes[offset..offset + 4].iter().all(u8::is_ascii_digit) && bytes[offset + 4] == b'-'
 }
 
+/// Check for a full FreeSWITCH log header at `offset`:
+/// `YYYY-MM-DD HH:MM:SS.UUUUUU D+.D+% [`
+///
+/// Used by Layer 2 to detect same-line collisions where multiple log entries
+/// were concatenated without a newline (thread contention on file write).
+pub(crate) fn is_log_header_at(s: &str, offset: usize) -> bool {
+    let bytes = s.as_bytes();
+    // Minimum: 27-byte timestamp + space + "0% [" = 31 bytes
+    if bytes.len() < offset + 31 {
+        return false;
+    }
+    // YYYY-MM-DD HH:MM:SS.UUUUUU (26 bytes + space)
+    if !(bytes[offset..offset + 4].iter().all(u8::is_ascii_digit)
+        && bytes[offset + 4] == b'-'
+        && bytes[offset + 5..offset + 7].iter().all(u8::is_ascii_digit)
+        && bytes[offset + 7] == b'-'
+        && bytes[offset + 8..offset + 10]
+            .iter()
+            .all(u8::is_ascii_digit)
+        && bytes[offset + 10] == b' '
+        && bytes[offset + 11..offset + 13]
+            .iter()
+            .all(u8::is_ascii_digit)
+        && bytes[offset + 13] == b':'
+        && bytes[offset + 14..offset + 16]
+            .iter()
+            .all(u8::is_ascii_digit)
+        && bytes[offset + 16] == b':'
+        && bytes[offset + 17..offset + 19]
+            .iter()
+            .all(u8::is_ascii_digit)
+        && bytes[offset + 19] == b'.'
+        && bytes[offset + 20..offset + 26]
+            .iter()
+            .all(u8::is_ascii_digit)
+        && bytes[offset + 26] == b' ')
+    {
+        return false;
+    }
+    // Idle percentage: starts with digit, has % within 6 bytes, then " ["
+    let rest = &bytes[offset + 27..];
+    if !rest[0].is_ascii_digit() {
+        return false;
+    }
+    let Some(pct_pos) = rest[..rest.len().min(7)].iter().position(|&b| b == b'%') else {
+        return false;
+    };
+    rest.len() > pct_pos + 2 && rest[pct_pos + 1] == b' ' && rest[pct_pos + 2] == b'['
+}
+
 fn parse_timestamped_fields(
     s: &str,
 ) -> (

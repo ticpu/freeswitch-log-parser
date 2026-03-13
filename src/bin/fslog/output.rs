@@ -101,6 +101,11 @@ impl EntryPrinter {
             }
         }
 
+        for warning in &entry.warnings {
+            let wc = if use_color { MAGENTA } else { "" };
+            writeln!(w, "{wc}    WARN {warning}{reset}")?;
+        }
+
         if !entry.attached.is_empty() {
             let dim_s = if use_color { DIM } else { "" };
             writeln!(

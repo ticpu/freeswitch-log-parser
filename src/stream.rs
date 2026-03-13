@@ -1,5 +1,5 @@
 use crate::level::LogLevel;
-use crate::line::{is_uuid_at, parse_line, LineKind};
+use crate::line::{is_log_header_at, is_uuid_at, parse_line, LineKind};
 use crate::message::{classify_message, MessageKind, SdpDirection};
 
 /// Structured data extracted from a multi-line dump that follows a primary log entry.
@@ -180,6 +180,7 @@ pub struct LogStream<I> {
     tracking: UnclassifiedTracking,
     line_number: u64,
     split_pending: Option<String>,
+    deferred_warning: Option<String>,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -195,6 +196,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
             split_pending: None,
+            deferred_warning: None,
         }
     }
 
@@ -391,13 +393,17 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     }
 
     fn new_entry(
-        &self,
+        &mut self,
         uuid: String,
         timestamp: String,
         message: String,
         kind: LineKind,
         message_kind: MessageKind,
     ) -> LogEntry {
+        let mut warnings = Vec::new();
+        if let Some(w) = self.deferred_warning.take() {
+            warnings.push(w);
+        }
         LogEntry {
             uuid,
             timestamp,
@@ -410,7 +416,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             block: None,
             attached: Vec::new(),
             line_number: self.line_number,
-            warnings: Vec::new(),
+            warnings,
         }
     }
 }
@@ -424,22 +430,68 @@ const MOD_LOGFILE_BUF_SIZE: usize = 2048;
 const MAX_LINE_PAYLOAD: usize = MOD_LOGFILE_BUF_SIZE - 36 - 1 - 1;
 
 impl<I: Iterator<Item = String>> LogStream<I> {
-    /// Detect a long-line collision: when a line exceeds mod_logfile's payload
-    /// limit, scan the overflow portion for an embedded UUID that marks the
-    /// start of a new log entry collided onto the same physical line.
+    /// Detect same-line collisions where multiple log entries were concatenated
+    /// without a newline separator.
+    ///
+    /// Two collision mechanisms exist in production:
+    ///
+    /// 1. **Buffer truncation** (Format E): `mod_logfile`'s 2048-byte `snprintf`
+    ///    buffer truncates a long line, losing the trailing `\n`. The next entry
+    ///    from the log queue collides on the same physical line. These lines
+    ///    always exceed `MAX_LINE_PAYLOAD`.
+    ///
+    /// 2. **Write contention**: multiple threads writing to the log file can
+    ///    interleave output, producing concatenated entries at any line length.
+    ///    Common with system lines (Format B) that lack UUID prefixes.
     ///
     /// Returns the (possibly truncated) line. If a collision is detected,
-    /// the UUID+suffix is stored in `split_pending` for processing in the
-    /// next iteration.
-    fn detect_long_collision(&mut self, line: String) -> String {
-        if line.len() <= MAX_LINE_PAYLOAD {
-            return line;
+    /// the suffix is stored in `split_pending` for processing in the next
+    /// iteration. Recursive: split suffixes pass through this function again.
+    fn detect_collision(&mut self, line: String) -> String {
+        if line.len() > MAX_LINE_PAYLOAD {
+            let warning = format!(
+                "line exceeds mod_logfile 2048-byte buffer ({} bytes), data may be truncated",
+                line.len() + 38,
+            );
+            if let Some(ref mut pending) = self.pending {
+                pending.warnings.push(warning);
+            } else {
+                self.deferred_warning = Some(warning);
+            }
         }
 
-        for offset in MAX_LINE_PAYLOAD..line.len().saturating_sub(37) {
-            if is_uuid_at(&line, offset) {
-                let suffix = line[offset..].to_string();
-                self.split_pending = Some(suffix);
+        // Skip past the line's own header to avoid matching itself.
+        let min_scan = if is_uuid_at(&line, 0) {
+            if line.len() > 37 && line.as_bytes()[37].is_ascii_digit() {
+                64 // Full line: UUID + timestamp
+            } else {
+                37 // UUID continuation
+            }
+        } else if line.len() >= 5
+            && line.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+            && line.as_bytes()[4] == b'-'
+        {
+            27 // System line: skip own timestamp
+        } else {
+            0
+        };
+
+        let end = line.len().saturating_sub(28);
+        for offset in min_scan..=end {
+            // Timestamp collision (System or Full line header)
+            if is_log_header_at(&line, offset) {
+                // Check if a UUID precedes the timestamp (Full line collision)
+                let split_at = if offset >= 37 && is_uuid_at(&line, offset - 37) {
+                    offset - 37
+                } else {
+                    offset
+                };
+                self.split_pending = Some(line[split_at..].to_string());
+                return line[..split_at].to_string();
+            }
+            // UUID collision without timestamp (Format E — truncated buffer)
+            if is_uuid_at(&line, offset) && line.len() > MAX_LINE_PAYLOAD {
+                self.split_pending = Some(line[offset..].to_string());
                 return line[..offset].to_string();
             }
         }
@@ -476,7 +528,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 line
             };
 
-            let line = self.detect_long_collision(line);
+            let line = self.detect_collision(line);
 
             let parsed = parse_line(&line);
 
@@ -1348,6 +1400,58 @@ mod tests {
         let entries: Vec<_> = stream.by_ref().collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(stream.stats().lines_split, 0);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn timestamp_collision_splits_system_lines() {
+        let line = format!(
+            "{TS1} 98.03% [INFO] mod_event_socket.c:1752 Event Socket Command from ::1:42864: api sofia jsonstatus{TS2} 97.93% [INFO] mod_event_socket.c:1752 Event Socket Command from ::1:42898: api fsctl pause_check"
+        );
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].message,
+            "Event Socket Command from ::1:42864: api sofia jsonstatus"
+        );
+        assert_eq!(
+            entries[1].message,
+            "Event Socket Command from ::1:42898: api fsctl pause_check"
+        );
+        assert_eq!(stream.stats().lines_split, 1);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn timestamp_collision_splits_three_entries() {
+        let ts3 = "2025-01-15 10:30:47.345678";
+        let line = format!(
+            "{TS1} 95.00% [INFO] mod.c:1 first{TS2} 96.00% [INFO] mod.c:1 second{ts3} 97.00% [INFO] mod.c:1 third"
+        );
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].message, "first");
+        assert_eq!(entries[1].message, "second");
+        assert_eq!(entries[2].message, "third");
+        assert_eq!(stream.stats().lines_split, 2);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn timestamp_collision_with_uuid_prefix() {
+        // System line collides with Full line (UUID + timestamp)
+        let line = format!(
+            "{TS1} 95.00% [INFO] mod.c:1 first{UUID1} {TS2} 96.00% [DEBUG] sofia.c:100 second"
+        );
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].message, "first");
+        assert_eq!(entries[1].uuid, UUID1);
+        assert_eq!(entries[1].message, "second");
+        assert_eq!(stream.stats().lines_split, 1);
         assert_accounting(&stream);
     }
 

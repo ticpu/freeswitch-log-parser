@@ -60,8 +60,7 @@ pub struct RawLine<'a> {
     pub kind: LineKind,
 }
 
-pub(crate) fn is_uuid_at(s: &str, offset: usize) -> bool {
-    let bytes = s.as_bytes();
+pub(crate) fn is_uuid_at(bytes: &[u8], offset: usize) -> bool {
     if bytes.len() < offset + 37 {
         return false;
     }
@@ -85,17 +84,15 @@ pub(crate) fn is_uuid_at(s: &str, offset: usize) -> bool {
     true
 }
 
-fn find_uuid_in(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
+fn find_uuid_in(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 37 {
         return None;
     }
     let max_start = (bytes.len() - 37).min(50);
-    (1..=max_start).find(|&start| is_uuid_at(s, start))
+    (1..=max_start).find(|&start| is_uuid_at(bytes, start))
 }
 
-fn is_date_at(s: &str, offset: usize) -> bool {
-    let bytes = s.as_bytes();
+pub(crate) fn is_date_at(bytes: &[u8], offset: usize) -> bool {
     if bytes.len() < offset + 5 {
         return false;
     }
@@ -107,8 +104,7 @@ fn is_date_at(s: &str, offset: usize) -> bool {
 ///
 /// Used by Layer 2 to detect same-line collisions where multiple log entries
 /// were concatenated without a newline (thread contention on file write).
-pub(crate) fn is_log_header_at(s: &str, offset: usize) -> bool {
-    let bytes = s.as_bytes();
+pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
     // Minimum: 27-byte timestamp + space + "0% [" = 31 bytes
     if bytes.len() < offset + 31 {
         return false;
@@ -224,11 +220,13 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
         };
     }
 
-    if is_uuid_at(line, 0) {
+    let bytes = line.as_bytes();
+
+    if is_uuid_at(bytes, 0) {
         let uuid = &line[0..36];
         let after_uuid = &line[37..];
 
-        if is_date_at(line, 37) {
+        if is_date_at(bytes, 37) {
             let (timestamp, idle_pct, level, source, message) =
                 parse_timestamped_fields(after_uuid);
             return RawLine {
@@ -253,7 +251,7 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
         };
     }
 
-    if is_date_at(line, 0) {
+    if is_date_at(bytes, 0) {
         let (timestamp, idle_pct, level, source, message) = parse_timestamped_fields(line);
         return RawLine {
             uuid: None,
@@ -266,7 +264,7 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
         };
     }
 
-    if let Some(uuid_start) = find_uuid_in(line) {
+    if let Some(uuid_start) = find_uuid_in(bytes) {
         let uuid = &line[uuid_start..uuid_start + 36];
         let message = if line.len() > uuid_start + 37 {
             &line[uuid_start + 37..]

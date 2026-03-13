@@ -1,5 +1,5 @@
 use crate::level::LogLevel;
-use crate::line::{is_log_header_at, is_uuid_at, parse_line, LineKind};
+use crate::line::{is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind};
 use crate::message::{classify_message, MessageKind, SdpDirection};
 
 /// Structured data extracted from a multi-line dump that follows a primary log entry.
@@ -461,27 +461,25 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
 
         // Skip past the line's own header to avoid matching itself.
-        let min_scan = if is_uuid_at(&line, 0) {
-            if line.len() > 37 && line.as_bytes()[37].is_ascii_digit() {
+        let bytes = line.as_bytes();
+        let min_scan = if is_uuid_at(bytes, 0) {
+            if bytes.len() > 37 && bytes[37].is_ascii_digit() {
                 64 // Full line: UUID + timestamp
             } else {
                 37 // UUID continuation
             }
-        } else if line.len() >= 5
-            && line.as_bytes()[..4].iter().all(u8::is_ascii_digit)
-            && line.as_bytes()[4] == b'-'
-        {
+        } else if is_date_at(bytes, 0) {
             27 // System line: skip own timestamp
         } else {
             0
         };
 
-        let end = line.len().saturating_sub(28);
+        let end = bytes.len().saturating_sub(28);
         for offset in min_scan..=end {
             // Timestamp collision (System or Full line header)
-            if is_log_header_at(&line, offset) {
+            if is_log_header_at(bytes, offset) {
                 // Check if a UUID precedes the timestamp (Full line collision)
-                let split_at = if offset >= 37 && is_uuid_at(&line, offset - 37) {
+                let split_at = if offset >= 37 && is_uuid_at(bytes, offset - 37) {
                     offset - 37
                 } else {
                     offset
@@ -490,7 +488,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 return line[..split_at].to_string();
             }
             // UUID collision without timestamp (Format E — truncated buffer)
-            if is_uuid_at(&line, offset) && line.len() > MAX_LINE_PAYLOAD {
+            if is_uuid_at(bytes, offset) && bytes.len() > MAX_LINE_PAYLOAD {
                 self.split_pending = Some(line[offset..].to_string());
                 return line[..offset].to_string();
             }

@@ -1,5 +1,5 @@
 use crate::level::LogLevel;
-use crate::line::{parse_line, LineKind};
+use crate::line::{is_uuid_at, parse_line, LineKind};
 use crate::message::{classify_message, MessageKind, SdpDirection};
 
 /// Structured data extracted from a multi-line dump that follows a primary log entry.
@@ -64,8 +64,29 @@ pub struct UnclassifiedLine {
 pub struct ParseStats {
     pub lines_processed: u64,
     pub lines_unclassified: u64,
+    /// Lines that became part of entries (primary line + attached lines per entry).
+    pub lines_in_entries: u64,
+    /// Empty lines that arrived with no pending entry to attach to.
+    pub lines_empty_orphan: u64,
+    /// Physical lines that were split into multiple logical entries due to
+    /// mod_logfile's 2048-byte snprintf truncation causing same-line collisions.
+    pub lines_split: u64,
     /// Populated only when tracking is `TrackLines` or `CaptureData`.
     pub unclassified_lines: Vec<UnclassifiedLine>,
+}
+
+impl ParseStats {
+    /// Lines that were processed but not accounted for by any tracking category.
+    ///
+    /// Returns 0 when the parser correctly accounts for every input line.
+    /// A non-zero value indicates a parser bug — lines were silently lost.
+    ///
+    /// Invariant: `lines_processed + lines_split == lines_in_entries + lines_empty_orphan`
+    pub fn unaccounted_lines(&self) -> u64 {
+        let expected = self.lines_in_entries + self.lines_empty_orphan;
+        let actual = self.lines_processed + self.lines_split;
+        actual.saturating_sub(expected)
+    }
 }
 
 /// A complete parsed log entry with all context resolved.
@@ -97,6 +118,8 @@ pub struct LogEntry {
     pub attached: Vec<String>,
     /// 1-based line number in the input stream.
     pub line_number: u64,
+    /// Per-entry warnings about parsing anomalies.
+    pub warnings: Vec<String>,
 }
 
 fn parse_field_line(msg: &str) -> Option<(String, String)> {
@@ -156,6 +179,7 @@ pub struct LogStream<I> {
     stats: ParseStats,
     tracking: UnclassifiedTracking,
     line_number: u64,
+    split_pending: Option<String>,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -170,6 +194,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             stats: ParseStats::default(),
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
+            split_pending: None,
         }
     }
 
@@ -212,35 +237,44 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
     }
 
-    fn finalize_block(&mut self) -> Option<Block> {
+    fn finalize_block(&mut self) -> (Option<Block>, Vec<String>) {
+        let mut warnings = Vec::new();
         match self.state.take_idle() {
-            StreamState::Idle => None,
+            StreamState::Idle => (None, warnings),
             StreamState::InChannelData {
                 fields,
                 mut variables,
                 open_var_name,
                 open_var_value,
             } => {
-                if let (Some(name), Some(value)) = (open_var_name, open_var_value) {
-                    variables.push((name, value));
+                if let (Some(ref name), Some(value)) = (&open_var_name, open_var_value) {
+                    warnings.push(format!("unclosed multi-line variable: {name}"));
+                    variables.push((name.clone(), value));
                 }
-                Some(Block::ChannelData { fields, variables })
+                (Some(Block::ChannelData { fields, variables }), warnings)
             }
-            StreamState::InSdp { direction, body } => Some(Block::Sdp { direction, body }),
+            StreamState::InSdp { direction, body } => {
+                (Some(Block::Sdp { direction, body }), warnings)
+            }
             StreamState::InCodecNegotiation {
                 comparisons,
                 selected,
-            } => Some(Block::CodecNegotiation {
-                comparisons,
-                selected,
-            }),
+            } => (
+                Some(Block::CodecNegotiation {
+                    comparisons,
+                    selected,
+                }),
+                warnings,
+            ),
         }
     }
 
     fn finalize_pending(&mut self) -> Option<LogEntry> {
-        let block = self.finalize_block();
+        let (block, warnings) = self.finalize_block();
         if let Some(ref mut p) = self.pending {
             p.block = block;
+            p.warnings.extend(warnings);
+            self.stats.lines_in_entries += 1 + p.attached.len() as u64;
         }
         self.pending.take()
     }
@@ -266,6 +300,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     }
 
     fn accumulate_codec_entry(&mut self, msg: &str) {
+        let mut warning = None;
         if let StreamState::InCodecNegotiation {
             comparisons,
             selected,
@@ -279,12 +314,21 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 let offered = &rest[1..slash];
                 let local = &rest[slash + 3..rest.len().saturating_sub(1)];
                 comparisons.push((offered.to_string(), local.to_string()));
+            } else {
+                warning = Some(format!(
+                    "unrecognized codec negotiation line: {}",
+                    if msg.len() > 80 { &msg[..80] } else { msg }
+                ));
             }
+        }
+        if let (Some(w), Some(ref mut pending)) = (warning, &mut self.pending) {
+            pending.warnings.push(w);
         }
     }
 
     fn accumulate_continuation(&mut self, msg: &str, line: &str) {
         let msg_kind = classify_message(msg);
+        let mut warning = None;
         match &mut self.state {
             StreamState::InChannelData {
                 fields,
@@ -317,6 +361,11 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                         _ => {
                             if let Some((name, value)) = parse_field_line(msg) {
                                 fields.push((name, value));
+                            } else {
+                                warning = Some(format!(
+                                    "unparseable CHANNEL_DATA line: {}",
+                                    if msg.len() > 80 { &msg[..80] } else { msg }
+                                ));
                             }
                         }
                     }
@@ -325,10 +374,18 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             StreamState::InSdp { body, .. } => {
                 body.push(msg.to_string());
             }
-            StreamState::InCodecNegotiation { .. } => {}
+            StreamState::InCodecNegotiation { .. } => {
+                warning = Some(format!(
+                    "unexpected codec negotiation continuation: {}",
+                    if msg.len() > 80 { &msg[..80] } else { msg }
+                ));
+            }
             StreamState::Idle => {}
         }
         if let Some(ref mut pending) = self.pending {
+            if let Some(w) = warning {
+                pending.warnings.push(w);
+            }
             pending.attached.push(line.to_string());
         }
     }
@@ -353,7 +410,41 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             block: None,
             attached: Vec::new(),
             line_number: self.line_number,
+            warnings: Vec::new(),
         }
+    }
+}
+
+/// mod_logfile's `snprintf` buffer size for UUID-prefixed lines.
+/// Lines exceeding this in the formatted output lose their trailing newline,
+/// causing the next queue entry to collide on the same physical line.
+const MOD_LOGFILE_BUF_SIZE: usize = 2048;
+
+/// Effective maximum payload per line (buffer minus UUID, space, newline).
+const MAX_LINE_PAYLOAD: usize = MOD_LOGFILE_BUF_SIZE - 36 - 1 - 1;
+
+impl<I: Iterator<Item = String>> LogStream<I> {
+    /// Detect a long-line collision: when a line exceeds mod_logfile's payload
+    /// limit, scan the overflow portion for an embedded UUID that marks the
+    /// start of a new log entry collided onto the same physical line.
+    ///
+    /// Returns the (possibly truncated) line. If a collision is detected,
+    /// the UUID+suffix is stored in `split_pending` for processing in the
+    /// next iteration.
+    fn detect_long_collision(&mut self, line: String) -> String {
+        if line.len() <= MAX_LINE_PAYLOAD {
+            return line;
+        }
+
+        for offset in MAX_LINE_PAYLOAD..line.len().saturating_sub(37) {
+            if is_uuid_at(&line, offset) {
+                let suffix = line[offset..].to_string();
+                self.split_pending = Some(suffix);
+                return line[..offset].to_string();
+            }
+        }
+
+        line
     }
 }
 
@@ -362,22 +453,30 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
     fn next(&mut self) -> Option<LogEntry> {
         loop {
-            let Some(line) = self.lines.next() else {
-                return self.finalize_pending();
+            let line = if let Some(split) = self.split_pending.take() {
+                self.stats.lines_split += 1;
+                split
+            } else {
+                let Some(line) = self.lines.next() else {
+                    return self.finalize_pending();
+                };
+
+                if line.starts_with('\x00') {
+                    let yielded = self.finalize_pending();
+                    self.last_uuid.clear();
+                    self.last_timestamp.clear();
+                    if yielded.is_some() {
+                        return yielded;
+                    }
+                    continue;
+                }
+
+                self.line_number += 1;
+                self.stats.lines_processed += 1;
+                line
             };
 
-            if line.starts_with('\x00') {
-                let yielded = self.finalize_pending();
-                self.last_uuid.clear();
-                self.last_timestamp.clear();
-                if yielded.is_some() {
-                    return yielded;
-                }
-                continue;
-            }
-
-            self.line_number += 1;
-            self.stats.lines_processed += 1;
+            let line = self.detect_long_collision(line);
 
             let parsed = parse_line(&line);
 
@@ -442,7 +541,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     let is_primary = parsed.message.starts_with("EXECUTE ");
 
                     if let Some(ref pending) = self.pending {
-                        if !is_primary && (uuid == pending.uuid || pending.uuid.is_empty()) {
+                        if !is_primary && uuid == pending.uuid {
                             self.accumulate_continuation(parsed.message, &line);
                         } else {
                             let yielded = self.finalize_pending();
@@ -503,6 +602,8 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 LineKind::Empty => {
                     if let Some(ref mut pending) = self.pending {
                         pending.attached.push(line);
+                    } else {
+                        self.stats.lines_empty_orphan += 1;
                     }
                 }
             }
@@ -1081,5 +1182,327 @@ mod tests {
              '{ts_old}' from the previous segment — timestamps must not bleed \
              across file boundaries"
         );
+    }
+
+    // --- Line accounting tests ---
+
+    fn assert_accounting(stream: &LogStream<impl Iterator<Item = String>>) {
+        let stats = stream.stats();
+        assert_eq!(
+            stats.unaccounted_lines(),
+            0,
+            "line accounting invariant violated: \
+             processed={} + split={} != in_entries={} + empty_orphan={}",
+            stats.lines_processed,
+            stats.lines_split,
+            stats.lines_in_entries,
+            stats.lines_empty_orphan,
+        );
+    }
+
+    #[test]
+    fn accounting_full_lines() {
+        let lines = vec![
+            full_line(UUID1, TS1, "First"),
+            full_line(UUID2, TS2, "Second"),
+        ];
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(stream.stats().lines_in_entries, 2);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_with_attached() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Channel-State: [CS_EXECUTE]"),
+            "variable_foo: [bar]".to_string(),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+        // Entry 1: 1 primary + 2 attached = 3 lines
+        // Entry 2: 1 primary = 1 line
+        assert_eq!(stream.stats().lines_in_entries, 4);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_system_line() {
+        let lines = vec![format!(
+            "{TS1} 95.97% [NOTICE] mod_logfile.c:217 New log started."
+        )];
+        let mut stream = LogStream::new(lines.into_iter());
+        let _: Vec<_> = stream.by_ref().collect();
+        assert_eq!(stream.stats().lines_in_entries, 1);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_empty_orphan() {
+        let lines = vec![
+            String::new(),
+            "   ".to_string(),
+            full_line(UUID1, TS1, "After"),
+        ];
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(stream.stats().lines_empty_orphan, 2);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_empty_attached() {
+        let lines = vec![
+            full_line(UUID1, TS1, "First"),
+            String::new(),
+            "continuation".to_string(),
+        ];
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].attached.len(), 2);
+        assert_eq!(stream.stats().lines_empty_orphan, 0);
+        assert_eq!(stream.stats().lines_in_entries, 3);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_orphan_continuation() {
+        let lines = vec!["orphan line".to_string(), full_line(UUID1, TS1, "After")];
+        let mut stream = LogStream::new(lines.into_iter());
+        let _: Vec<_> = stream.by_ref().collect();
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_codec_merging() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1]/[PCMU:0:8000:20:64000:1]",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1] is saved as a match",
+            ),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let mut stream = LogStream::new(lines.into_iter());
+        let _: Vec<_> = stream.by_ref().collect();
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_truncated_line() {
+        let lines = vec![
+            full_line(UUID1, TS1, "First"),
+            format!(
+                "varia{UUID2} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(x=y)"
+            ),
+        ];
+        let mut stream = LogStream::new(lines.into_iter());
+        let _: Vec<_> = stream.by_ref().collect();
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn accounting_long_line_collision_split() {
+        // Simulate a long variable value exceeding mod_logfile's 2048-byte buffer,
+        // followed by a collision UUID on the same physical line.
+        let long_value = "x".repeat(MAX_LINE_PAYLOAD + 10);
+        let line = format!(
+            "variable_sip_multipart: [{long_value}]{UUID2} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(foo=bar)"
+        );
+        let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), line];
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+
+        // The CHANNEL_DATA entry should have the truncated variable as attached
+        assert_eq!(entries[0].message, "CHANNEL_DATA:");
+
+        // The collision should have been split out as a separate entry
+        let split_entry = entries.iter().find(|e| e.uuid == UUID2);
+        assert!(
+            split_entry.is_some(),
+            "collision UUID should produce a separate entry"
+        );
+
+        assert_eq!(stream.stats().lines_split, 1);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn no_split_on_short_lines() {
+        // Lines within the payload limit should never be split,
+        // even if they happen to contain a UUID-like pattern.
+        let line = format!("variable_call_uuid: [{UUID2}]");
+        let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), line];
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(stream.stats().lines_split, 0);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn channel_data_multiline_variable_spans_many_lines() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),
+            "variable_switch_r_sdp: [v=0".to_string(),
+            "o=- 1234 5678 IN IP4 192.0.2.1".to_string(),
+            "s=-".to_string(),
+            "c=IN IP4 192.0.2.1".to_string(),
+            "t=0 0".to_string(),
+            "m=audio 47758 RTP/AVP 0 8 101".to_string(),
+            "a=rtpmap:0 PCMU/8000".to_string(),
+            "a=rtpmap:8 PCMA/8000".to_string(),
+            "a=rtpmap:101 telephone-event/8000".to_string(),
+            "a=fmtp:101 0-16".to_string(),
+            "]".to_string(),
+            "variable_direction: [inbound]".to_string(),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        let block = entries[0].block.as_ref().expect("should have block");
+        match block {
+            Block::ChannelData { fields, variables } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(variables.len(), 2);
+                assert_eq!(variables[0].0, "variable_switch_r_sdp");
+                let sdp = &variables[0].1;
+                assert!(sdp.starts_with("v=0\n"));
+                assert!(sdp.contains("a=fmtp:101 0-16"));
+                assert!(!sdp.ends_with(']'));
+                assert_eq!(variables[1].0, "variable_direction");
+            }
+            other => panic!("expected ChannelData block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sdp_from_verto_update_media() {
+        let lines = vec![
+            full_line(UUID1, TS1, "updateMedia: Local SDP"),
+            "v=0".to_string(),
+            "o=- 1234 5678 IN IP4 192.0.2.1".to_string(),
+            "m=audio 10000 RTP/AVP 0".to_string(),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        match &entries[0].message_kind {
+            MessageKind::SdpMarker { direction } => assert_eq!(*direction, SdpDirection::Local),
+            other => panic!("expected SdpMarker, got {other:?}"),
+        }
+        let block = entries[0].block.as_ref().expect("should have block");
+        match block {
+            Block::Sdp { direction, body } => {
+                assert_eq!(*direction, SdpDirection::Local);
+                assert_eq!(body.len(), 3);
+            }
+            other => panic!("expected Sdp block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_sdp_marker() {
+        let lines = vec![
+            full_line(UUID1, TS1, "Duplicate SDP"),
+            "v=0".to_string(),
+            "m=audio 10000 RTP/AVP 0".to_string(),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        match &entries[0].message_kind {
+            MessageKind::SdpMarker { direction } => assert_eq!(*direction, SdpDirection::Unknown),
+            other => panic!("expected SdpMarker, got {other:?}"),
+        }
+        assert!(entries[0].block.is_some());
+    }
+
+    #[test]
+    fn warning_on_unclosed_multiline_variable() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            "variable_switch_r_sdp: [v=0".to_string(),
+            "o=- 1234 5678 IN IP4 192.0.2.1".to_string(),
+            full_line(UUID2, TS2, "Next entry"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unclosed multi-line variable")),
+            "expected unclosed variable warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
+    #[test]
+    fn warning_on_unparseable_channel_data_line() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),
+            format!("{UUID1} this is not a valid field line"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unparseable CHANNEL_DATA")),
+            "expected unparseable warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
+    #[test]
+    fn warning_on_unexpected_codec_continuation() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1]/[PCMU:0:8000:20:64000:1]",
+            ),
+            format!("{UUID1} some unexpected continuation line"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unexpected codec negotiation")),
+            "expected codec warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
+    #[test]
+    fn system_line_uuid_continuation_not_absorbed() {
+        // After the bug fix, a UUID continuation should NOT be absorbed
+        // by a pending system line (empty UUID).
+        let lines = vec![
+            format!("{TS1} 95.97% [INFO] mod_event_socket.c:1772 Event Socket command"),
+            format!("{UUID1} Channel-State: [CS_EXECUTE]"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "UUID continuation should not be absorbed by system entry"
+        );
+        assert_eq!(entries[0].uuid, "");
+        assert_eq!(entries[1].uuid, UUID1);
     }
 }

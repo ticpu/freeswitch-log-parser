@@ -292,7 +292,25 @@ fn comprehensive_parse_report() {
             }
         }
 
+        eprintln!(
+            "  accounting: in_entries={} empty_orphan={} split={} unaccounted={}",
+            stats.lines_in_entries,
+            stats.lines_empty_orphan,
+            stats.lines_split,
+            stats.unaccounted_lines(),
+        );
+
         assert!(stats.lines_processed > 0, "{name}: no lines processed");
+        assert_eq!(
+            stats.unaccounted_lines(),
+            0,
+            "{name}: line accounting invariant violated: \
+             processed={} + split={} != in_entries={} + empty_orphan={}",
+            stats.lines_processed,
+            stats.lines_split,
+            stats.lines_in_entries,
+            stats.lines_empty_orphan,
+        );
     }
 }
 
@@ -337,5 +355,40 @@ fn session_tracker_learns_state() {
         eprintln!("  with channel name: {with_channel_name}");
         eprintln!("  sessions tracked: {session_count}");
         eprintln!("  total variables learned: {vars_learned}");
+    }
+}
+
+#[test]
+fn warning_report() {
+    if skip_if_no_fixtures() {
+        return;
+    }
+    for file in &fixture_files() {
+        let name = file.file_name().unwrap().to_string_lossy();
+        let mut entries_with_warnings: u64 = 0;
+        let mut total_warnings: u64 = 0;
+        let mut warning_samples: Vec<String> = Vec::new();
+
+        for entry in LogStream::new(lines_from_file(file)) {
+            if !entry.warnings.is_empty() {
+                entries_with_warnings += 1;
+                total_warnings += entry.warnings.len() as u64;
+                if warning_samples.len() < 10 {
+                    for w in &entry.warnings {
+                        if warning_samples.len() < 10 {
+                            warning_samples.push(format!("L{}: {}", entry.line_number, w));
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!();
+        eprintln!("=== {name} (warnings) ===");
+        eprintln!("  entries with warnings: {entries_with_warnings}");
+        eprintln!("  total warnings: {total_warnings}");
+        for sample in &warning_samples {
+            eprintln!("    | {sample}");
+        }
     }
 }

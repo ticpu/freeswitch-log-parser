@@ -60,7 +60,7 @@ pub struct RawLine<'a> {
     pub kind: LineKind,
 }
 
-fn is_uuid_at(s: &str, offset: usize) -> bool {
+pub(crate) fn is_uuid_at(s: &str, offset: usize) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() < offset + 37 {
         return false;

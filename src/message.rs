@@ -179,7 +179,12 @@ fn parse_execute(msg: &str) -> MessageKind {
 }
 
 fn parse_dialplan(msg: &str) -> MessageKind {
-    let rest = &msg["Dialplan: ".len()..];
+    let prefix_len = if msg.starts_with("Chatplan: ") {
+        "Chatplan: ".len()
+    } else {
+        "Dialplan: ".len()
+    };
+    let rest = &msg[prefix_len..];
     let (channel, detail) = match rest.find(' ') {
         Some(p) => (&rest[..p], &rest[p + 1..]),
         None => (rest, ""),
@@ -227,11 +232,13 @@ pub fn classify_message(msg: &str) -> MessageKind {
         return parse_execute(msg);
     }
 
-    if msg.starts_with("Dialplan: ") {
+    if msg.starts_with("Dialplan: ") || msg.starts_with("Chatplan: ") {
         return parse_dialplan(msg);
     }
 
-    if msg.starts_with("Processing ") && msg.contains(" in context ") {
+    if msg.starts_with("Processing ")
+        && (msg.contains(" in context ") || msg.contains("recursive conditions"))
+    {
         return parse_dialplan_processing(msg);
     }
 
@@ -383,8 +390,8 @@ fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
 }
 
 fn classify_channel_prefixed(rest: &str) -> MessageKind {
-    // SOFIA STATE / Standard STATE
-    if rest.starts_with("SOFIA ") || rest.starts_with("Standard ") {
+    // SOFIA STATE / Standard STATE / RTC STATE
+    if rest.starts_with("SOFIA ") || rest.starts_with("Standard ") || rest.starts_with("RTC ") {
         return MessageKind::StateChange {
             detail: rest.to_string(),
         };
@@ -991,6 +998,118 @@ mod tests {
         match classify_message("Channel [sofia/internal] has been answered") {
             MessageKind::ChannelLifecycle { .. } => {}
             other => panic!("expected ChannelLifecycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chatplan_regex() {
+        let msg = "Chatplan: sofia/internal/+15550001234@192.0.2.1 Regex (PASS) [global_routing] destination_number(18001234567) =~ /^1?(\\d{10})$/ break=on-false";
+        match classify_message(msg) {
+            MessageKind::Dialplan { channel, detail } => {
+                assert_eq!(channel, "sofia/internal/+15550001234@192.0.2.1");
+                assert!(detail.starts_with("Regex (PASS)"));
+            }
+            other => panic!("expected Dialplan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chatplan_action() {
+        let msg =
+            "Chatplan: sofia/internal/+15550001234@192.0.2.1 Action set(call_direction=inbound)";
+        match classify_message(msg) {
+            MessageKind::Dialplan { detail, .. } => {
+                assert!(detail.starts_with("Action "));
+            }
+            other => panic!("expected Dialplan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chatplan_anti_action() {
+        let msg =
+            "Chatplan: sofia/internal/+15550001234@192.0.2.1 ANTI-Action log(WARNING no match)";
+        match classify_message(msg) {
+            MessageKind::Dialplan { detail, .. } => {
+                assert!(detail.starts_with("ANTI-Action "));
+            }
+            other => panic!("expected Dialplan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standard_execute_is_state_change() {
+        let msg = "sofia/internal/+15550001234@192.0.2.1 Standard EXECUTE";
+        match classify_message(msg) {
+            MessageKind::StateChange { detail } => {
+                assert_eq!(detail, "Standard EXECUTE");
+            }
+            other => panic!("expected StateChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sofia_execute_is_state_change() {
+        let msg = "sofia/internal/+15550001234@192.0.2.1 SOFIA EXECUTE";
+        match classify_message(msg) {
+            MessageKind::StateChange { detail } => {
+                assert_eq!(detail, "SOFIA EXECUTE");
+            }
+            other => panic!("expected StateChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rtc_execute_is_state_change() {
+        let msg = "sofia/internal/+15550001234@192.0.2.1 RTC EXECUTE";
+        match classify_message(msg) {
+            MessageKind::StateChange { detail } => {
+                assert_eq!(detail, "RTC EXECUTE");
+            }
+            other => panic!("expected StateChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standard_soft_execute_is_state_change() {
+        let msg = "sofia/internal/+15550001234@192.0.2.1 Standard SOFT_EXECUTE";
+        match classify_message(msg) {
+            MessageKind::StateChange { detail } => {
+                assert_eq!(detail, "Standard SOFT_EXECUTE");
+            }
+            other => panic!("expected StateChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dialplan_recursive_conditions() {
+        let msg = "Processing recursive conditions level:1 [default] require-nested=true";
+        match classify_message(msg) {
+            MessageKind::Dialplan { detail, .. } => {
+                assert!(detail.contains("recursive conditions"));
+            }
+            other => panic!("expected Dialplan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sdp_duplicate_marker() {
+        let msg = "Duplicate SDP";
+        match classify_message(msg) {
+            MessageKind::SdpMarker { direction } => {
+                assert_eq!(direction, SdpDirection::Unknown);
+            }
+            other => panic!("expected SdpMarker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sdp_verto_update_media() {
+        match classify_message("updateMedia: Local SDP") {
+            MessageKind::SdpMarker { direction } => {
+                assert_eq!(direction, SdpDirection::Local);
+            }
+            other => panic!("expected SdpMarker, got {other:?}"),
         }
     }
 }

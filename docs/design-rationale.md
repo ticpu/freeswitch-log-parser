@@ -22,9 +22,9 @@ fluent-bit replacement, an Elasticsearch uploader, or a CLI grep tool.
 ## FreeSWITCH log line anatomy
 
 FreeSWITCH's `mod_logfile` and console logger emit lines through
-`switch_log_printf()`, which formats into a fixed-size buffer. The format
-depends on context — whether a session (channel) is active, whether the
-message fits the buffer, and whether the line is part of a multi-line dump.
+`switch_log_printf()`. The format depends on context — whether a session
+(channel) is active, whether the message fits the output buffer, and
+whether the line is part of a multi-line dump.
 
 Five distinct line shapes appear in production logs:
 
@@ -84,25 +84,114 @@ a=rtpmap:0 PCMU/8000
 ]
 ```
 
-These lines inherit both UUID and timestamp from context. They occur because
-`switch_log_printf` formats the CHANNEL_DATA block line-by-line, and at
-some point the UUID prefix stops being emitted — likely when the output
-transitions from the structured dump code to raw variable printing.
+These lines inherit both UUID and timestamp from context. They occur in
+CHANNEL_DATA dumps when `switch_event_serialize()` produces multi-line
+output (e.g. embedded SDP in a variable value). `mod_logfile` splits
+`node->data` by newlines and prepends the session UUID to each resulting
+line. When the UUID prepend is disabled (configuration-dependent) or the
+line originates from a code path that doesn't carry session context, the
+UUID is absent.
 
 **Format E — Truncated buffer collision.** The most surprising format.
-`switch_log_printf` uses a fixed-size `char[]` buffer. When a CHANNEL_DATA
-variable dump is being written and the buffer fills, the variable name gets
-truncated and a new log entry's UUID appears mid-token:
+`mod_logfile` uses a fixed 2048-byte buffer (`mod_logfile.c:299`) when
+prepending the session UUID to each line:
+
+```c
+char buf[2048];
+switch_snprintf(buf, sizeof(buf), "%s %s\n", node->userdata, lines[i]);
+```
+
+The effective payload per line is ~2010 bytes (2048 minus 36 UUID, 1 space,
+1 newline). When a line exceeds this limit, `snprintf` truncates the
+output and the trailing `\n` is lost. The next log entry written to the
+file starts immediately after the truncated data, producing a collision
+on a single physical line:
 
 ```
 varia3231989a-c8fb-42c3-9078-b9d6b1482fa7 EXECUTE [depth=0] sofia/internal-v6/1221@[fd51:2050:2220:198::10] export(...)
 ```
 
-Here `variable_` was being written, only `varia` fit, and then
-`3231989a-...` is the UUID of the next log entry. The prefix is garbage from
-the previous buffer's truncated output. The UUID is extractable by scanning
-for the pattern within the line. The prefix length varies — we've observed
-`varia`, `variab`, `var`, and `variable` prefixes before the UUID.
+Here `variable_` was being written, only `varia` fit before the 2048-byte
+limit, and then `3231989a-...` is the UUID of the next log entry from the
+queue. The garbage prefix length varies — observed: `var`, `varia`,
+`variab`, `variable`.
+
+For long variable values (e.g. `variable_sip_multipart` containing a full
+PIDF XML document), the collision UUID can appear hundreds or thousands of
+bytes into the line, well beyond the short-prefix case. The stream parser
+(Layer 2) detects these long collisions by scanning for UUID patterns in
+lines exceeding the ~2010-byte payload limit.
+
+Note: `switch_log_printf()` itself uses `switch_vasprintf()` for message
+formatting, which dynamically allocates without a size limit. The
+truncation happens exclusively in `mod_logfile`'s UUID prepend stage, not
+in the core logging pipeline.
+
+## Log output taxonomy
+
+FreeSWITCH produces two structurally distinct types of output in log files.
+The presence of `[LEVEL] source:line` is the definitive marker — if a line
+has it, it came from `switch_log_printf()`. If not, it is structured output
+from a subsystem that writes through the log pipeline without the
+timestamp/level/source prefix.
+
+### Primary log lines (Format A/B)
+
+Every call to `switch_log_printf()` produces a timestamped entry through
+`switch_log_meta_vprintf()` (switch_log.c:599). The core pipeline formats:
+
+    YYYY-MM-DD HH:MM:SS.UUUUUU CC.CC% [LEVEL] source:line MESSAGE
+
+When `mod_logfile` has `log_uuid=true` (default), it splits `node->data`
+by `\n` and prepends the session UUID to each resulting line
+(mod_logfile.c:298-314):
+
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "%s %s\n", node->userdata, lines[i]);
+
+A single `switch_log_printf()` call can produce multiple lines if its
+format string or arguments contain embedded `\n`. Examples:
+
+| Source | Format | Multi-line |
+|--------|--------|------------|
+| mod_dptools.c:1999 | `"CHANNEL_DATA:\n%s\n"` | Yes — serialized event |
+| sofia_glue.c:1676 | `"Local SDP %s:\n%s\n"` | Yes — SDP body |
+| sofia.c:7634 | `"Remote SDP:\n%s\n"` | Yes — SDP body |
+| switch_channel.c:2615 | `"(%s) State Change %s -> %s\n"` | No |
+| switch_core_media.c:8892 | `"Activating RTCP PORT %d\n"` | No |
+
+### Structured output (Format C/D)
+
+These lines appear in the log file with UUID but WITHOUT timestamp, level,
+or source. They originate from subsystems that produce output through the
+log pipeline using clean-channel logging or by embedding content in a
+multi-line `switch_log_printf()` call.
+
+**Dialplan engine** (mod_dialplan_xml.c):
+
+| Pattern | Format string | Line refs |
+|---------|---------------|-----------|
+| Regex match | `"Dialplan: %s Regex (PASS\|FAIL) [%s] %s(%s) =~ /%s/ break=%s\n"` | 412-427 |
+| Action | `"Dialplan: %s Action %s(%s) %s\n"` | 557, 561 |
+| ANTI-Action | `"Dialplan: %s ANTI-Action %s(%s) %s\n"` | 490, 494 |
+| Absolute | `"Dialplan: %s Absolute Condition [%s]\n"` | 434, 438 |
+| Recursive | `"Processing recursive conditions level:%d [%s] require-nested=%s\n"` | 153, 156 |
+
+Chatplan (mod_sms.c) uses identical patterns with `"Chatplan:"` prefix.
+
+**Execution traces** (switch_core_session.c:2907):
+`"EXECUTE [depth=%d] %s %s(%s)\n"` — channel name, application, arguments.
+
+**CHANNEL_DATA serialization** (switch_event.c:1603):
+Each field: `"FIELDNAME: [VALUE]\n"` — multi-line values keep the opening
+`[` on the first line, content on subsequent lines, `]` closes on its own
+line.
+
+**State machine output** (switch_core_state_machine.c):
+`"%s Standard EXECUTE\n"`, `"%s Standard SOFT_EXECUTE\n"` — channel-prefixed.
+
+**Endpoint-specific**: `"%s SOFIA EXECUTE\n"` (mod_sofia.c:232),
+`"%s RTC EXECUTE\n"` (mod_rtc.c:120).
 
 ## Three-layer architecture
 
@@ -211,14 +300,35 @@ couldn't be fully classified:
 - `UnclassifiedTracking::CaptureData` — like `TrackLines` plus the
   actual line content.
 
-`ParseStats` accumulates `lines_processed`, `lines_unclassified`, and
-(when tracking is enabled) a `Vec<UnclassifiedLine>` with reasons like
-`OrphanContinuation` (bare line with no pending entry) or
-`TruncatedField` (partially parsed EXECUTE or variable).
+`ParseStats` accumulates counters that together prove every input line
+is accounted for:
+
+- `lines_processed` — every physical line read from the input iterator
+- `lines_in_entries` — lines that became part of entries (1 primary +
+  N attached per entry), incremented when entries are finalized
+- `lines_empty_orphan` — empty/whitespace lines with no pending entry
+- `lines_split` — physical lines that contained a truncated collision
+  and were split into multiple logical entries
+- `lines_unclassified` — anomaly counter (orthogonal to accounting;
+  a line can be both unclassified AND in an entry)
+
+The accounting invariant is:
+
+```
+lines_processed + lines_split == lines_in_entries + lines_empty_orphan
+```
+
+`ParseStats::unaccounted_lines()` returns the difference. A non-zero
+value indicates a parser bug — lines were silently lost.
+
+When tracking is enabled, `unclassified_lines: Vec<UnclassifiedLine>`
+records per-line detail with reasons like `OrphanContinuation` (bare
+line with no pending entry) or `TruncatedField` (partially parsed
+EXECUTE or variable).
 
 Stats bubble up through layers: `SessionTracker.stats()` delegates to
-`LogStream.stats()`. The consumer at any layer can account for every
-input line.
+`LogStream.stats()`. The consumer at any layer can verify that every
+input line is accounted for.
 
 ## Per-session state propagation
 
@@ -286,15 +396,24 @@ exhausted.
 ## UUID tracking across truncated lines
 
 Format E (truncated collision) lines are tricky because the UUID appears
-at an unpredictable position. The parser scans for the UUID pattern
-character-by-character. Once found, the rest of the line after the UUID
-is treated as the message. The garbage prefix is discarded.
+at an unpredictable position. Layer 1 (`parse_line`) scans the first 50
+bytes for a UUID pattern — this catches the common short-prefix case
+(`varia`, `var`, etc.) where the collision happens near the start.
 
-The stream parser treats truncated lines as primary lines — they start a
-new entry and update `last_uuid`. This is correct because the truncation
-marks the boundary between two sessions' output: the truncated variable
-belonged to the previous session, and the UUID/message belongs to the new
-one.
+For long collisions — where a variable value like `variable_sip_multipart`
+contains a full XML document and the collision UUID appears hundreds of
+bytes in — Layer 1 classifies the line as BareContinuation (the UUID is
+beyond the 50-byte scan window). Layer 2 (`LogStream`) detects these by
+checking the message length against mod_logfile's ~2010-byte payload
+limit and scanning the overflow portion for an embedded UUID. When found,
+the line is split: the prefix stays as continuation data, the UUID+suffix
+becomes a separate entry, and `lines_split` is incremented.
+
+Both detected and split truncated lines are treated as primary lines —
+they start a new entry and update `last_uuid`. This is correct because
+the truncation marks the boundary between two sessions' output: the
+truncated data belonged to the previous entry, and the UUID/message
+belongs to the new one.
 
 ## LogLevel ordering
 

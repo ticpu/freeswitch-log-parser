@@ -448,6 +448,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
         }
         Some(path) => {
             let p = PathBuf::from(path);
+            let p = if p.is_absolute() { p } else { dir.join(&p) };
             open_log_reader(&p)?
         }
         None => {

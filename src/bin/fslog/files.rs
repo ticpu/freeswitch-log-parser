@@ -307,6 +307,7 @@ pub fn open_tail_reader(
     Ok(Box::new(context.into_iter().chain(tail)))
 }
 
+#[cfg(feature = "tui")]
 pub fn open_full_tail_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 

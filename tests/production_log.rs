@@ -451,6 +451,40 @@ fn session_tracker_learns_state() {
 }
 
 #[test]
+fn system_lines_with_embedded_uuid_extracted() {
+    // FreeSWITCH's C++ wrapper (switch_cpp.cpp) logs with SWITCH_CHANNEL_LOG
+    // (no session context) but includes the UUID at the start of the message.
+    // These must be extracted so -u filtering and session tracking work.
+    if skip_if_no_fixtures() {
+        return;
+    }
+    let mut total_system: u64 = 0;
+    let mut system_with_uuid: u64 = 0;
+
+    for (_corpus, files) in &fixture_corpora() {
+        for file in files {
+            for entry in LogStream::new(lines_from_file(file)) {
+                if entry.kind == LineKind::System {
+                    total_system += 1;
+                    if !entry.uuid.is_empty() {
+                        system_with_uuid += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!("System line UUID extraction stats:");
+    eprintln!("  total system lines: {total_system}");
+    eprintln!("  system lines with extracted UUID: {system_with_uuid}");
+    assert!(
+        system_with_uuid > 0,
+        "expected fixture data to contain System lines with embedded UUIDs"
+    );
+}
+
+#[test]
 fn warning_report() {
     if skip_if_no_fixtures() {
         return;

@@ -1773,7 +1773,10 @@ mod tests {
                 // Multi-line SDP variable reassembled from bare continuations
                 assert_eq!(variables[2].0, "variable_switch_r_sdp");
                 let sdp = &variables[2].1;
-                assert!(sdp.starts_with("v=0\r\n"), "SDP should start with v=0\\r\\n, got: {sdp:?}");
+                assert!(
+                    sdp.starts_with("v=0\r\n"),
+                    "SDP should start with v=0\\r\\n, got: {sdp:?}"
+                );
                 assert!(sdp.contains("m=audio 9952 RTP/AVP 102 101 13\r"));
                 assert!(sdp.contains("a=ptime:20\r"));
                 assert!(!sdp.ends_with(']'), "closing bracket should be stripped");
@@ -1809,7 +1812,11 @@ mod tests {
             "variable_DP_MATCH: [ARRAY::create_conference|:create_conference]".to_string(),
             collision,
             // Full line resumes normal logging
-            full_line(UUID1, TS2, "EXPORT (export_vars) (REMOTE ONLY) [test_var]=[value]"),
+            full_line(
+                UUID1,
+                TS2,
+                "EXPORT (export_vars) (REMOTE ONLY) [test_var]=[value]",
+            ),
         ];
 
         let mut stream = LogStream::new(lines.into_iter());
@@ -1839,6 +1846,39 @@ mod tests {
 
         // Entry 2: normal EXPORT line
         assert_eq!(entries[2].message_kind.label(), "variable");
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn system_line_with_embedded_uuid_gets_entry_uuid() {
+        // System lines (Format B) where switch_cpp.cpp logs the UUID at the
+        // start of the message body should produce entries with the correct UUID.
+        let lines = vec![
+            format!(
+                "{TS1} 95.97% [DEBUG] switch_cpp.cpp:1466 {UUID1} DAA-LOG WaveManager originate"
+            ),
+            format!(
+                "{TS1} 95.97% [WARNING] switch_cpp.cpp:1466 {UUID1} DAA-LOG Failed to create session"
+            ),
+            full_line(UUID1, TS2, "State Change CS_EXECUTE -> CS_HIBERNATE"),
+        ];
+
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+
+        assert_eq!(entries.len(), 3);
+        // Both System lines should have the UUID extracted from the message
+        assert_eq!(entries[0].uuid, UUID1);
+        assert_eq!(entries[0].kind, LineKind::System);
+        assert_eq!(entries[0].message, "DAA-LOG WaveManager originate");
+
+        assert_eq!(entries[1].uuid, UUID1);
+        assert_eq!(entries[1].kind, LineKind::System);
+        assert_eq!(entries[1].message, "DAA-LOG Failed to create session");
+
+        // Full line still works normally
+        assert_eq!(entries[2].uuid, UUID1);
+        assert_eq!(entries[2].kind, LineKind::Full);
         assert_accounting(&stream);
     }
 }

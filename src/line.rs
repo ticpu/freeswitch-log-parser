@@ -253,8 +253,13 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
 
     if is_date_at(bytes, 0) {
         let (timestamp, idle_pct, level, source, message) = parse_timestamped_fields(line);
+        let (uuid, message) = if is_uuid_at(message.as_bytes(), 0) {
+            (Some(&message[0..36]), &message[37..])
+        } else {
+            (None, message)
+        };
         return RawLine {
-            uuid: None,
+            uuid,
             timestamp,
             idle_pct,
             level,
@@ -376,6 +381,39 @@ mod tests {
         assert_eq!(parsed.idle_pct, Some("95.97%"));
         assert_eq!(parsed.level, Some(LogLevel::Info));
         assert_eq!(parsed.source, Some("mod_event_socket.c:1772"));
+        assert_eq!(parsed.message, "Event Socket command");
+    }
+
+    #[test]
+    fn system_line_with_embedded_uuid() {
+        let line = format!(
+            "2025-01-15 10:30:45.123456 95.97% [DEBUG] switch_cpp.cpp:1466 {UUID1} DAA-LOG WaveManager PSAP 911 originate"
+        );
+        let parsed = parse_line(&line);
+        assert_eq!(parsed.kind, LineKind::System);
+        assert_eq!(parsed.uuid, Some(UUID1));
+        assert_eq!(parsed.timestamp, Some("2025-01-15 10:30:45.123456"));
+        assert_eq!(parsed.level, Some(LogLevel::Debug));
+        assert_eq!(parsed.source, Some("switch_cpp.cpp:1466"));
+        assert_eq!(parsed.message, "DAA-LOG WaveManager PSAP 911 originate");
+    }
+
+    #[test]
+    fn system_line_with_embedded_uuid_empty_message() {
+        let line = format!("2025-01-15 10:30:45.123456 95.97% [INFO] switch_cpp.cpp:1466 {UUID1} ");
+        let parsed = parse_line(&line);
+        assert_eq!(parsed.kind, LineKind::System);
+        assert_eq!(parsed.uuid, Some(UUID1));
+        assert_eq!(parsed.message, "");
+    }
+
+    #[test]
+    fn system_line_without_embedded_uuid() {
+        let line =
+            "2025-01-15 10:30:45.123456 95.97% [INFO] mod_event_socket.c:1772 Event Socket command";
+        let parsed = parse_line(line);
+        assert_eq!(parsed.kind, LineKind::System);
+        assert_eq!(parsed.uuid, None);
         assert_eq!(parsed.message, "Event Socket command");
     }
 

@@ -1607,4 +1607,79 @@ mod tests {
         assert_eq!(entries[0].uuid, "");
         assert_eq!(entries[1].uuid, UUID1);
     }
+
+    #[test]
+    fn truncated_collision_in_channel_data_variable() {
+        // A CHANNEL_DATA block where a variable value exceeds the 2048-byte
+        // mod_logfile buffer, causing a truncated collision (Format E).
+        // The variable_long_xml value opens with [ but the buffer truncation
+        // causes a UUID+EXECUTE to collide on the same physical line before
+        // the closing ].
+        let padding = "x".repeat(2000);
+        let collision_line = format!(
+            "{UUID1} variable_long_xml: [{padding}{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 export(foo=bar)"
+        );
+        assert!(
+            collision_line.len() > super::MAX_LINE_PAYLOAD,
+            "test line must exceed buffer limit, got {}",
+            collision_line.len()
+        );
+
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),
+            format!("{UUID1} variable_direction: [inbound]"),
+            collision_line,
+            full_line(UUID1, TS2, "Next log entry"),
+        ];
+
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+
+        // Entry 0: CHANNEL_DATA with the variables
+        assert_eq!(entries[0].message, "CHANNEL_DATA:");
+        let block = entries[0].block.as_ref().expect("should have block");
+        match block {
+            Block::ChannelData { fields, variables } => {
+                assert_eq!(fields.len(), 1, "should have Channel-Name field");
+                assert_eq!(fields[0].0, "Channel-Name");
+                assert_eq!(
+                    variables.len(),
+                    2,
+                    "should have direction + unclosed long_xml"
+                );
+                assert_eq!(variables[0].0, "variable_direction");
+                assert_eq!(variables[0].1, "inbound");
+                assert_eq!(variables[1].0, "variable_long_xml");
+            }
+            other => panic!("expected ChannelData block, got {other:?}"),
+        }
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("line exceeds mod_logfile 2048-byte buffer")),
+            "expected buffer overflow warning, got: {:?}",
+            entries[0].warnings
+        );
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unclosed multi-line variable")),
+            "expected unclosed variable warning, got: {:?}",
+            entries[0].warnings
+        );
+
+        // Entry 1: the split EXECUTE line
+        assert_eq!(entries[1].uuid, UUID1);
+        assert!(
+            entries[1].message.starts_with("EXECUTE "),
+            "split entry should be EXECUTE, got: {}",
+            entries[1].message
+        );
+
+        // Entry 2: the next full log line
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].message, "Next log entry");
+    }
 }

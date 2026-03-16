@@ -1682,4 +1682,163 @@ mod tests {
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[2].message, "Next log entry");
     }
+
+    #[test]
+    fn channel_data_uuid_drops_mid_block() {
+        // Production scenario: mod_logfile stops prepending the UUID mid-way
+        // through a CHANNEL_DATA dump. The first few variable lines carry the
+        // UUID prefix (UuidContinuation), then the remaining lines arrive as
+        // bare continuations. All should be accumulated into the same block.
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} variable_max_forwards: [69]"),
+            format!("{UUID1} variable_presence_id: [1251@[2001:db8::10]]"),
+            format!("{UUID1} variable_sip_h_X-Custom-ID: [c4da84eb-88a7-40b2-b90d-e5bc2a0f634e]"),
+            // UUID drops — bare continuations for the rest
+            "variable_sip_h_X-Call-Info: [<urn:test:callid:20260316>;purpose=emergency-CallId]"
+                .to_string(),
+            "variable_ep_codec_string: [mod_opus.opus@48000h@20i@2c]".to_string(),
+            "variable_remote_media_ip: [2001:db8::10]".to_string(),
+            "variable_remote_media_port: [9952]".to_string(),
+            "variable_rtp_use_codec_name: [opus]".to_string(),
+            full_line(UUID1, TS2, "Next entry"),
+        ];
+
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].message, "CHANNEL_DATA:");
+        let block = entries[0].block.as_ref().expect("should have block");
+        match block {
+            Block::ChannelData { fields, variables } => {
+                assert_eq!(fields.len(), 0);
+                assert_eq!(variables.len(), 8);
+                // UUID-prefixed variables
+                assert_eq!(variables[0].0, "variable_max_forwards");
+                assert_eq!(variables[0].1, "69");
+                assert_eq!(variables[1].0, "variable_presence_id");
+                assert_eq!(variables[1].1, "1251@[2001:db8::10]");
+                assert_eq!(variables[2].0, "variable_sip_h_X-Custom-ID");
+                // Bare variables (UUID dropped)
+                assert_eq!(variables[3].0, "variable_sip_h_X-Call-Info");
+                assert!(variables[3].1.contains("emergency-CallId"));
+                assert_eq!(variables[4].0, "variable_ep_codec_string");
+                assert_eq!(variables[7].0, "variable_rtp_use_codec_name");
+                assert_eq!(variables[7].1, "opus");
+            }
+            other => panic!("expected ChannelData block, got {other:?}"),
+        }
+        assert_eq!(entries[0].attached.len(), 8);
+        assert_eq!(entries[1].message, "Next entry");
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn channel_data_uuid_drops_with_multiline_variable() {
+        // UUID drops mid-block AND a multi-line variable (SDP body embedded
+        // in variable_switch_r_sdp) spans many bare continuation lines.
+        // The \r characters are real — SDP uses \r\n per RFC 4566, and
+        // mod_logfile splits on \n leaving \r in the content.
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} variable_max_forwards: [69]"),
+            format!("{UUID1} variable_sip_h_X-Custom-ID: [c4da84eb-88a7-40b2-b90d-e5bc2a0f634e]"),
+            // UUID drops
+            "variable_switch_r_sdp: [v=0\r".to_string(),
+            "o=FreeSWITCH 1773663549 1773663550 IN IP6 2001:db8::10\r".to_string(),
+            "s=FreeSWITCH\r".to_string(),
+            "c=IN IP6 2001:db8::10\r".to_string(),
+            "t=0 0\r".to_string(),
+            "m=audio 9952 RTP/AVP 102 101 13\r".to_string(),
+            "a=rtpmap:102 opus/48000/2\r".to_string(),
+            "a=ptime:20\r".to_string(),
+            "]".to_string(),
+            "variable_ep_codec_string: [mod_opus.opus@48000h@20i@2c]".to_string(),
+            "variable_direction: [inbound]".to_string(),
+            full_line(UUID1, TS2, "Next entry"),
+        ];
+
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+
+        assert_eq!(entries.len(), 2);
+        let block = entries[0].block.as_ref().expect("should have block");
+        match block {
+            Block::ChannelData { fields, variables } => {
+                assert_eq!(fields.len(), 0);
+                assert_eq!(variables.len(), 5);
+                assert_eq!(variables[0].0, "variable_max_forwards");
+                assert_eq!(variables[1].0, "variable_sip_h_X-Custom-ID");
+                // Multi-line SDP variable reassembled from bare continuations
+                assert_eq!(variables[2].0, "variable_switch_r_sdp");
+                let sdp = &variables[2].1;
+                assert!(sdp.starts_with("v=0\r\n"), "SDP should start with v=0\\r\\n, got: {sdp:?}");
+                assert!(sdp.contains("m=audio 9952 RTP/AVP 102 101 13\r"));
+                assert!(sdp.contains("a=ptime:20\r"));
+                assert!(!sdp.ends_with(']'), "closing bracket should be stripped");
+                // Post-SDP bare variables
+                assert_eq!(variables[3].0, "variable_ep_codec_string");
+                assert_eq!(variables[4].0, "variable_direction");
+                assert_eq!(variables[4].1, "inbound");
+            }
+            other => panic!("expected ChannelData block, got {other:?}"),
+        }
+        // 2 UUID continuations + 9 SDP lines (open + 7 content + close) + 2 bare = 13
+        assert_eq!(entries[0].attached.len(), 13);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn channel_data_bare_variable_collision_with_execute() {
+        // Production collision: bare variable_call_uuid line on same physical
+        // line as a UUID EXECUTE. The UUID appears at byte 20 ("variable_call_uuid: "
+        // is 20 chars), within find_uuid_in's 50-byte scan window, so Layer 1
+        // classifies it as Truncated — extracting the UUID and EXECUTE message.
+        // The CHANNEL_DATA block loses variable_call_uuid (eaten as truncation
+        // prefix) but correctly recovers the EXECUTE as a separate entry.
+        let collision = format!(
+            "variable_call_uuid: {UUID1} EXECUTE [depth=0] \
+             sofia/internal-v6/1251@[2001:db8::10] export(nolocal:test_var=value)"
+        );
+
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} variable_max_forwards: [69]"),
+            // UUID drops — bare continuations
+            "variable_DP_MATCH: [ARRAY::create_conference|:create_conference]".to_string(),
+            collision,
+            // Full line resumes normal logging
+            full_line(UUID1, TS2, "EXPORT (export_vars) (REMOTE ONLY) [test_var]=[value]"),
+        ];
+
+        let mut stream = LogStream::new(lines.into_iter());
+        let entries: Vec<_> = stream.by_ref().collect();
+
+        // Entry 0: CHANNEL_DATA — variable_call_uuid lost to truncation prefix
+        assert_eq!(entries.len(), 3);
+        let block = entries[0].block.as_ref().expect("should have block");
+        match block {
+            Block::ChannelData { fields, variables } => {
+                assert_eq!(fields.len(), 0);
+                assert_eq!(variables.len(), 2);
+                assert_eq!(variables[0].0, "variable_max_forwards");
+                assert_eq!(variables[1].0, "variable_DP_MATCH");
+            }
+            other => panic!("expected ChannelData block, got {other:?}"),
+        }
+
+        // Entry 1: EXECUTE recovered from the Truncated classification
+        assert_eq!(entries[1].uuid, UUID1);
+        assert_eq!(entries[1].kind, LineKind::Truncated);
+        assert!(
+            entries[1].message.starts_with("EXECUTE "),
+            "truncated line should yield EXECUTE, got: {}",
+            entries[1].message
+        );
+
+        // Entry 2: normal EXPORT line
+        assert_eq!(entries[2].message_kind.label(), "variable");
+        assert_accounting(&stream);
+    }
 }

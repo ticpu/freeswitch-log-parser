@@ -179,6 +179,65 @@ fn message_kind_label(kind: &MessageKind) -> &'static str {
 }
 
 #[test]
+fn channel_data_bare_continuations_accumulated() {
+    // Production pattern: mod_logfile stops prepending the UUID mid-way through
+    // a CHANNEL_DATA dump. Bare continuation lines (variable_* without UUID
+    // prefix) must still be accumulated into the block. Found in 20+ instances
+    // across bcf and pbx fixture corpora.
+    if skip_if_no_fixtures() {
+        return;
+    }
+    let mut total_blocks: u64 = 0;
+    let mut blocks_with_bare: u64 = 0;
+    let mut max_bare_ratio: f64 = 0.0;
+
+    for (corpus, files) in &fixture_corpora() {
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy();
+            for entry in LogStream::new(lines_from_file(file)) {
+                if let Some(Block::ChannelData { fields, variables }) = &entry.block {
+                    total_blocks += 1;
+                    // Count how many attached lines are bare continuations (no UUID)
+                    let bare_count = entry
+                        .attached
+                        .iter()
+                        .filter(|line| {
+                            let parsed = parse_line(line);
+                            parsed.kind == LineKind::BareContinuation
+                        })
+                        .count();
+
+                    if bare_count > 0 {
+                        blocks_with_bare += 1;
+                        let total_vars = fields.len() + variables.len();
+                        assert!(
+                            total_vars > 0,
+                            "{corpus}/{name}: L{} CHANNEL_DATA has {bare_count} bare lines \
+                             but block has 0 fields+variables",
+                            entry.line_number,
+                        );
+                        let ratio = bare_count as f64 / entry.attached.len() as f64;
+                        if ratio > max_bare_ratio {
+                            max_bare_ratio = ratio;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!("CHANNEL_DATA UUID-drop stats:");
+    eprintln!("  total blocks: {total_blocks}");
+    eprintln!("  blocks with bare continuations: {blocks_with_bare}");
+    eprintln!("  max bare/total ratio: {max_bare_ratio:.2}");
+    assert!(
+        blocks_with_bare > 0,
+        "expected fixture data to contain CHANNEL_DATA blocks with bare continuations"
+    );
+}
+
+#[test]
 fn comprehensive_parse_report() {
     if skip_if_no_fixtures() {
         return;

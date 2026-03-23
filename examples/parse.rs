@@ -64,6 +64,9 @@ fn main() {
                         selected.len(),
                     );
                 }
+                _ => {
+                    println!("          block: {block:?}");
+                }
             }
         }
 

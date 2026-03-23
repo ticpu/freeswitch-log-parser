@@ -226,3 +226,9 @@ Never copy production log lines verbatim into source.
 - `pub use` re-exports in `lib.rs` for clean public API
 - Every line format and edge case gets its own `#[test]`
 - Tests use realistic but fictional log lines that exercise the exact byte positions the parser checks
+
+### Semver and `#[non_exhaustive]`
+- Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`
+- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers)
+- New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

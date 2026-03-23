@@ -7,6 +7,7 @@ use crate::message::{classify_message, MessageKind, SdpDirection};
 /// Each variant corresponds to a block type that the stream state machine
 /// recognizes and reassembles from continuation lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Block {
     /// Channel variable dump — `Channel-*` fields and `variable_*` key-value pairs.
     /// Multi-line variable values (e.g. embedded SDP) are reassembled with `\n` separators.
@@ -41,6 +42,7 @@ pub enum UnclassifiedTracking {
 
 /// Why a line was marked as unclassified.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UnclassifiedReason {
     /// Bare continuation line arrived with no pending entry to attach to.
     OrphanContinuation,

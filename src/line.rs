@@ -8,6 +8,7 @@ use std::fmt;
 /// on whether a session UUID is active, whether the line has a timestamp, and
 /// whether a buffer collision truncated the output. See `docs/design-rationale.md`
 /// for the full anatomy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     /// Format A — UUID, timestamp, idle%, level, source, and message.

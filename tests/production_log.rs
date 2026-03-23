@@ -283,6 +283,7 @@ fn comprehensive_parse_report() {
                         *block_counts.entry("codec-negotiation").or_default() += 1
                     }
                     None => no_block_count += 1,
+                    Some(other) => panic!("unexpected block type: {other:?}"),
                 }
 
                 // Classify every attached line to find what's "general" / unparsed

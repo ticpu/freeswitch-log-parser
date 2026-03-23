@@ -165,6 +165,9 @@ impl EntryPrinter {
                     writeln!(w, "{cc}         codec  MATCH {s}{reset}")?;
                 }
             }
+            _ => {
+                writeln!(w, "{bc}         block  {block:?}{reset}")?;
+            }
         }
         Ok(())
     }

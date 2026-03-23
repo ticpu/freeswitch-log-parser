@@ -4,6 +4,8 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdpDirection {
     Local,
+    /// Local SDP sent in a 180/183 early media response.
+    LocalRing,
     Remote,
     /// SDP reference that doesn't specify local or remote.
     Unknown,
@@ -13,6 +15,7 @@ impl fmt::Display for SdpDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SdpDirection::Local => f.pad("local"),
+            SdpDirection::LocalRing => f.pad("local-ring"),
             SdpDirection::Remote => f.pad("remote"),
             SdpDirection::Unknown => f.pad("unknown"),
         }
@@ -23,6 +26,7 @@ impl fmt::Display for SdpDirection {
 ///
 /// `Display` includes variant-specific detail (e.g. `execute(set)`, `var(sip_call_id)`)
 /// while [`label()`](MessageKind::label) returns just the category string.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageKind {
     /// Dialplan application execution trace (`EXECUTE [depth=N] channel app(args)`).
@@ -212,7 +216,9 @@ fn parse_bracketed_value(s: &str, prefix_len: usize) -> Option<(&str, &str)> {
 }
 
 fn detect_sdp_direction(msg: &str) -> Option<SdpDirection> {
-    if msg.contains("Local SDP") || msg.contains("local-sdp") {
+    if msg.contains("Ring SDP") {
+        Some(SdpDirection::LocalRing)
+    } else if msg.contains("Local SDP") || msg.contains("local-sdp") {
         Some(SdpDirection::Local)
     } else if msg.contains("Remote SDP") || msg.contains("remote-sdp") {
         Some(SdpDirection::Remote)
@@ -781,6 +787,16 @@ mod tests {
             classify_message("Patched SDP:"),
             MessageKind::SdpMarker {
                 direction: SdpDirection::Unknown
+            },
+        );
+    }
+
+    #[test]
+    fn ring_sdp_is_local_ring() {
+        assert_eq!(
+            classify_message("Ring SDP:"),
+            MessageKind::SdpMarker {
+                direction: SdpDirection::LocalRing
             },
         );
     }

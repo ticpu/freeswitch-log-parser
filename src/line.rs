@@ -149,6 +149,39 @@ pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
     rest.len() > pct_pos + 2 && rest[pct_pos + 1] == b' ' && rest[pct_pos + 2] == b'['
 }
 
+/// Try to parse idle percentage from the start of `rest`.
+///
+/// The idle percentage appears immediately after the timestamp, starts with a
+/// digit, contains only digits and dots, and the `%` falls within the first 7
+/// bytes (max value: `"100.00%"`). When absent (some FS versions/configurations
+/// omit it), `rest` starts with `[LEVEL]` instead.
+///
+/// Returns `(Some(idle_pct), remaining)` on success, or `(None, rest)` unchanged.
+fn parse_idle_pct(rest: &str) -> (Option<&str>, &str) {
+    let bytes = rest.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_digit() {
+        return (None, rest);
+    }
+    let search_len = rest.len().min(7);
+    let pct_pos = match bytes[..search_len].iter().position(|&b| b == b'%') {
+        Some(p) => p,
+        None => return (None, rest),
+    };
+    if !bytes[..pct_pos]
+        .iter()
+        .all(|&b| b.is_ascii_digit() || b == b'.')
+    {
+        return (None, rest);
+    }
+    let idle_pct = &rest[0..=pct_pos];
+    let after = if rest.len() > pct_pos + 2 {
+        &rest[pct_pos + 2..]
+    } else {
+        ""
+    };
+    (Some(idle_pct), after)
+}
+
 fn parse_timestamped_fields(
     s: &str,
 ) -> (
@@ -164,25 +197,16 @@ fn parse_timestamped_fields(
     let timestamp = &s[0..26];
     let rest = &s[27..];
 
-    let pct_pos = match rest.find('%') {
-        Some(p) => p,
-        None => return (Some(timestamp), None, None, None, rest),
-    };
-    let idle_pct = &rest[0..=pct_pos];
-
-    if rest.len() < pct_pos + 3 {
-        return (Some(timestamp), Some(idle_pct), None, None, "");
-    }
-    let rest = &rest[pct_pos + 2..];
+    let (idle_pct, rest) = parse_idle_pct(rest);
 
     let bracket_end = match rest.find(']') {
         Some(p) => p,
-        None => return (Some(timestamp), Some(idle_pct), None, None, rest),
+        None => return (Some(timestamp), idle_pct, None, None, rest),
     };
     let level = LogLevel::from_bracketed(&rest[0..=bracket_end]);
 
     if rest.len() < bracket_end + 3 {
-        return (Some(timestamp), Some(idle_pct), level, None, "");
+        return (Some(timestamp), idle_pct, level, None, "");
     }
     let rest = &rest[bracket_end + 2..];
 
@@ -194,13 +218,7 @@ fn parse_timestamped_fields(
         ""
     };
 
-    (
-        Some(timestamp),
-        Some(idle_pct),
-        level,
-        Some(source),
-        message,
-    )
+    (Some(timestamp), idle_pct, level, Some(source), message)
 }
 
 /// Layer 1 entry point: classify a single line and extract its fields.
@@ -577,6 +595,71 @@ mod tests {
         let parsed = parse_line(&line);
         assert_eq!(parsed.kind, LineKind::Truncated);
         assert_eq!(parsed.uuid, Some(UUID1));
+    }
+
+    // --- No idle percentage (issue #1) ---
+
+    #[test]
+    fn full_line_no_idle_pct() {
+        let line = format!(
+            "{UUID1} 2025-01-15 10:30:45.123456 [NOTICE] switch_core_session.c:1744 Session 3178948 ended"
+        );
+        let parsed = parse_line(&line);
+        assert_eq!(parsed.kind, LineKind::Full);
+        assert_eq!(parsed.uuid, Some(UUID1));
+        assert_eq!(parsed.timestamp, Some("2025-01-15 10:30:45.123456"));
+        assert_eq!(parsed.idle_pct, None);
+        assert_eq!(parsed.level, Some(LogLevel::Notice));
+        assert_eq!(parsed.source, Some("switch_core_session.c:1744"));
+        assert_eq!(parsed.message, "Session 3178948 ended");
+    }
+
+    #[test]
+    fn full_line_no_idle_pct_url_encoded_percent() {
+        let line = format!(
+            "{UUID1} 2025-01-15 10:30:45.123456 [NOTICE] switch_core_session.c:1744 Session 3178948 (sofia/psap/gw%2Bsg1vofswb-inbound@198.51.100.5:5060) Ended"
+        );
+        let parsed = parse_line(&line);
+        assert_eq!(parsed.kind, LineKind::Full);
+        assert_eq!(parsed.uuid, Some(UUID1));
+        assert_eq!(parsed.timestamp, Some("2025-01-15 10:30:45.123456"));
+        assert_eq!(parsed.idle_pct, None);
+        assert_eq!(parsed.level, Some(LogLevel::Notice));
+        assert_eq!(parsed.source, Some("switch_core_session.c:1744"));
+        assert_eq!(
+            parsed.message,
+            "Session 3178948 (sofia/psap/gw%2Bsg1vofswb-inbound@198.51.100.5:5060) Ended"
+        );
+    }
+
+    #[test]
+    fn system_line_no_idle_pct() {
+        let line =
+            "2025-01-15 10:30:45.123456 [INFO] mod_event_socket.c:1772 Event Socket command";
+        let parsed = parse_line(line);
+        assert_eq!(parsed.kind, LineKind::System);
+        assert_eq!(parsed.uuid, None);
+        assert_eq!(parsed.timestamp, Some("2025-01-15 10:30:45.123456"));
+        assert_eq!(parsed.idle_pct, None);
+        assert_eq!(parsed.level, Some(LogLevel::Info));
+        assert_eq!(parsed.source, Some("mod_event_socket.c:1772"));
+        assert_eq!(parsed.message, "Event Socket command");
+    }
+
+    #[test]
+    fn full_line_no_idle_pct_hangup_url_encoded() {
+        let line = format!(
+            "{UUID1} 2025-01-15 10:30:45.123456 [NOTICE] sofia.c:1089 Hangup sofia/psap/gw%2Bgateway@198.51.100.5:5060 [CS_EXCHANGE_MEDIA] [CALL_AWARDED_DELIVERED]"
+        );
+        let parsed = parse_line(&line);
+        assert_eq!(parsed.kind, LineKind::Full);
+        assert_eq!(parsed.idle_pct, None);
+        assert_eq!(parsed.level, Some(LogLevel::Notice));
+        assert_eq!(parsed.source, Some("sofia.c:1089"));
+        assert_eq!(
+            parsed.message,
+            "Hangup sofia/psap/gw%2Bgateway@198.51.100.5:5060 [CS_EXCHANGE_MEDIA] [CALL_AWARDED_DELIVERED]"
+        );
     }
 
     // --- Edge cases ---

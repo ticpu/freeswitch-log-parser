@@ -1,6 +1,6 @@
 [package]
 name = "freeswitch-log-parser"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "LGPL-2.1-or-later"
 authors = ["Jérôme Poulin <jeromepoulin@gmail.com>"]
@@ -9,6 +9,7 @@ repository = "https://github.com/ticpu/freeswitch-log-parser"
 keywords = ["freeswitch", "log", "parser", "voip", "telephony"]
 categories = ["parser-implementations", "network-programming"]
 documentation = "https://docs.rs/freeswitch-log-parser"
+exclude = ["packaging/", ".gitleaks.toml"]
 
 [lib]
 name = "freeswitch_log_parser"

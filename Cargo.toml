@@ -9,7 +9,7 @@ repository = "https://github.com/ticpu/freeswitch-log-parser"
 keywords = ["freeswitch", "log", "parser", "voip", "telephony"]
 categories = ["parser-implementations", "network-programming"]
 documentation = "https://docs.rs/freeswitch-log-parser"
-exclude = ["packaging/", ".gitleaks.toml"]
+exclude = ["packaging/", ".gitleaks.toml", "tests/fixtures/", "tests/production_log.rs"]
 
 [lib]
 name = "freeswitch_log_parser"

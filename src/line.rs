@@ -634,8 +634,7 @@ mod tests {
 
     #[test]
     fn system_line_no_idle_pct() {
-        let line =
-            "2025-01-15 10:30:45.123456 [INFO] mod_event_socket.c:1772 Event Socket command";
+        let line = "2025-01-15 10:30:45.123456 [INFO] mod_event_socket.c:1772 Event Socket command";
         let parsed = parse_line(line);
         assert_eq!(parsed.kind, LineKind::System);
         assert_eq!(parsed.uuid, None);

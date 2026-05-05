@@ -11,6 +11,16 @@ pub enum SdpDirection {
     Unknown,
 }
 
+/// Direction of a sofia SIP INVITE log line.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SipInviteDirection {
+    /// `sofia/X/Y receiving invite ...` — inbound INVITE on a sofia profile.
+    Receiving,
+    /// `sofia/X/Y sending invite ...` — outbound INVITE on a sofia profile.
+    Sending,
+}
+
 impl fmt::Display for SdpDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -52,8 +62,25 @@ pub enum MessageKind {
     CodecNegotiation,
     /// RTP, RTCP, recording, and other media-related messages.
     Media { detail: String },
-    /// Channel lifecycle events — new/close/hangup, invite, bridge, ring.
+    /// Channel lifecycle events — new/close/hangup, bridge, ring, REFER, CANCEL, BYE.
     ChannelLifecycle { detail: String },
+    /// Sofia logged a SIP INVITE on this channel — the line is one of:
+    /// - `sofia/<profile>/<endpoint> receiving invite from <ip>:<port> ... call-id: <id>`
+    /// - `sofia/<profile>/<endpoint> sending invite [version: ...] [call-id: <id>]`
+    ///
+    /// Always emitted by sofia for every inbound and outbound call regardless
+    /// of dialplan — the canonical primitive for `sip_call_id ↔ channel_uuid`
+    /// correlation. The line's leading UUID is on [`crate::LogEntry::uuid`].
+    SipInvite {
+        direction: SipInviteDirection,
+        /// The sofia profile name (segment between `sofia/` and the next `/`).
+        profile: String,
+        /// SIP `Call-ID` from the log line. `None` when sofia logs `(null)`
+        /// (typical for outbound at pre-routing time — a later log entry on
+        /// the same UUID will carry the actual id) or when the line carries
+        /// no `call-id:` field (the version-only DEBUG follow-up for sending).
+        call_id: Option<String>,
+    },
     /// Event socket commands from `mod_event_socket`.
     EventSocket { detail: String },
     /// Anything not matching a more specific pattern.
@@ -77,6 +104,7 @@ impl MessageKind {
         "codec-negotiation",
         "media",
         "channel-lifecycle",
+        "sip-invite",
         "event-socket",
         "general",
         "file-change",
@@ -96,6 +124,7 @@ impl MessageKind {
             MessageKind::CodecNegotiation => "codec-negotiation",
             MessageKind::Media { .. } => "media",
             MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
+            MessageKind::SipInvite { .. } => "sip-invite",
             MessageKind::EventSocket { .. } => "event-socket",
             MessageKind::General => "general",
             MessageKind::FileChange => "file-change",
@@ -117,6 +146,7 @@ impl fmt::Display for MessageKind {
             MessageKind::CodecNegotiation => f.pad("codec-negotiation"),
             MessageKind::Media { .. } => f.pad("media"),
             MessageKind::ChannelLifecycle { .. } => f.pad("channel-lifecycle"),
+            MessageKind::SipInvite { .. } => f.pad("sip-invite"),
             MessageKind::EventSocket { .. } => f.pad("event-socket"),
             MessageKind::General => f.pad("general"),
             MessageKind::FileChange => f.pad("file-change"),
@@ -349,8 +379,8 @@ pub fn classify_message(msg: &str) -> MessageKind {
     }
 
     // Channel-prefixed messages: sofia/..., loopback/... prefix
-    if let Some((_, rest)) = strip_channel_prefix(msg) {
-        return classify_channel_prefixed(rest);
+    if let Some((channel_part, rest)) = strip_channel_prefix(msg) {
+        return classify_channel_prefixed(channel_part, rest);
     }
 
     // Channel-* fields and other Key: [value] patterns from CHANNEL_DATA dumps
@@ -395,7 +425,21 @@ fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn classify_channel_prefixed(rest: &str) -> MessageKind {
+fn classify_channel_prefixed(channel_part: &str, rest: &str) -> MessageKind {
+    // Sofia INVITE lines — typed extraction of (direction, profile, call-id).
+    // Must run before the ChannelLifecycle fallback; sofia always logs these
+    // for every inbound and outbound call regardless of dialplan, making them
+    // the canonical primitive for sip_call_id ↔ channel_uuid correlation.
+    if let Some(direction) = sip_invite_direction(rest) {
+        let profile = extract_sofia_profile(channel_part).unwrap_or_default();
+        let call_id = extract_call_id(rest);
+        return MessageKind::SipInvite {
+            direction,
+            profile,
+            call_id,
+        };
+    }
+
     // SOFIA STATE / Standard STATE / RTC STATE
     if rest.starts_with("SOFIA ") || rest.starts_with("Standard ") || rest.starts_with("RTC ") {
         return MessageKind::StateChange {
@@ -407,9 +451,39 @@ fn classify_channel_prefixed(rest: &str) -> MessageKind {
         return kind;
     }
 
-    // Channel-prefixed lifecycle: receiving/sending invite, destroy/unlink, etc.
+    // Channel-prefixed lifecycle: destroy/unlink, REFER, CANCEL, BYE, etc.
     MessageKind::ChannelLifecycle {
         detail: rest.to_string(),
+    }
+}
+
+fn sip_invite_direction(rest: &str) -> Option<SipInviteDirection> {
+    if rest.starts_with("receiving invite") {
+        Some(SipInviteDirection::Receiving)
+    } else if rest.starts_with("sending invite") {
+        Some(SipInviteDirection::Sending)
+    } else {
+        None
+    }
+}
+
+fn extract_sofia_profile(channel_part: &str) -> Option<String> {
+    let after = channel_part.strip_prefix("sofia/")?;
+    let end = after.find('/').unwrap_or(after.len());
+    if end == 0 {
+        None
+    } else {
+        Some(after[..end].to_string())
+    }
+}
+
+fn extract_call_id(rest: &str) -> Option<String> {
+    let after = rest.split_once("call-id: ")?.1;
+    let token = after.split_whitespace().next()?;
+    if token == "(null)" {
+        None
+    } else {
+        Some(token.to_string())
     }
 }
 
@@ -1126,6 +1200,101 @@ mod tests {
                 assert_eq!(direction, SdpDirection::Local);
             }
             other => panic!("expected SdpMarker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn receiving_invite_routes_to_sip_invite_with_call_id() {
+        let msg = "sofia/internal/1212@host.example:5062 receiving invite from 192.0.2.10:47215 version: 1.10.13-dev git abc 2026-01-01 00:00:00Z 64bit call-id: 00112233-4455-6677-8899-aabbccddeeff";
+        match classify_message(msg) {
+            MessageKind::SipInvite {
+                direction,
+                profile,
+                call_id,
+            } => {
+                assert_eq!(direction, SipInviteDirection::Receiving);
+                assert_eq!(profile, "internal");
+                assert_eq!(
+                    call_id.as_deref(),
+                    Some("00112233-4455-6677-8899-aabbccddeeff")
+                );
+            }
+            other => panic!("expected SipInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sending_invite_routes_to_sip_invite() {
+        let msg = "sofia/internalv6/ngcs_create_conference sending invite call-id: ffeeddcc-bbaa-9988-7766-554433221100";
+        match classify_message(msg) {
+            MessageKind::SipInvite {
+                direction,
+                profile,
+                call_id,
+            } => {
+                assert_eq!(direction, SipInviteDirection::Sending);
+                assert_eq!(profile, "internalv6");
+                assert_eq!(
+                    call_id.as_deref(),
+                    Some("ffeeddcc-bbaa-9988-7766-554433221100")
+                );
+            }
+            other => panic!("expected SipInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sending_invite_null_call_id_yields_none() {
+        let msg = "sofia/telus/15555550100 sending invite call-id: (null)";
+        match classify_message(msg) {
+            MessageKind::SipInvite {
+                direction,
+                profile,
+                call_id,
+            } => {
+                assert_eq!(direction, SipInviteDirection::Sending);
+                assert_eq!(profile, "telus");
+                assert_eq!(call_id, None);
+            }
+            other => panic!("expected SipInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sending_invite_version_only_yields_none() {
+        // The DEBUG follow-up from sofia_glue.c:1676 — no call-id field.
+        let msg = "sofia/telus/15555550100 sending invite version: 1.10.13-dev git abc 2026-01-01 00:00:00Z 64bit";
+        match classify_message(msg) {
+            MessageKind::SipInvite {
+                direction, call_id, ..
+            } => {
+                assert_eq!(direction, SipInviteDirection::Sending);
+                assert_eq!(call_id, None);
+            }
+            other => panic!("expected SipInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_id_with_at_host_port_preserved() {
+        let msg = "sofia/voipms/15555550101@198.51.100.52 receiving invite from 198.51.100.52:5060 version: 1.10.13-dev git abc 2026-01-01 00:00:00Z 64bit call-id: 00deadbeef00abc123def4567890abcd@198.51.100.52:5060";
+        match classify_message(msg) {
+            MessageKind::SipInvite { call_id, .. } => {
+                assert_eq!(
+                    call_id.as_deref(),
+                    Some("00deadbeef00abc123def4567890abcd@198.51.100.52:5060")
+                );
+            }
+            other => panic!("expected SipInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_invite_sofia_lifecycle_still_channel_lifecycle() {
+        let msg = "sofia/internal/1212@host.example:5062 receiving refer";
+        match classify_message(msg) {
+            MessageKind::ChannelLifecycle { .. } => {}
+            other => panic!("expected ChannelLifecycle, got {other:?}"),
         }
     }
 }

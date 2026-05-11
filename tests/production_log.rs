@@ -2,6 +2,25 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
+fn lossy_lines<R: BufRead + 'static>(mut reader: R) -> Box<dyn Iterator<Item = String>> {
+    Box::new(std::iter::from_fn(move || {
+        let mut buf = Vec::new();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => None,
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                Some(String::from_utf8_lossy(&buf).into_owned())
+            }
+            Err(_) => None,
+        }
+    }))
+}
+
 use std::collections::HashMap;
 
 use freeswitch_log_parser::{
@@ -22,11 +41,7 @@ fn lines_from_file(path: &Path) -> Box<dyn Iterator<Item = String>> {
         Box::new(file)
     };
 
-    Box::new(
-        BufReader::new(reader)
-            .lines()
-            .map(|l| l.expect("read line")),
-    )
+    lossy_lines(BufReader::new(reader))
 }
 
 fn is_log_file(path: &Path) -> bool {

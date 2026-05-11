@@ -200,7 +200,33 @@ pub fn open_log_file(path: &Path) -> io::Result<Box<dyn BufRead>> {
 
 pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String>>> {
     let reader = open_log_file(path)?;
-    Ok(Box::new(reader.lines().map(|l| l.expect("read error"))))
+    Ok(lossy_line_iter(reader))
+}
+
+/// Yield log lines as `String`, replacing invalid UTF-8 with U+FFFD instead of
+/// panicking. mod_logfile's 2 KiB buffer truncation can chop a multi-byte
+/// codepoint mid-character, leaving a stray byte in the file that the strict
+/// `BufRead::lines()` reader rejects.
+fn lossy_line_iter(mut reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = String>> {
+    Box::new(std::iter::from_fn(move || {
+        let mut buf = Vec::new();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => None,
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                Some(String::from_utf8_lossy(&buf).into_owned())
+            }
+            Err(e) => {
+                eprintln!("read error: {e}");
+                None
+            }
+        }
+    }))
 }
 
 pub fn lazy_log_reader(path: PathBuf) -> Box<dyn Iterator<Item = String>> {
@@ -313,7 +339,7 @@ pub fn open_full_tail_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = 
 
     let reader = open_log_file(path)?;
     let end_pos = fs::File::open(path)?.metadata()?.len();
-    let lines = reader.lines().map(|l| l.expect("read error"));
+    let lines = lossy_line_iter(reader);
 
     let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(end_pos))?;

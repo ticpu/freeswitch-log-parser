@@ -166,7 +166,9 @@ mod tests {
         // grow logarithmically (capacity-doubling), not 200 separate allocations.
         let mut a = AttachedLines::new();
         for i in 0..200 {
-            a.push(&format!("variable_some_long_name_{i}: [a typical value here]"));
+            a.push(&format!(
+                "variable_some_long_name_{i}: [a typical value here]"
+            ));
         }
         assert_eq!(a.len(), 200);
         // Round-trip check: every line readable in order.

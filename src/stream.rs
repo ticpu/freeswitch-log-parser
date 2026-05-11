@@ -1,3 +1,4 @@
+use crate::attached::AttachedLines;
 use crate::level::LogLevel;
 use crate::line::{is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind};
 use crate::message::{classify_message, MessageKind, SdpDirection};
@@ -117,7 +118,7 @@ pub struct LogEntry {
     /// Typed, parsed multi-line block; `None` for entries without a trailing block.
     pub block: Option<Block>,
     /// Raw continuation lines that followed the primary line.
-    pub attached: Vec<String>,
+    pub attached: AttachedLines,
     /// 1-based line number in the input stream.
     pub line_number: u64,
     /// Per-entry warnings about parsing anomalies.
@@ -390,7 +391,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             if let Some(w) = warning {
                 pending.warnings.push(w);
             }
-            pending.attached.push(line.to_string());
+            pending.attached.push(line);
         }
     }
 
@@ -416,7 +417,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             idle_pct: None,
             source: None,
             block: None,
-            attached: Vec::new(),
+            attached: AttachedLines::new(),
             line_number: self.line_number,
             warnings,
         }
@@ -570,7 +571,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                             if uuid == pending.uuid {
                                 self.accumulate_codec_entry(parsed.message);
                                 if let Some(ref mut p) = self.pending {
-                                    p.attached.push(line);
+                                    p.attached.push(&line);
                                 }
                                 continue;
                             }
@@ -678,7 +679,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
                 LineKind::Empty => {
                     if let Some(ref mut pending) = self.pending {
-                        pending.attached.push(line);
+                        pending.attached.push(&line);
                     } else {
                         self.stats.lines_empty_orphan += 1;
                     }
@@ -715,8 +716,8 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].uuid, UUID1);
         assert_eq!(entries[0].attached.len(), 2);
-        assert_eq!(entries[0].attached[0], "variable_foo: [bar]");
-        assert_eq!(entries[0].attached[1], "variable_baz: [qux]");
+        assert_eq!(entries[0].attached.get(0), Some("variable_foo: [bar]"));
+        assert_eq!(entries[0].attached.get(1), Some("variable_baz: [qux]"));
     }
 
     #[test]
@@ -804,8 +805,8 @@ mod tests {
         let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].attached.len(), 2);
-        assert_eq!(entries[0].attached[0], "");
-        assert_eq!(entries[0].attached[1], "continuation");
+        assert_eq!(entries[0].attached.get(0), Some(""));
+        assert_eq!(entries[0].attached.get(1), Some("continuation"));
     }
 
     #[test]

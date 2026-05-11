@@ -13,8 +13,8 @@ use std::process;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use freeswitch_log_parser::{
-    LineKind, LogEntry, LogLevel, LogStream, MessageKind, SessionTracker, TrackedChain,
-    UnclassifiedTracking,
+    AttachedLines, LineKind, LogEntry, LogLevel, LogStream, MessageKind, SessionTracker,
+    TrackedChain, UnclassifiedTracking,
 };
 
 use files::{
@@ -287,7 +287,7 @@ fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
         kind: LineKind::Full,
         message_kind: kind,
         block: None,
-        attached: Vec::new(),
+        attached: AttachedLines::new(),
         line_number: 0,
         warnings: Vec::new(),
     }

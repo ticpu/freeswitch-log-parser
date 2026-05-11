@@ -431,6 +431,13 @@ const MOD_LOGFILE_BUF_SIZE: usize = 2048;
 /// Effective maximum payload per line (buffer minus UUID, space, newline).
 const MAX_LINE_PAYLOAD: usize = MOD_LOGFILE_BUF_SIZE - 36 - 1 - 1;
 
+/// Tolerance around the expected truncation boundary when scanning oversize
+/// lines for Format E collisions. The boundary is deterministic
+/// (`MAX_LINE_PAYLOAD` from the start of the truncated chunk) but a few bytes
+/// of slack covers minor variation in `snprintf` accounting and any future
+/// drift in the prepend format.
+const COLLISION_SCAN_SLACK: usize = 64;
+
 impl<I: Iterator<Item = String>> LogStream<I> {
     /// Detect same-line collisions where multiple log entries were concatenated
     /// without a newline separator.
@@ -477,22 +484,40 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         };
 
         let end = bytes.len().saturating_sub(28);
-        for offset in min_scan..=end {
-            // Timestamp collision (System or Full line header)
-            if is_log_header_at(bytes, offset) {
-                // Check if a UUID precedes the timestamp (Full line collision)
-                let split_at = if offset >= 37 && is_uuid_at(bytes, offset - 37) {
-                    offset - 37
-                } else {
-                    offset
-                };
-                self.split_pending = Some(line[split_at..].to_string());
-                return line[..split_at].to_string();
-            }
-            // UUID collision without timestamp (Format E — truncated buffer)
-            if is_uuid_at(bytes, offset) && bytes.len() > MAX_LINE_PAYLOAD {
-                self.split_pending = Some(line[offset..].to_string());
-                return line[..offset].to_string();
+        // For oversize lines (Format E), the collision UUID lands at a
+        // deterministic offset of ~MAX_LINE_PAYLOAD from the chunk start —
+        // mod_logfile's snprintf truncation point. Bounding the scan to a
+        // small window avoids O(n²) behavior on lines that split many times,
+        // where the previous full-suffix scan re-walked tens of KB per split.
+        // Format B (write-contention timestamp collisions) at arbitrary
+        // offsets within an oversize line are not detected; that combination
+        // is not observed in production logs.
+        let (scan_lo, scan_hi) = if bytes.len() > MAX_LINE_PAYLOAD {
+            let lo = min_scan.max(MAX_LINE_PAYLOAD.saturating_sub(COLLISION_SCAN_SLACK));
+            let hi = end.min(MAX_LINE_PAYLOAD + COLLISION_SCAN_SLACK);
+            (lo, hi)
+        } else {
+            (min_scan, end)
+        };
+
+        if scan_lo <= scan_hi {
+            for offset in scan_lo..=scan_hi {
+                // Timestamp collision (System or Full line header)
+                if is_log_header_at(bytes, offset) {
+                    // Check if a UUID precedes the timestamp (Full line collision)
+                    let split_at = if offset >= 37 && is_uuid_at(bytes, offset - 37) {
+                        offset - 37
+                    } else {
+                        offset
+                    };
+                    self.split_pending = Some(line[split_at..].to_string());
+                    return line[..split_at].to_string();
+                }
+                // UUID collision without timestamp (Format E — truncated buffer)
+                if is_uuid_at(bytes, offset) && bytes.len() > MAX_LINE_PAYLOAD {
+                    self.split_pending = Some(line[offset..].to_string());
+                    return line[..offset].to_string();
+                }
             }
         }
 

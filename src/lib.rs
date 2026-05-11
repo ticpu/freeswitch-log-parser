@@ -43,6 +43,7 @@
 //!
 //! - **`cli`** — enables the `fslog` binary with clap, xz decompression, and regex filtering
 
+mod attached;
 mod chain;
 mod level;
 mod line;
@@ -50,6 +51,7 @@ mod message;
 mod session;
 mod stream;
 
+pub use attached::{AttachedLines, AttachedLinesIter};
 pub use chain::{SegmentTracker, TrackedChain};
 pub use freeswitch_types::{
     variables::SofiaVariable, CallDirection, CallState, ChannelState, ChannelVariable,

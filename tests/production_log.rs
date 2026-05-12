@@ -501,6 +501,60 @@ fn system_lines_with_embedded_uuid_extracted() {
 }
 
 #[test]
+fn originate_success_channel_fallback_pbx_fixture_ambiguous() {
+    // pbx/freeswitch.log.2026-05-11-14-20-22.1.xz contains a FusionPBX call where
+    // bridge(user/6244@…) and Originate Resulted in Success: [sofia/internal/6244@…]
+    // arrive with no `Peer UUID:` suffix (FS 1.10.5-dev).
+    //
+    // The channel-name fallback in SessionTracker::link_legs would recover the
+    // link in isolation — but the fixture covers ~20 minutes of traffic on the
+    // same SBC, so by the time the originate-success fires there is at least one
+    // earlier session with the same b-leg channel_name (a prior call on the same
+    // registered phone). Per the chosen policy ("skip if ambiguous —
+    // correctness over coverage"), the parser declines to link, leaving
+    // other_leg_uuid as None on both legs. The fix for this real-world case is
+    // consumer-side: call SessionTracker::remove_session() on Hangup so stale
+    // sessions don't pollute the channel-name lookup.
+    let path = Path::new(FIXTURES_DIR)
+        .join("pbx")
+        .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
+    if !path.exists() {
+        eprintln!("skipping: {} not present", path.display());
+        return;
+    }
+    const A_LEG: &str = "fc541b63-d608-42af-9ae7-1717ec610def";
+    const B_LEG: &str = "23f602c0-618a-46ed-adba-da2827c6a2ce";
+
+    let stream = LogStream::new(lines_from_file(&path));
+    let mut tracker = SessionTracker::new(stream);
+    for _ in tracker.by_ref() {}
+
+    let a = tracker
+        .sessions()
+        .get(A_LEG)
+        .expect("a-leg session present");
+    let b = tracker
+        .sessions()
+        .get(B_LEG)
+        .expect("b-leg session present");
+
+    // Both sessions exist and channel names parse cleanly.
+    assert_eq!(
+        b.channel_name.as_deref(),
+        Some("sofia/internal/6244@192.168.1.72:50744"),
+        "b-leg channel_name populated from New Channel"
+    );
+
+    // The lookup is ambiguous due to a prior session with the same channel_name,
+    // so neither leg is linked — the policy worked as designed.
+    assert_eq!(
+        a.other_leg_uuid, None,
+        "ambiguous channel-name match: parser correctly declines to link"
+    );
+    assert_eq!(b.other_leg_uuid, None);
+}
+
+#[test]
 fn warning_report() {
     if skip_if_no_fixtures() {
         return;

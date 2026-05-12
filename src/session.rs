@@ -304,6 +304,20 @@ fn parse_originate_success(msg: &str) -> Option<String> {
     }
 }
 
+/// Parse the bracketed channel name from "Originate Resulted in Success: [<chan>] …".
+/// Used as a fallback when the `Peer UUID:` suffix is absent (FS 1.10.5-dev and
+/// similar builds). Returns the channel name borrowed from `msg`.
+fn parse_originate_channel(msg: &str) -> Option<&str> {
+    let start = msg.find(" [")? + 2;
+    let end = msg[start..].find(']')?;
+    let chan = &msg[start..start + end];
+    if chan.is_empty() {
+        None
+    } else {
+        Some(chan)
+    }
+}
+
 /// A [`LogEntry`] paired with the session's state snapshot at that point in time.
 #[derive(Debug)]
 pub struct EnrichedEntry {
@@ -358,14 +372,44 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
         // 1. "Originate Resulted in Success ... Peer UUID: BLEG" — authoritative
         if entry.message.contains("Originate Resulted in Success") {
+            let a_uuid = uuid.to_string();
             if let Some(peer_uuid) = parse_originate_success(&entry.message) {
-                let a_uuid = uuid.to_string();
                 if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
                     a_state.other_leg_uuid = Some(peer_uuid.clone());
                     a_state.pending_bridge_target = None;
                 }
                 let b_state = self.sessions.entry(peer_uuid).or_default();
                 b_state.other_leg_uuid = Some(a_uuid);
+            } else if let Some(chan) = parse_originate_channel(&entry.message) {
+                // Fallback for FS builds without `Peer UUID:` suffix (e.g. 1.10.5-dev):
+                // link via unique b-leg session whose channel_name matches. Skip
+                // when zero or multiple sessions share the channel name —
+                // correctness over coverage.
+                let mut found: Option<String> = None;
+                let mut ambiguous = false;
+                for (u, s) in &self.sessions {
+                    if u == &a_uuid {
+                        continue;
+                    }
+                    if s.channel_name.as_deref() == Some(chan) {
+                        if found.is_some() {
+                            ambiguous = true;
+                            break;
+                        }
+                        found = Some(u.clone());
+                    }
+                }
+                if !ambiguous {
+                    if let Some(b_uuid) = found {
+                        if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
+                            a_state.other_leg_uuid = Some(b_uuid.clone());
+                            a_state.pending_bridge_target = None;
+                        }
+                        if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
+                            b_state.other_leg_uuid = Some(a_uuid);
+                        }
+                    }
+                }
             }
             return;
         }
@@ -575,6 +619,133 @@ mod tests {
             Some(UUID1),
             "B-leg other_leg_uuid points back to A-leg"
         );
+    }
+
+    #[test]
+    fn originate_success_channel_fallback_links_legs() {
+        // FS 1.10.5-dev and similar omit `Peer UUID:` from "Originate Resulted in Success".
+        // The b-leg's New Channel populates channel_name 3.5 s before originate; the
+        // fallback path matches by channel name when the Peer UUID is absent.
+        let lines = vec![
+            full_line(
+                UUID2,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [b2c3d4e5-f6a7-8901-bcde-f12345678901]",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let a_leg = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            a_leg.other_leg_uuid.as_deref(),
+            Some(UUID2),
+            "A-leg linked to B-leg via channel-name fallback when Peer UUID absent"
+        );
+
+        let b_leg = tracker.sessions().get(UUID2).unwrap();
+        assert_eq!(
+            b_leg.other_leg_uuid.as_deref(),
+            Some(UUID1),
+            "B-leg linked back to A-leg"
+        );
+    }
+
+    #[test]
+    fn originate_success_peer_uuid_wins_over_channel_fallback() {
+        // When Peer UUID is present, channel-name fallback must not fire — even if
+        // another session shares the channel name. Peer UUID is authoritative.
+        let lines = vec![
+            full_line(
+                UUID2,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [b2c3d4e5-f6a7-8901-bcde-f12345678901]",
+            ),
+            full_line(
+                UUID3,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [c3d4e5f6-a7b8-9012-cdef-234567890123]",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744] Peer UUID: b2c3d4e5-f6a7-8901-bcde-f12345678901",
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let a_leg = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            a_leg.other_leg_uuid.as_deref(),
+            Some(UUID2),
+            "Peer UUID wins over channel-name match"
+        );
+
+        let decoy = tracker.sessions().get(UUID3).unwrap();
+        assert_eq!(
+            decoy.other_leg_uuid, None,
+            "Decoy session sharing channel name is not touched"
+        );
+    }
+
+    #[test]
+    fn originate_success_channel_fallback_skips_when_ambiguous() {
+        // Two b-leg candidates share the same channel name. The fallback must not
+        // guess — correctness over coverage.
+        let lines = vec![
+            full_line(
+                UUID2,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [b2c3d4e5-f6a7-8901-bcde-f12345678901]",
+            ),
+            full_line(
+                UUID3,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [c3d4e5f6-a7b8-9012-cdef-234567890123]",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let a_leg = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            a_leg.other_leg_uuid, None,
+            "Ambiguous channel name yields no link"
+        );
+        assert_eq!(tracker.sessions().get(UUID2).unwrap().other_leg_uuid, None);
+        assert_eq!(tracker.sessions().get(UUID3).unwrap().other_leg_uuid, None);
+    }
+
+    #[test]
+    fn originate_success_channel_fallback_skips_when_no_match() {
+        // a-leg fires Originate with a bracketed channel name no session has.
+        // Must not panic, must not create a spurious link.
+        let lines = vec![full_line(
+            UUID1,
+            TS2,
+            "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
+        )];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let a_leg = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(a_leg.other_leg_uuid, None);
+        assert_eq!(a_leg.pending_bridge_target, None);
     }
 
     #[test]

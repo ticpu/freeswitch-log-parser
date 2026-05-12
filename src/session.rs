@@ -318,6 +318,20 @@ fn parse_originate_channel(msg: &str) -> Option<&str> {
     }
 }
 
+/// Terminal channel-/callstate values — sessions left in one of these are
+/// stragglers from prior calls and must not be considered candidates when
+/// disambiguating channel-name collisions in the originate-success fallback.
+///
+/// Covers both `Channel-State` (`CS_*`) and `Callstate` (`HANGUP`). `DOWN` is
+/// excluded because it doubles as the initial Callstate before any change is
+/// observed.
+fn is_terminal_channel_state(state: Option<&str>) -> bool {
+    matches!(
+        state,
+        Some("CS_HANGUP" | "CS_REPORTING" | "CS_DESTROY" | "CS_NONE" | "HANGUP")
+    )
+}
+
 /// A [`LogEntry`] paired with the session's state snapshot at that point in time.
 #[derive(Debug)]
 pub struct EnrichedEntry {
@@ -382,16 +396,22 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                 b_state.other_leg_uuid = Some(a_uuid);
             } else if let Some(chan) = parse_originate_channel(&entry.message) {
                 // Fallback for FS builds without `Peer UUID:` suffix (e.g. 1.10.5-dev):
-                // link via unique b-leg session whose channel_name matches. Skip
-                // when zero or multiple sessions share the channel name —
-                // correctness over coverage.
+                // link via unique non-terminated b-leg session whose channel_name
+                // matches. Candidates in terminal channel/callstate (CS_DESTROY,
+                // CS_HANGUP, …) are stragglers from prior calls and skipped — the
+                // channel name on a registered phone is reused across calls, so
+                // long parses accumulate ghosts. After filtering, if zero or
+                // multiple live candidates remain, skip the link entirely
+                // (correctness over coverage).
                 let mut found: Option<String> = None;
                 let mut ambiguous = false;
                 for (u, s) in &self.sessions {
                     if u == &a_uuid {
                         continue;
                     }
-                    if s.channel_name.as_deref() == Some(chan) {
+                    if s.channel_name.as_deref() == Some(chan)
+                        && !is_terminal_channel_state(s.channel_state.as_deref())
+                    {
                         if found.is_some() {
                             ambiguous = true;
                             break;
@@ -728,6 +748,59 @@ mod tests {
         );
         assert_eq!(tracker.sessions().get(UUID2).unwrap().other_leg_uuid, None);
         assert_eq!(tracker.sessions().get(UUID3).unwrap().other_leg_uuid, None);
+    }
+
+    #[test]
+    fn originate_success_channel_fallback_skips_terminated_candidates() {
+        // Two b-leg sessions share the same channel_name, but one is in
+        // CS_DESTROY (stale prior call on the same registered phone). The
+        // liveness filter must drop the terminated candidate so the live one
+        // becomes the unambiguous match.
+        let lines = vec![
+            full_line(
+                UUID2,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [b2c3d4e5-f6a7-8901-bcde-f12345678901]",
+            ),
+            full_line(
+                UUID2,
+                TS1,
+                "(sofia/internal/6244@192.0.2.72:50744) State Change CS_EXECUTE -> CS_DESTROY",
+            ),
+            full_line(
+                UUID3,
+                TS1,
+                "New Channel sofia/internal/6244@192.0.2.72:50744 [c3d4e5f6-a7b8-9012-cdef-234567890123]",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let a_leg = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            a_leg.other_leg_uuid.as_deref(),
+            Some(UUID3),
+            "Live b-leg wins over CS_DESTROY straggler"
+        );
+
+        let live_b = tracker.sessions().get(UUID3).unwrap();
+        assert_eq!(
+            live_b.other_leg_uuid.as_deref(),
+            Some(UUID1),
+            "Live b-leg points back to a-leg"
+        );
+
+        let stale_b = tracker.sessions().get(UUID2).unwrap();
+        assert_eq!(
+            stale_b.other_leg_uuid, None,
+            "Terminated b-leg is not touched"
+        );
     }
 
     #[test]

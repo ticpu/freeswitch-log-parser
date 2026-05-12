@@ -501,20 +501,15 @@ fn system_lines_with_embedded_uuid_extracted() {
 }
 
 #[test]
-fn originate_success_channel_fallback_pbx_fixture_ambiguous() {
+fn originate_success_channel_fallback_links_pbx_fixture() {
     // pbx/freeswitch.log.2026-05-11-14-20-22.1.xz contains a FusionPBX call where
     // bridge(user/6244@…) and Originate Resulted in Success: [sofia/internal/6244@…]
     // arrive with no `Peer UUID:` suffix (FS 1.10.5-dev).
     //
-    // The channel-name fallback in SessionTracker::link_legs would recover the
-    // link in isolation — but the fixture covers ~20 minutes of traffic on the
-    // same SBC, so by the time the originate-success fires there is at least one
-    // earlier session with the same b-leg channel_name (a prior call on the same
-    // registered phone). Per the chosen policy ("skip if ambiguous —
-    // correctness over coverage"), the parser declines to link, leaving
-    // other_leg_uuid as None on both legs. The fix for this real-world case is
-    // consumer-side: call SessionTracker::remove_session() on Hangup so stale
-    // sessions don't pollute the channel-name lookup.
+    // The fixture covers ~20 minutes of traffic, so by originate time several
+    // prior sessions share the same b-leg channel_name. The liveness filter in
+    // link_legs skips candidates in terminal channel/callstate (CS_DESTROY etc),
+    // leaving exactly one live b-leg → link succeeds.
     let path = Path::new(FIXTURES_DIR)
         .join("pbx")
         .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
@@ -533,25 +528,21 @@ fn originate_success_channel_fallback_pbx_fixture_ambiguous() {
         .sessions()
         .get(A_LEG)
         .expect("a-leg session present");
+    assert_eq!(
+        a.other_leg_uuid.as_deref(),
+        Some(B_LEG),
+        "a-leg linked to b-leg via channel-name fallback (live candidate)"
+    );
+
     let b = tracker
         .sessions()
         .get(B_LEG)
         .expect("b-leg session present");
-
-    // Both sessions exist and channel names parse cleanly.
     assert_eq!(
-        b.channel_name.as_deref(),
-        Some("sofia/internal/6244@192.168.1.72:50744"),
-        "b-leg channel_name populated from New Channel"
+        b.other_leg_uuid.as_deref(),
+        Some(A_LEG),
+        "b-leg points back to a-leg"
     );
-
-    // The lookup is ambiguous due to a prior session with the same channel_name,
-    // so neither leg is linked — the policy worked as designed.
-    assert_eq!(
-        a.other_leg_uuid, None,
-        "ambiguous channel-name match: parser correctly declines to link"
-    );
-    assert_eq!(b.other_leg_uuid, None);
 }
 
 #[test]

@@ -1,6 +1,8 @@
 use crate::attached::AttachedLines;
 use crate::level::LogLevel;
-use crate::line::{is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind};
+use crate::line::{
+    is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind, UUID_PREFIX_LEN,
+};
 use crate::message::{classify_message, MessageKind, SdpDirection};
 use std::collections::VecDeque;
 
@@ -430,8 +432,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
 /// causing the next queue entry to collide on the same physical line.
 const MOD_LOGFILE_BUF_SIZE: usize = 2048;
 
-/// Effective maximum payload per line (buffer minus UUID, space, newline).
-const MAX_LINE_PAYLOAD: usize = MOD_LOGFILE_BUF_SIZE - 36 - 1 - 1;
+/// Effective maximum payload per line (buffer minus the UUID prefix
+/// `mod_logfile` prepends, minus the trailing newline).
+const MAX_LINE_PAYLOAD: usize = MOD_LOGFILE_BUF_SIZE - UUID_PREFIX_LEN - 1;
 
 /// Tolerance around the expected truncation boundary when scanning oversize
 /// lines for Format E collisions. The boundary is deterministic
@@ -474,10 +477,10 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         // Skip past the line's own header to avoid matching itself.
         let bytes = line.as_bytes();
         let min_scan = if is_uuid_at(bytes, 0) {
-            if bytes.len() > 37 && bytes[37].is_ascii_digit() {
+            if bytes.len() > UUID_PREFIX_LEN && bytes[UUID_PREFIX_LEN].is_ascii_digit() {
                 64 // Full line: UUID + timestamp
             } else {
-                37 // UUID continuation
+                UUID_PREFIX_LEN // UUID continuation
             }
         } else if is_date_at(bytes, 0) {
             27 // System line: skip own timestamp
@@ -512,8 +515,10 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         let mut offset = min_scan;
         while offset <= end {
             if is_log_header_at(bytes, offset) {
-                let split_at = if offset >= chunk_start + 37 && is_uuid_at(bytes, offset - 37) {
-                    offset - 37
+                let split_at = if offset >= chunk_start + UUID_PREFIX_LEN
+                    && is_uuid_at(bytes, offset - UUID_PREFIX_LEN)
+                {
+                    offset - UUID_PREFIX_LEN
                 } else {
                     offset
                 };
@@ -538,7 +543,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 {
                     splits.push(offset);
                     chunk_start = offset;
-                    offset += 37;
+                    offset += UUID_PREFIX_LEN;
                     continue;
                 }
             }

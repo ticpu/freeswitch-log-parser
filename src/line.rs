@@ -2,6 +2,13 @@ use crate::level::LogLevel;
 
 use std::fmt;
 
+/// Length of a session UUID in canonical 8-4-4-4-12 hex form.
+pub(crate) const UUID_LEN: usize = 36;
+
+/// Length of a UUID followed by its trailing space — the prefix
+/// `mod_logfile` prepends to every line when `log_uuid=true`.
+pub(crate) const UUID_PREFIX_LEN: usize = UUID_LEN + 1;
+
 /// Classification of a single log line's structural format.
 ///
 /// FreeSWITCH's `switch_log_printf` emits five distinct line shapes depending
@@ -62,13 +69,13 @@ pub struct RawLine<'a> {
 }
 
 pub(crate) fn is_uuid_at(bytes: &[u8], offset: usize) -> bool {
-    if bytes.len() < offset + 37 {
+    if bytes.len() < offset + UUID_PREFIX_LEN {
         return false;
     }
-    if bytes[offset + 36] != b' ' {
+    if bytes[offset + UUID_LEN] != b' ' {
         return false;
     }
-    for (i, &b) in bytes[offset..offset + 36].iter().enumerate() {
+    for (i, &b) in bytes[offset..offset + UUID_LEN].iter().enumerate() {
         match i {
             8 | 13 | 18 | 23 => {
                 if b != b'-' {
@@ -86,10 +93,10 @@ pub(crate) fn is_uuid_at(bytes: &[u8], offset: usize) -> bool {
 }
 
 fn find_uuid_in(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < 37 {
+    if bytes.len() < UUID_PREFIX_LEN {
         return None;
     }
-    let max_start = (bytes.len() - 37).min(50);
+    let max_start = (bytes.len() - UUID_PREFIX_LEN).min(50);
     (1..=max_start).find(|&start| is_uuid_at(bytes, start))
 }
 
@@ -242,10 +249,10 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
     let bytes = line.as_bytes();
 
     if is_uuid_at(bytes, 0) {
-        let uuid = &line[0..36];
-        let after_uuid = &line[37..];
+        let uuid = &line[0..UUID_LEN];
+        let after_uuid = &line[UUID_PREFIX_LEN..];
 
-        if is_date_at(bytes, 37) {
+        if is_date_at(bytes, UUID_PREFIX_LEN) {
             let (timestamp, idle_pct, level, source, message) =
                 parse_timestamped_fields(after_uuid);
             return RawLine {
@@ -273,7 +280,7 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
     if is_date_at(bytes, 0) {
         let (timestamp, idle_pct, level, source, message) = parse_timestamped_fields(line);
         let (uuid, message) = if is_uuid_at(message.as_bytes(), 0) {
-            (Some(&message[0..36]), &message[37..])
+            (Some(&message[0..UUID_LEN]), &message[UUID_PREFIX_LEN..])
         } else {
             (None, message)
         };
@@ -289,9 +296,9 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
     }
 
     if let Some(uuid_start) = find_uuid_in(bytes) {
-        let uuid = &line[uuid_start..uuid_start + 36];
-        let message = if line.len() > uuid_start + 37 {
-            &line[uuid_start + 37..]
+        let uuid = &line[uuid_start..uuid_start + UUID_LEN];
+        let message = if line.len() > uuid_start + UUID_PREFIX_LEN {
+            &line[uuid_start + UUID_PREFIX_LEN..]
         } else {
             ""
         };

@@ -712,33 +712,25 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
     let len = state.calls.len();
     match code {
         KeyCode::Char('q') | KeyCode::Esc => state.should_quit = true,
-        KeyCode::Up | KeyCode::Char('k') => {
-            if idx > 0 {
-                state.select_index(idx - 1);
-            }
+        KeyCode::Up | KeyCode::Char('k') if idx > 0 => {
+            state.select_index(idx - 1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if len > 0 && idx < len - 1 {
-                state.select_index(idx + 1);
-            }
+        KeyCode::Down | KeyCode::Char('j') if len > 0 && idx < len - 1 => {
+            state.select_index(idx + 1);
         }
         KeyCode::PageUp => {
             let new = idx.saturating_sub(state.page_size);
             state.select_index(new);
         }
-        KeyCode::PageDown => {
-            if len > 0 {
-                let new = (idx + state.page_size).min(len - 1);
-                state.select_index(new);
-            }
+        KeyCode::PageDown if len > 0 => {
+            let new = (idx + state.page_size).min(len - 1);
+            state.select_index(new);
         }
         KeyCode::Home => {
             state.select_index(0);
         }
-        KeyCode::End => {
-            if len > 0 {
-                state.select_index(len - 1);
-            }
+        KeyCode::End if len > 0 => {
+            state.select_index(len - 1);
         }
         KeyCode::Enter => {
             if let Some(row) = state.calls.get(state.selected_index()) {
@@ -759,15 +751,11 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
 fn handle_leg_picker_key(state: &mut AppState, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('q') => state.show_leg_picker = false,
-        KeyCode::Up | KeyCode::Char('k') => {
-            if state.leg_picker_selected > 0 {
-                state.leg_picker_selected -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if state.leg_picker_selected > 0 => {
+            state.leg_picker_selected -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if state.leg_picker_selected == 0 {
-                state.leg_picker_selected = 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if state.leg_picker_selected == 0 => {
+            state.leg_picker_selected = 1;
         }
         KeyCode::Enter => {
             if let Some(row) = state.calls.get(state.selected_index()) {
@@ -795,15 +783,11 @@ fn handle_menu_key(state: &mut AppState, code: KeyCode) {
             state.show_menu = false;
             state.target_uuid = None;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if state.menu_selected > 0 {
-                state.menu_selected -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if state.menu_selected > 0 => {
+            state.menu_selected -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if state.menu_selected + 1 < item_count {
-                state.menu_selected += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if state.menu_selected + 1 < item_count => {
+            state.menu_selected += 1;
         }
         KeyCode::Enter => {
             // handled in the event loop since we need terminal access

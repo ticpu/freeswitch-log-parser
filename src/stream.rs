@@ -2,6 +2,7 @@ use crate::attached::AttachedLines;
 use crate::level::LogLevel;
 use crate::line::{is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind};
 use crate::message::{classify_message, MessageKind, SdpDirection};
+use std::collections::VecDeque;
 
 /// Structured data extracted from a multi-line dump that follows a primary log entry.
 ///
@@ -182,7 +183,7 @@ pub struct LogStream<I> {
     stats: ParseStats,
     tracking: UnclassifiedTracking,
     line_number: u64,
-    split_pending: Option<String>,
+    split_pending: VecDeque<String>,
     deferred_warning: Option<String>,
 }
 
@@ -198,7 +199,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             stats: ParseStats::default(),
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
-            split_pending: None,
+            split_pending: VecDeque::new(),
             deferred_warning: None,
         }
     }
@@ -485,44 +486,79 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         };
 
         let end = bytes.len().saturating_sub(28);
-        // For oversize lines (Format E), the collision UUID lands at a
-        // deterministic offset of ~MAX_LINE_PAYLOAD from the chunk start —
-        // mod_logfile's snprintf truncation point. Bounding the scan to a
-        // small window avoids O(n²) behavior on lines that split many times,
-        // where the previous full-suffix scan re-walked tens of KB per split.
-        // Format B (write-contention timestamp collisions) at arbitrary
-        // offsets within an oversize line are not detected; that combination
-        // is not observed in production logs.
-        let (scan_lo, scan_hi) = if bytes.len() > MAX_LINE_PAYLOAD {
-            let lo = min_scan.max(MAX_LINE_PAYLOAD.saturating_sub(COLLISION_SCAN_SLACK));
-            let hi = end.min(MAX_LINE_PAYLOAD + COLLISION_SCAN_SLACK);
-            (lo, hi)
-        } else {
-            (min_scan, end)
-        };
+        let oversize = bytes.len() > MAX_LINE_PAYLOAD;
 
-        if scan_lo <= scan_hi {
-            for offset in scan_lo..=scan_hi {
-                // Timestamp collision (System or Full line header)
-                if is_log_header_at(bytes, offset) {
-                    // Check if a UUID precedes the timestamp (Full line collision)
-                    let split_at = if offset >= 37 && is_uuid_at(bytes, offset - 37) {
-                        offset - 37
-                    } else {
-                        offset
-                    };
-                    self.split_pending = Some(line[split_at..].to_string());
-                    return line[..split_at].to_string();
+        // Single linear pass collecting every split point. Two collision
+        // mechanisms handled in one walk:
+        //
+        //   * `is_log_header_at`: timestamp header (Format B write
+        //     contention, Full/System line collisions). Fast-fails after
+        //     one byte for non-digit input, so the per-offset cost stays
+        //     low even on hundreds-of-KB lines.
+        //
+        //   * `is_uuid_at` within a ±64-byte window around the next
+        //     expected mod_logfile truncation boundary (Format E). The
+        //     boundary is `MAX_LINE_PAYLOAD` bytes past the start of the
+        //     current chunk; we advance it as splits are found. Bounding
+        //     this check is what kept the previous optimization fast on
+        //     60 KB embedded-SDP lines — a 36-byte hex pattern check at
+        //     every offset would dominate the scan.
+        //
+        // Collecting all splits in one pass (rather than splitting,
+        // re-feeding the suffix, and re-scanning from scratch) is the
+        // structural fix for the prior O(n²) behavior.
+        let mut splits: Vec<usize> = Vec::new();
+        let mut chunk_start = 0usize;
+        let mut offset = min_scan;
+        while offset <= end {
+            if is_log_header_at(bytes, offset) {
+                let split_at = if offset >= chunk_start + 37 && is_uuid_at(bytes, offset - 37) {
+                    offset - 37
+                } else {
+                    offset
+                };
+                if split_at > chunk_start {
+                    splits.push(split_at);
+                    chunk_start = split_at;
+                    offset += 27;
+                } else {
+                    // Header at current chunk's own start — already
+                    // accounted for. Step past it without recording a
+                    // split. The max guarantees forward progress when
+                    // the UUID-prefix check rewinds split_at behind us.
+                    offset = (offset + 27).max(offset + 1);
                 }
-                // UUID collision without timestamp (Format E — truncated buffer)
-                if is_uuid_at(bytes, offset) && bytes.len() > MAX_LINE_PAYLOAD {
-                    self.split_pending = Some(line[offset..].to_string());
-                    return line[..offset].to_string();
+                continue;
+            }
+            if oversize {
+                let boundary = chunk_start + MAX_LINE_PAYLOAD;
+                if offset + COLLISION_SCAN_SLACK >= boundary
+                    && offset <= boundary + COLLISION_SCAN_SLACK
+                    && is_uuid_at(bytes, offset)
+                {
+                    splits.push(offset);
+                    chunk_start = offset;
+                    offset += 37;
+                    continue;
                 }
             }
+            offset += 1;
         }
 
-        line
+        if splits.is_empty() {
+            return line;
+        }
+
+        // First chunk returned; the rest queued for subsequent iterations.
+        // Building right-to-left with split_off avoids intermediate copies.
+        let mut tail = line;
+        let mut chunks: Vec<String> = Vec::with_capacity(splits.len());
+        for &at in splits.iter().rev() {
+            chunks.push(tail.split_off(at));
+        }
+        chunks.reverse();
+        self.split_pending.extend(chunks);
+        tail
     }
 }
 
@@ -531,8 +567,11 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
     fn next(&mut self) -> Option<LogEntry> {
         loop {
-            let line = if let Some(split) = self.split_pending.take() {
+            let line = if let Some(split) = self.split_pending.pop_front() {
                 self.stats.lines_split += 1;
+                // Already split out by a prior detect_collision pass —
+                // skip re-scanning, which would just walk the chunk again
+                // and find nothing.
                 split
             } else {
                 let Some(line) = self.lines.next() else {
@@ -551,10 +590,8 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
                 self.line_number += 1;
                 self.stats.lines_processed += 1;
-                line
+                self.detect_collision(line)
             };
-
-            let line = self.detect_collision(line);
 
             let parsed = parse_line(&line);
 
@@ -1462,6 +1499,41 @@ mod tests {
         assert_eq!(entries[1].message, "second");
         assert_eq!(entries[2].message, "third");
         assert_eq!(stream.stats().lines_split, 2);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn timestamp_collision_oversize_write_contention() {
+        // Production case: write contention concatenates dozens of short
+        // Event Socket entries into a single physical line whose total
+        // length exceeds MAX_LINE_PAYLOAD. Timestamps appear at offsets
+        // ~150 bytes apart — none aligned with the 2010-byte buffer
+        // boundary. All entries must still split out.
+        let entry = |n: usize| {
+            format!(
+                "{TS1} 98.77% [INFO] mod_event_socket.c:1754 Event Socket Command from ::1:42864: api db select/ngcs_sip_call_id/entry-{n:04}"
+            )
+        };
+        let count: u64 = 20;
+        let line: String = (0..count).map(|n| entry(n as usize)).collect();
+        assert!(
+            line.len() > super::MAX_LINE_PAYLOAD,
+            "test fixture should exceed MAX_LINE_PAYLOAD, got {}",
+            line.len()
+        );
+
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len() as u64, count);
+        for (i, e) in entries.iter().enumerate() {
+            assert_eq!(
+                e.message,
+                format!(
+                    "Event Socket Command from ::1:42864: api db select/ngcs_sip_call_id/entry-{i:04}"
+                )
+            );
+        }
+        assert_eq!(stream.stats().lines_split, count - 1);
         assert_accounting(&stream);
     }
 

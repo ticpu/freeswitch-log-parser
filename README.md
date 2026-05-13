@@ -1,5 +1,11 @@
 # freeswitch-log-parser
 
+[![CI](https://github.com/ticpu/freeswitch-log-parser/actions/workflows/ci.yml/badge.svg)](https://github.com/ticpu/freeswitch-log-parser/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/ticpu/5d6e27e07995772a5bf424d4cf51e608/raw/test-count.json)](https://github.com/ticpu/freeswitch-log-parser/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/freeswitch-log-parser)](https://crates.io/crates/freeswitch-log-parser)
+[![docs.rs](https://img.shields.io/docsrs/freeswitch-log-parser)](https://docs.rs/freeswitch-log-parser)
+[![license](https://img.shields.io/crates/l/freeswitch-log-parser)](https://github.com/ticpu/freeswitch-log-parser/blob/master/LICENSE)
+
 Rust library for parsing FreeSWITCH log files. Three-layer streaming
 architecture, no regex, single runtime dependency (`freeswitch-types`
 for typed enums).

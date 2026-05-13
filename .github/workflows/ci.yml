@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+
+    - name: Check (library)
+      run: cargo check --message-format=short
+
+    - name: Check (library + CLI)
+      run: cargo check --features cli --all-targets --message-format=short
+
+    - name: Check (library + TUI)
+      run: cargo check --features tui --all-targets --message-format=short
+
+    - name: Clippy
+      run: cargo clippy --features tui --all-targets -- -D warnings
+
+    - name: Test
+      run: |
+        set -o pipefail
+        CARGO_TERM_COLOR=never cargo test --release --features tui 2>&1 | tee test-output.txt
+        passed=$(grep '^test result:' test-output.txt | sed 's/.*ok\. \([0-9]*\) passed.*/\1/' | paste -sd+ | bc)
+        echo "TEST_PASSED=$passed" >> "$GITHUB_ENV"
+
+    - name: Update test count badge
+      if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ secrets.GIST_SECRET }}
+        gistID: 5d6e27e07995772a5bf424d4cf51e608
+        filename: test-count.json
+        label: tests
+        message: "${{ env.TEST_PASSED }} passed"
+        color: brightgreen
+
+    - name: Build
+      run: cargo build --features tui --release

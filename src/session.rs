@@ -273,7 +273,7 @@ fn parse_state_change(detail: &str) -> Option<String> {
 /// `|` failover, and `,` simultaneous ring syntax.
 fn parse_bridge_args(arguments: &str) -> Option<BridgeInfo> {
     let dial = BridgeDialString::from_str(arguments).ok()?;
-    let first_ep = dial.groups.first()?.first()?;
+    let first_ep = dial.groups().first()?.first()?;
     let origination_uuid = first_ep
         .variables()
         .and_then(|v| v.get("origination_uuid"))

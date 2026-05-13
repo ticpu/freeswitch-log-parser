@@ -15,7 +15,7 @@ exclude = ["packaging/", ".gitleaks.toml", "tests/fixtures/", "tests/production_
 name = "freeswitch_log_parser"
 
 [dependencies]
-freeswitch-types = { version = "0.15", default-features = false }
+freeswitch-types = { version = "1.0.0-rc.2", default-features = false, features = ["esl"] }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4", optional = true }
 xz2 = { version = "0.1", optional = true }

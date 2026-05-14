@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use freeswitch_types::{BridgeDialString, CallDirection, DialString};
@@ -41,6 +41,14 @@ pub struct SessionState {
     pub variables: HashMap<String, String>,
 }
 
+/// Changes to indexed fields reported by `update_from_entry` for index maintenance.
+#[derive(Default)]
+struct IndexedFieldChanges {
+    channel_name: Option<(Option<String>, Option<String>)>,
+    pending_bridge_target: Option<(Option<String>, Option<String>)>,
+    other_leg_uuid: Option<(Option<String>, Option<String>)>,
+}
+
 /// Immutable point-in-time copy of a session's state, attached to each [`EnrichedEntry`].
 ///
 /// Does not include `variables` to keep snapshots lightweight — access the full
@@ -75,7 +83,11 @@ impl SessionState {
         }
     }
 
-    fn update_from_entry(&mut self, entry: &LogEntry) {
+    fn update_from_entry(&mut self, entry: &LogEntry) -> IndexedFieldChanges {
+        let old_channel_name = self.channel_name.clone();
+        let old_pending_bridge_target = self.pending_bridge_target.clone();
+        let old_other_leg_uuid = self.other_leg_uuid.clone();
+
         if let Some(Block::ChannelData { fields, variables }) = &entry.block {
             for (name, value) in fields {
                 match name.as_str() {
@@ -168,6 +180,19 @@ impl SessionState {
             let parsed = parse_line(attached);
             self.update_from_message(parsed.message);
         }
+
+        let mut changes = IndexedFieldChanges::default();
+        if self.channel_name != old_channel_name {
+            changes.channel_name = Some((old_channel_name, self.channel_name.clone()));
+        }
+        if self.pending_bridge_target != old_pending_bridge_target {
+            changes.pending_bridge_target =
+                Some((old_pending_bridge_target, self.pending_bridge_target.clone()));
+        }
+        if self.other_leg_uuid != old_other_leg_uuid {
+            changes.other_leg_uuid = Some((old_other_leg_uuid, self.other_leg_uuid.clone()));
+        }
+        changes
     }
 
     fn update_from_message(&mut self, msg: &str) {
@@ -349,6 +374,9 @@ pub struct EnrichedEntry {
 pub struct SessionTracker<I> {
     inner: LogStream<I>,
     sessions: HashMap<String, SessionState>,
+    by_channel_name: HashMap<String, HashSet<String>>,
+    by_pending_target: HashMap<String, String>,
+    by_other_leg: HashMap<String, String>,
 }
 
 impl<I: Iterator<Item = String>> SessionTracker<I> {
@@ -357,6 +385,9 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         SessionTracker {
             inner,
             sessions: HashMap::new(),
+            by_channel_name: HashMap::new(),
+            by_pending_target: HashMap::new(),
+            by_other_leg: HashMap::new(),
         }
     }
 
@@ -368,7 +399,22 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// Remove and return a session's accumulated state. Call this when a call ends
     /// (e.g. `CS_DESTROY` or hangup) to free memory.
     pub fn remove_session(&mut self, uuid: &str) -> Option<SessionState> {
-        self.sessions.remove(uuid)
+        let state = self.sessions.remove(uuid)?;
+        if let Some(chan) = &state.channel_name {
+            if let Some(set) = self.by_channel_name.get_mut(chan) {
+                set.remove(uuid);
+                if set.is_empty() {
+                    self.by_channel_name.remove(chan);
+                }
+            }
+        }
+        if let Some(target) = &state.pending_bridge_target {
+            self.by_pending_target.remove(target);
+        }
+        if let Some(other) = &state.other_leg_uuid {
+            self.by_other_leg.remove(other);
+        }
+        Some(state)
     }
 
     /// Delegates to [`LogStream::stats()`].
@@ -381,6 +427,42 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         self.inner.drain_unclassified()
     }
 
+    fn apply_index_changes(&mut self, uuid: &str, changes: &IndexedFieldChanges) {
+        if let Some((old, new)) = &changes.channel_name {
+            if let Some(old_name) = old {
+                if let Some(set) = self.by_channel_name.get_mut(old_name) {
+                    set.remove(uuid);
+                    if set.is_empty() {
+                        self.by_channel_name.remove(old_name);
+                    }
+                }
+            }
+            if let Some(new_name) = new {
+                self.by_channel_name
+                    .entry(new_name.clone())
+                    .or_default()
+                    .insert(uuid.to_string());
+            }
+        }
+        if let Some((old, new)) = &changes.pending_bridge_target {
+            if let Some(old_target) = old {
+                self.by_pending_target.remove(old_target);
+            }
+            if let Some(new_target) = new {
+                self.by_pending_target
+                    .insert(new_target.clone(), uuid.to_string());
+            }
+        }
+        if let Some((old, new)) = &changes.other_leg_uuid {
+            if let Some(old_leg) = old {
+                self.by_other_leg.remove(old_leg);
+            }
+            if let Some(new_leg) = new {
+                self.by_other_leg.insert(new_leg.clone(), uuid.to_string());
+            }
+        }
+    }
+
     /// Cross-session leg linking. Called after `update_from_entry` so per-session
     /// state (bridge target, channel name) is already populated.
     fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
@@ -388,46 +470,65 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         if entry.message.contains("Originate Resulted in Success") {
             let a_uuid = uuid.to_string();
             if let Some(peer_uuid) = parse_originate_success(&entry.message) {
+                let a_old_pending = self
+                    .sessions
+                    .get(&a_uuid)
+                    .and_then(|s| s.pending_bridge_target.clone());
+
                 if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
                     a_state.other_leg_uuid = Some(peer_uuid.clone());
                     a_state.pending_bridge_target = None;
                 }
-                let b_state = self.sessions.entry(peer_uuid).or_default();
-                b_state.other_leg_uuid = Some(a_uuid);
+                self.by_other_leg
+                    .insert(peer_uuid.clone(), a_uuid.clone());
+                if let Some(old_target) = a_old_pending {
+                    self.by_pending_target.remove(&old_target);
+                }
+
+                let b_state = self.sessions.entry(peer_uuid.clone()).or_default();
+                b_state.other_leg_uuid = Some(a_uuid.clone());
+                self.by_other_leg.insert(a_uuid, peer_uuid);
             } else if let Some(chan) = parse_originate_channel(&entry.message) {
                 // Fallback for FS builds without `Peer UUID:` suffix (e.g. 1.10.5-dev):
                 // link via unique non-terminated b-leg session whose channel_name
-                // matches. Candidates in terminal channel/callstate (CS_DESTROY,
-                // CS_HANGUP, …) are stragglers from prior calls and skipped — the
-                // channel name on a registered phone is reused across calls, so
-                // long parses accumulate ghosts. After filtering, if zero or
-                // multiple live candidates remain, skip the link entirely
-                // (correctness over coverage).
-                let mut found: Option<String> = None;
-                let mut ambiguous = false;
-                for (u, s) in &self.sessions {
-                    if u == &a_uuid {
-                        continue;
+                // matches. Candidates in terminal states are stragglers; if zero or
+                // multiple live candidates remain, skip (correctness over coverage).
+                let candidates: Vec<String> = self
+                    .by_channel_name
+                    .get(chan)
+                    .map(|set| {
+                        set.iter()
+                            .filter(|u| *u != &a_uuid)
+                            .filter(|u| {
+                                self.sessions
+                                    .get(*u)
+                                    .map(|s| !is_terminal_channel_state(s.channel_state.as_deref()))
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if candidates.len() == 1 {
+                    let b_uuid = candidates.into_iter().next().unwrap();
+                    let a_old_pending = self
+                        .sessions
+                        .get(&a_uuid)
+                        .and_then(|s| s.pending_bridge_target.clone());
+
+                    if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
+                        a_state.other_leg_uuid = Some(b_uuid.clone());
+                        a_state.pending_bridge_target = None;
                     }
-                    if s.channel_name.as_deref() == Some(chan)
-                        && !is_terminal_channel_state(s.channel_state.as_deref())
-                    {
-                        if found.is_some() {
-                            ambiguous = true;
-                            break;
-                        }
-                        found = Some(u.clone());
+                    if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
+                        b_state.other_leg_uuid = Some(a_uuid.clone());
                     }
-                }
-                if !ambiguous {
-                    if let Some(b_uuid) = found {
-                        if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                            a_state.other_leg_uuid = Some(b_uuid.clone());
-                            a_state.pending_bridge_target = None;
-                        }
-                        if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
-                            b_state.other_leg_uuid = Some(a_uuid);
-                        }
+
+                    self.by_other_leg.insert(b_uuid.clone(), a_uuid.clone());
+                    self.by_other_leg.insert(a_uuid, b_uuid);
+                    if let Some(old_target) = a_old_pending {
+                        self.by_pending_target.remove(&old_target);
                     }
                 }
             }
@@ -439,31 +540,33 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         if let MessageKind::ChannelLifecycle { detail } = &entry.message_kind {
             if let Some(channel_name) = parse_new_channel(detail) {
                 let b_uuid = uuid.to_string();
-                let mut a_uuid_found = None;
 
-                for (a_uuid, a_state) in &self.sessions {
-                    if *a_uuid == b_uuid {
-                        continue;
-                    }
-                    // origination_uuid match: A-leg already set other_leg_uuid during bridge parse
-                    if a_state.other_leg_uuid.as_deref() == Some(&b_uuid) {
-                        a_uuid_found = Some(a_uuid.clone());
-                        break;
-                    }
-                    // Target channel match
-                    if a_state.pending_bridge_target.as_deref() == Some(channel_name.as_str()) {
-                        a_uuid_found = Some(a_uuid.clone());
-                        break;
-                    }
-                }
+                // O(1) index lookups instead of full scan
+                let a_uuid_found = self
+                    .by_other_leg
+                    .get(&b_uuid)
+                    .cloned()
+                    .or_else(|| self.by_pending_target.get(&channel_name).cloned())
+                    .filter(|a| a != &b_uuid);
 
                 if let Some(a_uuid) = a_uuid_found {
+                    let a_old_pending = self
+                        .sessions
+                        .get(&a_uuid)
+                        .and_then(|s| s.pending_bridge_target.clone());
+
                     if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
                         a_state.other_leg_uuid = Some(b_uuid.clone());
                         a_state.pending_bridge_target = None;
                     }
                     if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
-                        b_state.other_leg_uuid = Some(a_uuid);
+                        b_state.other_leg_uuid = Some(a_uuid.clone());
+                    }
+
+                    self.by_other_leg.insert(b_uuid.clone(), a_uuid.clone());
+                    self.by_other_leg.insert(a_uuid, b_uuid);
+                    if let Some(old_target) = a_old_pending {
+                        self.by_pending_target.remove(&old_target);
                     }
                 }
             }
@@ -485,8 +588,12 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         }
 
         let uuid = entry.uuid.clone();
-        let state = self.sessions.entry(uuid.clone()).or_default();
-        state.update_from_entry(&entry);
+        let changes = self
+            .sessions
+            .entry(uuid.clone())
+            .or_default()
+            .update_from_entry(&entry);
+        self.apply_index_changes(&uuid, &changes);
 
         self.link_legs(&uuid, &entry);
 

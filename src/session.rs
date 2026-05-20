@@ -7,6 +7,8 @@ use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
+type RelationshipHook = Box<dyn Fn(&LogEntry, &mut SessionState) + Send>;
+
 /// Mutable per-UUID state accumulator, updated as entries are processed.
 ///
 /// Fields are `None` until the corresponding data is first seen in the stream.
@@ -186,8 +188,10 @@ impl SessionState {
             changes.channel_name = Some((old_channel_name, self.channel_name.clone()));
         }
         if self.pending_bridge_target != old_pending_bridge_target {
-            changes.pending_bridge_target =
-                Some((old_pending_bridge_target, self.pending_bridge_target.clone()));
+            changes.pending_bridge_target = Some((
+                old_pending_bridge_target,
+                self.pending_bridge_target.clone(),
+            ));
         }
         if self.other_leg_uuid != old_other_leg_uuid {
             changes.other_leg_uuid = Some((old_other_leg_uuid, self.other_leg_uuid.clone()));
@@ -377,6 +381,7 @@ pub struct SessionTracker<I> {
     by_channel_name: HashMap<String, HashSet<String>>,
     by_pending_target: HashMap<String, String>,
     by_other_leg: HashMap<String, String>,
+    relationship_hook: Option<RelationshipHook>,
 }
 
 impl<I: Iterator<Item = String>> SessionTracker<I> {
@@ -388,7 +393,37 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             by_channel_name: HashMap::new(),
             by_pending_target: HashMap::new(),
             by_other_leg: HashMap::new(),
+            relationship_hook: None,
         }
+    }
+
+    /// Register a custom relationship detection hook.
+    ///
+    /// The hook runs after built-in `other_leg_uuid` detection, allowing
+    /// consumers to fill gaps with application-specific patterns (e.g.,
+    /// `uuid_bridge` API results, custom SIP headers).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use freeswitch_log_parser::{LogStream, SessionTracker, MessageKind};
+    ///
+    /// let stream = LogStream::new(std::iter::empty::<String>());
+    /// let tracker = SessionTracker::new(stream)
+    ///     .with_relationship_hook(|entry, state| {
+    ///         if let MessageKind::Execute { application, arguments, .. } = &entry.message_kind {
+    ///             if application == "set" && arguments.starts_with("api_result=+OK ") {
+    ///                 // extract UUID and set state.other_leg_uuid
+    ///             }
+    ///         }
+    ///     });
+    /// ```
+    pub fn with_relationship_hook<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&LogEntry, &mut SessionState) + Send + 'static,
+    {
+        self.relationship_hook = Some(Box::new(hook));
+        self
     }
 
     /// All currently tracked sessions, keyed by UUID.
@@ -479,8 +514,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                     a_state.other_leg_uuid = Some(peer_uuid.clone());
                     a_state.pending_bridge_target = None;
                 }
-                self.by_other_leg
-                    .insert(peer_uuid.clone(), a_uuid.clone());
+                self.by_other_leg.insert(peer_uuid.clone(), a_uuid.clone());
                 if let Some(old_target) = a_old_pending {
                     self.by_pending_target.remove(&old_target);
                 }
@@ -596,6 +630,11 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         self.apply_index_changes(&uuid, &changes);
 
         self.link_legs(&uuid, &entry);
+
+        if let Some(hook) = &self.relationship_hook {
+            let state = self.sessions.get_mut(&uuid).unwrap();
+            hook(&entry, state);
+        }
 
         let snapshot = self.sessions.get(&uuid).unwrap().snapshot();
 
@@ -1362,5 +1401,82 @@ mod tests {
             Some("sofia/internal/+15550001234@192.0.2.1"),
         );
         assert_eq!(last.dialplan_context.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn relationship_hook_sets_other_leg_uuid() {
+        let lines = vec![
+            full_line(UUID1, TS1, "First entry"),
+            format!(
+                "{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(api_result=+OK {UUID2} Job-UUID: ...)"
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream).with_relationship_hook(|entry, state| {
+            if let MessageKind::Execute {
+                application,
+                arguments,
+                ..
+            } = &entry.message_kind
+            {
+                if application == "set" {
+                    if let Some(value) = arguments.strip_prefix("api_result=+OK ") {
+                        let uuid = value.split_whitespace().next().unwrap_or("");
+                        if uuid.len() == 36 && state.other_leg_uuid.is_none() {
+                            state.other_leg_uuid = Some(uuid.to_string());
+                        }
+                    }
+                }
+            }
+        });
+
+        let entries: Vec<_> = tracker.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+
+        let session = entries[1].session.as_ref().unwrap();
+        assert_eq!(
+            session.other_leg_uuid.as_deref(),
+            Some(UUID2),
+            "relationship_hook should detect uuid_bridge API result"
+        );
+    }
+
+    #[test]
+    fn relationship_hook_does_not_override_builtin() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Other-Leg-Unique-ID: [{UUID2}]"),
+            format!(
+                "{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(api_result=+OK {UUID3} Job-UUID: ...)"
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream).with_relationship_hook(|entry, state| {
+            if let MessageKind::Execute {
+                application,
+                arguments,
+                ..
+            } = &entry.message_kind
+            {
+                if application == "set" {
+                    if let Some(value) = arguments.strip_prefix("api_result=+OK ") {
+                        let uuid = value.split_whitespace().next().unwrap_or("");
+                        if uuid.len() == 36 && state.other_leg_uuid.is_none() {
+                            state.other_leg_uuid = Some(uuid.to_string());
+                        }
+                    }
+                }
+            }
+        });
+
+        let entries: Vec<_> = tracker.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+
+        let session = entries[1].session.as_ref().unwrap();
+        assert_eq!(
+            session.other_leg_uuid.as_deref(),
+            Some(UUID2),
+            "built-in Other-Leg-Unique-ID takes precedence over hook"
+        );
     }
 }

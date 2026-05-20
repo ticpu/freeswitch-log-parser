@@ -12,7 +12,8 @@
 //! - **Layer 2** ([`LogStream`]) — structural state machine that groups continuations,
 //!   classifies messages, and detects multi-line blocks
 //! - **Layer 3** ([`SessionTracker`]) — per-UUID state machine that propagates
-//!   dialplan context, channel state, and variables across entries
+//!   dialplan context, channel state, and variables across entries; extensible
+//!   via [`SessionTracker::with_relationship_hook`] for custom leg detection
 //!
 //! See `docs/design-rationale.md` in the repository for the full story on format
 //! discovery, parsing strategy, and why each layer exists.

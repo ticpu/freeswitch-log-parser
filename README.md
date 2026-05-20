@@ -90,6 +90,22 @@ eprintln!("{} lines, {} unclassified",
     stats.lines_processed, stats.lines_unclassified);
 ```
 
+## Custom relationship detection
+
+The built-in leg linking handles standard FreeSWITCH patterns. For
+application-specific patterns (Lua API results, custom SIP headers),
+register a hook:
+
+```rust
+let tracker = SessionTracker::new(stream)
+    .with_relationship_hook(|entry, state| {
+        // Check entry.message_kind, state.variables, etc.
+        // Set state.other_leg_uuid if pattern matches
+    });
+```
+
+See `examples/custom_relationship.rs` for a complete example.
+
 ## Multi-file input with segment tracking
 
 `TrackedChain` concatenates named input segments (typically rotated log

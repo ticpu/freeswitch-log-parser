@@ -32,8 +32,14 @@ pub struct SessionState {
     pub call_direction: Option<CallDirection>,
     /// Caller ID number from `Caller-Caller-ID-Number` CHANNEL_DATA field; `None` until seen.
     pub caller_id_number: Option<String>,
+    /// Caller ID name from `Caller-Caller-ID-Name` CHANNEL_DATA field; `None` until seen.
+    pub caller_id_name: Option<String>,
     /// Destination number from `Caller-Destination-Number` CHANNEL_DATA field; `None` until seen.
     pub destination_number: Option<String>,
+    /// Hangup cause extracted from ChannelLifecycle Hangup detail; `None` until hangup seen.
+    pub hangup_cause: Option<String>,
+    /// Timestamp when "has been answered" lifecycle event was seen; `None` until answered.
+    pub answered_at: Option<String>,
     /// Other leg's UUID; `None` until bridged. Set from `Originate Resulted in Success` on A-leg,
     /// and from `New Channel` on B-leg (back-pointing to A-leg via originate context).
     pub other_leg_uuid: Option<String>,
@@ -65,7 +71,10 @@ pub struct SessionSnapshot {
     pub dialplan_to: Option<String>,
     pub call_direction: Option<CallDirection>,
     pub caller_id_number: Option<String>,
+    pub caller_id_name: Option<String>,
     pub destination_number: Option<String>,
+    pub hangup_cause: Option<String>,
+    pub answered_at: Option<String>,
     pub other_leg_uuid: Option<String>,
 }
 
@@ -80,7 +89,10 @@ impl SessionState {
             dialplan_to: self.dialplan_to.clone(),
             call_direction: self.call_direction,
             caller_id_number: self.caller_id_number.clone(),
+            caller_id_name: self.caller_id_name.clone(),
             destination_number: self.destination_number.clone(),
+            hangup_cause: self.hangup_cause.clone(),
+            answered_at: self.answered_at.clone(),
             other_leg_uuid: self.other_leg_uuid.clone(),
         }
     }
@@ -100,6 +112,9 @@ impl SessionState {
                     }
                     "Caller-Caller-ID-Number" => {
                         self.caller_id_number = Some(value.clone());
+                    }
+                    "Caller-Caller-ID-Name" => {
+                        self.caller_id_name = Some(value.clone());
                     }
                     "Caller-Destination-Number" => {
                         self.destination_number = Some(value.clone());
@@ -164,6 +179,12 @@ impl SessionState {
                     if self.channel_name.is_none() {
                         self.channel_name = Some(name);
                     }
+                }
+                if let Some(cause) = parse_hangup(detail) {
+                    self.hangup_cause = Some(cause);
+                }
+                if is_answered(detail) && self.answered_at.is_none() {
+                    self.answered_at = Some(entry.timestamp.clone());
                 }
             }
             _ => {}
@@ -295,6 +316,19 @@ fn parse_new_channel(detail: &str) -> Option<String> {
 fn parse_state_change(detail: &str) -> Option<String> {
     let arrow = detail.find(" -> ")?;
     Some(detail[arrow + 4..].trim().to_string())
+}
+
+fn parse_hangup(detail: &str) -> Option<String> {
+    if !detail.contains("Hangup ") {
+        return None;
+    }
+    let start = detail.rfind('[')?;
+    let end = detail[start..].find(']')?;
+    Some(detail[start + 1..start + end].to_string())
+}
+
+fn is_answered(detail: &str) -> bool {
+    detail.contains("has been answered")
 }
 
 /// Extract `origination_uuid` and the bridge target channel from bridge() arguments.
@@ -1540,6 +1574,97 @@ mod tests {
             state.variables.get("routing_seen").map(|s| s.as_str()),
             Some("true"),
             "post_hook can read fields set by built-in"
+        );
+    }
+
+    #[test]
+    fn parse_hangup_extracts_cause() {
+        assert_eq!(
+            parse_hangup("Hangup sofia/internal/1234 [NORMAL_CLEARING]"),
+            Some("NORMAL_CLEARING".to_string())
+        );
+        assert_eq!(
+            parse_hangup("Hangup sofia/internal/1234 [USER_BUSY]"),
+            Some("USER_BUSY".to_string())
+        );
+        assert_eq!(parse_hangup("Some other message"), None);
+        assert_eq!(parse_hangup("New Channel sofia/internal/1234 [uuid]"), None);
+    }
+
+    #[test]
+    fn is_answered_detects_answer_event() {
+        assert!(is_answered("sofia/internal/1234 has been answered"));
+        assert!(!is_answered("sofia/internal/1234 is ringing"));
+        assert!(!is_answered("New Channel sofia/internal/1234"));
+    }
+
+    #[test]
+    fn hangup_cause_from_lifecycle() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "Hangup sofia/internal/+15550001234@192.0.2.1 [NORMAL_CLEARING]",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(
+            session.hangup_cause.as_deref(),
+            Some("NORMAL_CLEARING"),
+            "hangup_cause extracted from ChannelLifecycle Hangup"
+        );
+    }
+
+    #[test]
+    fn answered_at_from_lifecycle() {
+        let lines = vec![full_line(
+            UUID1,
+            TS1,
+            "sofia/internal/+15550001234@192.0.2.1 has been answered",
+        )];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(
+            session.answered_at.as_deref(),
+            Some(TS1),
+            "answered_at captures timestamp when 'has been answered' seen"
+        );
+    }
+
+    #[test]
+    fn answered_at_not_overwritten() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "sofia/internal/+15550001234@192.0.2.1 has been answered",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "sofia/internal/+15550001234@192.0.2.1 has been answered",
+            ),
+        ];
+        let entries = collect_enriched(lines);
+        let session = entries[1].session.as_ref().unwrap();
+        assert_eq!(
+            session.answered_at.as_deref(),
+            Some(TS1),
+            "answered_at preserves first answer timestamp"
+        );
+    }
+
+    #[test]
+    fn caller_id_name_from_channel_data() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Caller-Caller-ID-Name: [Test Caller Name]"),
+        ];
+        let entries = collect_enriched(lines);
+        let session = entries[0].session.as_ref().unwrap();
+        assert_eq!(
+            session.caller_id_name.as_deref(),
+            Some("Test Caller Name"),
+            "caller_id_name extracted from CHANNEL_DATA"
         );
     }
 }

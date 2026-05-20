@@ -66,3 +66,22 @@ This is deliberate:
 
 3. **Testability** — positional logic has obvious edge cases that map to
    specific test cases. Regex alternations hide failure modes.
+
+## Extensible relationship detection
+
+`SessionTracker` links bridged call legs via `other_leg_uuid`. Five built-in
+patterns cover vanilla FreeSWITCH: `Other-Leg-Unique-ID` field, `bridge()`
+with `origination_uuid`, `Originate Resulted in Success` with `Peer UUID:`,
+channel-name fallback for older FS builds, and new-channel matching against
+pending bridge targets.
+
+Consumers have application-specific patterns the library can't anticipate:
+Lua `uuid_bridge` API results (`set(api_result=+OK <uuid>)`), custom SIP
+headers (`sip_h_X-*`), or proprietary bridging commands. Without extensibility,
+consumers must either fork the parser, duplicate relationship tracking in
+post-processing, or request upstream changes for each pattern.
+
+`with_relationship_hook()` lets consumers inject custom detection without any
+of those costs. The hook runs after built-in detection, filling gaps rather
+than replacing core logic. This keeps the library focused on vanilla FreeSWITCH
+while remaining useful to deployments with custom bridging infrastructure.

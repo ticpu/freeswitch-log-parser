@@ -7,7 +7,7 @@ fn main() {
     let lines = stdin.lock().lines().map(|l| l.expect("read error"));
     let stream = LogStream::new(lines);
 
-    let mut tracker = SessionTracker::new(stream).with_relationship_hook(|entry, state| {
+    let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {
         if state.other_leg_uuid.is_some() {
             return;
         }

@@ -7,7 +7,7 @@ use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
-type RelationshipHook = Box<dyn Fn(&LogEntry, &mut SessionState) + Send>;
+type SessionHook = Box<dyn Fn(&LogEntry, &mut SessionState) + Send>;
 
 /// Mutable per-UUID state accumulator, updated as entries are processed.
 ///
@@ -381,7 +381,8 @@ pub struct SessionTracker<I> {
     by_channel_name: HashMap<String, HashSet<String>>,
     by_pending_target: HashMap<String, String>,
     by_other_leg: HashMap<String, String>,
-    relationship_hook: Option<RelationshipHook>,
+    pre_hook: Option<SessionHook>,
+    post_hook: Option<SessionHook>,
 }
 
 impl<I: Iterator<Item = String>> SessionTracker<I> {
@@ -393,15 +394,30 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             by_channel_name: HashMap::new(),
             by_pending_target: HashMap::new(),
             by_other_leg: HashMap::new(),
-            relationship_hook: None,
+            pre_hook: None,
+            post_hook: None,
         }
     }
 
-    /// Register a custom relationship detection hook.
+    /// Register a hook that runs BEFORE built-in field extraction.
     ///
-    /// The hook runs after built-in `other_leg_uuid` detection, allowing
-    /// consumers to fill gaps with application-specific patterns (e.g.,
-    /// `uuid_bridge` API results, custom SIP headers).
+    /// Use this to override how specific fields are extracted. Fields set
+    /// by the pre-hook may be preserved by built-in extraction if it uses
+    /// `is_none()` guards.
+    pub fn with_pre_hook<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&LogEntry, &mut SessionState) + Send + 'static,
+    {
+        self.pre_hook = Some(Box::new(hook));
+        self
+    }
+
+    /// Register a hook that runs AFTER all built-in processing.
+    ///
+    /// Use this for custom field extraction and relationship detection.
+    /// The hook can read fields populated by built-in extraction and
+    /// fill gaps with application-specific patterns (e.g., `uuid_bridge`
+    /// API results, custom SIP headers).
     ///
     /// # Example
     ///
@@ -410,7 +426,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     ///
     /// let stream = LogStream::new(std::iter::empty::<String>());
     /// let tracker = SessionTracker::new(stream)
-    ///     .with_relationship_hook(|entry, state| {
+    ///     .with_post_hook(|entry, state| {
     ///         if let MessageKind::Execute { application, arguments, .. } = &entry.message_kind {
     ///             if application == "set" && arguments.starts_with("api_result=+OK ") {
     ///                 // extract UUID and set state.other_leg_uuid
@@ -418,11 +434,11 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     ///         }
     ///     });
     /// ```
-    pub fn with_relationship_hook<F>(mut self, hook: F) -> Self
+    pub fn with_post_hook<F>(mut self, hook: F) -> Self
     where
         F: Fn(&LogEntry, &mut SessionState) + Send + 'static,
     {
-        self.relationship_hook = Some(Box::new(hook));
+        self.post_hook = Some(Box::new(hook));
         self
     }
 
@@ -622,16 +638,23 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         }
 
         let uuid = entry.uuid.clone();
+        self.sessions.entry(uuid.clone()).or_default();
+
+        if let Some(hook) = &self.pre_hook {
+            let state = self.sessions.get_mut(&uuid).unwrap();
+            hook(&entry, state);
+        }
+
         let changes = self
             .sessions
-            .entry(uuid.clone())
-            .or_default()
+            .get_mut(&uuid)
+            .unwrap()
             .update_from_entry(&entry);
         self.apply_index_changes(&uuid, &changes);
 
         self.link_legs(&uuid, &entry);
 
-        if let Some(hook) = &self.relationship_hook {
+        if let Some(hook) = &self.post_hook {
             let state = self.sessions.get_mut(&uuid).unwrap();
             hook(&entry, state);
         }
@@ -1404,7 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn relationship_hook_sets_other_leg_uuid() {
+    fn post_hook_sets_other_leg_uuid() {
         let lines = vec![
             full_line(UUID1, TS1, "First entry"),
             format!(
@@ -1412,7 +1435,7 @@ mod tests {
             ),
         ];
         let stream = LogStream::new(lines.into_iter());
-        let mut tracker = SessionTracker::new(stream).with_relationship_hook(|entry, state| {
+        let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {
             if let MessageKind::Execute {
                 application,
                 arguments,
@@ -1437,12 +1460,12 @@ mod tests {
         assert_eq!(
             session.other_leg_uuid.as_deref(),
             Some(UUID2),
-            "relationship_hook should detect uuid_bridge API result"
+            "post_hook should detect uuid_bridge API result"
         );
     }
 
     #[test]
-    fn relationship_hook_does_not_override_builtin() {
+    fn post_hook_does_not_override_builtin() {
         let lines = vec![
             full_line(UUID1, TS1, "CHANNEL_DATA:"),
             format!("{UUID1} Other-Leg-Unique-ID: [{UUID2}]"),
@@ -1451,7 +1474,7 @@ mod tests {
             ),
         ];
         let stream = LogStream::new(lines.into_iter());
-        let mut tracker = SessionTracker::new(stream).with_relationship_hook(|entry, state| {
+        let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {
             if let MessageKind::Execute {
                 application,
                 arguments,
@@ -1477,6 +1500,46 @@ mod tests {
             session.other_leg_uuid.as_deref(),
             Some(UUID2),
             "built-in Other-Leg-Unique-ID takes precedence over hook"
+        );
+    }
+
+    #[test]
+    fn pre_hook_runs_before_builtin() {
+        let lines = vec![full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING")];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream).with_pre_hook(|_entry, state| {
+            state.channel_state = Some("PRE_SET".to_string());
+        });
+        let entries: Vec<_> = tracker.by_ref().collect();
+        assert_eq!(
+            entries[0]
+                .session
+                .as_ref()
+                .unwrap()
+                .channel_state
+                .as_deref(),
+            Some("CS_ROUTING"),
+            "built-in overwrites pre_hook value when no guard"
+        );
+    }
+
+    #[test]
+    fn post_hook_runs_after_builtin() {
+        let lines = vec![full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING")];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream).with_post_hook(|_entry, state| {
+            if state.channel_state.as_deref() == Some("CS_ROUTING") {
+                state
+                    .variables
+                    .insert("routing_seen".to_string(), "true".to_string());
+            }
+        });
+        let _: Vec<_> = tracker.by_ref().collect();
+        let state = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            state.variables.get("routing_seen").map(|s| s.as_str()),
+            Some("true"),
+            "post_hook can read fields set by built-in"
         );
     }
 }

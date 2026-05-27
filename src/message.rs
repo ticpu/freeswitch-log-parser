@@ -21,6 +21,27 @@ pub enum SipInviteDirection {
     Sending,
 }
 
+/// Source of a DTMF event log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DtmfSource {
+    /// RFC2833 DTMF decoded at the RTP layer (`switch_rtp.c`).
+    Rtp,
+    /// DTMF queued to channel after validation (`switch_channel.c`).
+    Channel,
+    /// DTMF received via SIP INFO method (`sofia.c`).
+    SipInfo,
+}
+
+impl fmt::Display for DtmfSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DtmfSource::Rtp => f.pad("rtp"),
+            DtmfSource::Channel => f.pad("channel"),
+            DtmfSource::SipInfo => f.pad("sip-info"),
+        }
+    }
+}
+
 impl fmt::Display for SdpDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -83,6 +104,16 @@ pub enum MessageKind {
     },
     /// Event socket commands from `mod_event_socket`.
     EventSocket { detail: String },
+    /// DTMF digit received on the channel.
+    /// Format: `[RTP] RECV DTMF <digit>:<duration_ms>` or `INFO DTMF(<digit>)`
+    Dtmf {
+        /// Where the DTMF was logged (RTP layer, channel layer, or SIP INFO).
+        source: DtmfSource,
+        /// The DTMF digit (0-9, *, #, A-D, or F for flash).
+        digit: char,
+        /// Duration in milliseconds. `None` for SIP INFO DTMF (no duration logged).
+        duration_ms: Option<u32>,
+    },
     /// Anything not matching a more specific pattern.
     General,
     /// Synthetic marker emitted at log file boundaries (never from `classify_message`).
@@ -106,6 +137,7 @@ impl MessageKind {
         "channel-lifecycle",
         "sip-invite",
         "event-socket",
+        "dtmf",
         "general",
         "file-change",
         "date-change",
@@ -126,6 +158,7 @@ impl MessageKind {
             MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
             MessageKind::SipInvite { .. } => "sip-invite",
             MessageKind::EventSocket { .. } => "event-socket",
+            MessageKind::Dtmf { .. } => "dtmf",
             MessageKind::General => "general",
             MessageKind::FileChange => "file-change",
             MessageKind::DateChange => "date-change",
@@ -148,6 +181,14 @@ impl fmt::Display for MessageKind {
             MessageKind::ChannelLifecycle { .. } => f.pad("channel-lifecycle"),
             MessageKind::SipInvite { .. } => f.pad("sip-invite"),
             MessageKind::EventSocket { .. } => f.pad("event-socket"),
+            MessageKind::Dtmf {
+                source,
+                digit,
+                duration_ms,
+            } => match duration_ms {
+                Some(ms) => write!(f, "dtmf({source}:{digit}:{ms}ms)"),
+                None => write!(f, "dtmf({source}:{digit})"),
+            },
             MessageKind::General => f.pad("general"),
             MessageKind::FileChange => f.pad("file-change"),
             MessageKind::DateChange => f.pad("date-change"),
@@ -259,6 +300,67 @@ fn detect_sdp_direction(msg: &str) -> Option<SdpDirection> {
     }
 }
 
+fn is_valid_dtmf_digit(c: char) -> bool {
+    matches!(c, '0'..='9' | '*' | '#' | 'A'..='D' | 'F')
+}
+
+fn parse_dtmf(msg: &str) -> Option<MessageKind> {
+    // RTP RECV DTMF x:y
+    if let Some(rest) = msg.strip_prefix("RTP RECV DTMF ") {
+        let colon = rest.find(':')?;
+        if colon != 1 {
+            return None;
+        }
+        let digit = rest.chars().next()?;
+        if !is_valid_dtmf_digit(digit) {
+            return None;
+        }
+        let duration_ms = rest[colon + 1..].parse::<u32>().ok()?;
+        return Some(MessageKind::Dtmf {
+            source: DtmfSource::Rtp,
+            digit,
+            duration_ms: Some(duration_ms),
+        });
+    }
+
+    // RECV DTMF x:y
+    if let Some(rest) = msg.strip_prefix("RECV DTMF ") {
+        let colon = rest.find(':')?;
+        if colon != 1 {
+            return None;
+        }
+        let digit = rest.chars().next()?;
+        if !is_valid_dtmf_digit(digit) {
+            return None;
+        }
+        let duration_ms = rest[colon + 1..].parse::<u32>().ok()?;
+        return Some(MessageKind::Dtmf {
+            source: DtmfSource::Channel,
+            digit,
+            duration_ms: Some(duration_ms),
+        });
+    }
+
+    // INFO DTMF(x)
+    if let Some(rest) = msg.strip_prefix("INFO DTMF(") {
+        let close = rest.find(')')?;
+        if close != 1 {
+            return None;
+        }
+        let digit = rest.chars().next()?;
+        if !is_valid_dtmf_digit(digit) {
+            return None;
+        }
+        return Some(MessageKind::Dtmf {
+            source: DtmfSource::SipInfo,
+            digit,
+            duration_ms: None,
+        });
+    }
+
+    None
+}
+
 /// Classify a log message's text into a [`MessageKind`].
 ///
 /// Pure function — no state, no allocation beyond the returned enum. Works on
@@ -266,6 +368,15 @@ fn detect_sdp_direction(msg: &str) -> Option<SdpDirection> {
 pub fn classify_message(msg: &str) -> MessageKind {
     if msg.starts_with("EXECUTE ") || msg.starts_with("Execute ") {
         return parse_execute(msg);
+    }
+
+    if msg.starts_with("RECV DTMF ")
+        || msg.starts_with("RTP RECV DTMF ")
+        || msg.starts_with("INFO DTMF(")
+    {
+        if let Some(dtmf) = parse_dtmf(msg) {
+            return dtmf;
+        }
     }
 
     if msg.starts_with("Dialplan: ") || msg.starts_with("Chatplan: ") {
@@ -1296,5 +1407,150 @@ mod tests {
             MessageKind::ChannelLifecycle { .. } => {}
             other => panic!("expected ChannelLifecycle, got {other:?}"),
         }
+    }
+
+    // --- DTMF tests ---
+
+    #[test]
+    fn dtmf_channel_digit() {
+        let msg = "RECV DTMF 1:2080";
+        match classify_message(msg) {
+            MessageKind::Dtmf {
+                source,
+                digit,
+                duration_ms,
+            } => {
+                assert_eq!(source, DtmfSource::Channel);
+                assert_eq!(digit, '1');
+                assert_eq!(duration_ms, Some(2080));
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_rtp_digit() {
+        let msg = "RTP RECV DTMF 5:1440";
+        match classify_message(msg) {
+            MessageKind::Dtmf {
+                source,
+                digit,
+                duration_ms,
+            } => {
+                assert_eq!(source, DtmfSource::Rtp);
+                assert_eq!(digit, '5');
+                assert_eq!(duration_ms, Some(1440));
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_sip_info() {
+        let msg = "INFO DTMF(7)";
+        match classify_message(msg) {
+            MessageKind::Dtmf {
+                source,
+                digit,
+                duration_ms,
+            } => {
+                assert_eq!(source, DtmfSource::SipInfo);
+                assert_eq!(digit, '7');
+                assert_eq!(duration_ms, None);
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_star() {
+        let msg = "RECV DTMF *:2080";
+        match classify_message(msg) {
+            MessageKind::Dtmf { digit, .. } => {
+                assert_eq!(digit, '*');
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_hash() {
+        let msg = "RECV DTMF #:560";
+        match classify_message(msg) {
+            MessageKind::Dtmf { digit, .. } => {
+                assert_eq!(digit, '#');
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_flash() {
+        let msg = "RECV DTMF F:2080";
+        match classify_message(msg) {
+            MessageKind::Dtmf { digit, .. } => {
+                assert_eq!(digit, 'F');
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_letter_a() {
+        let msg = "RTP RECV DTMF A:1360";
+        match classify_message(msg) {
+            MessageKind::Dtmf { digit, .. } => {
+                assert_eq!(digit, 'A');
+            }
+            other => panic!("expected Dtmf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dtmf_invalid_digit_falls_through() {
+        let msg = "RECV DTMF X:1000";
+        assert_eq!(classify_message(msg), MessageKind::General);
+    }
+
+    #[test]
+    fn dtmf_malformed_no_colon_falls_through() {
+        let msg = "RECV DTMF 1";
+        assert_eq!(classify_message(msg), MessageKind::General);
+    }
+
+    #[test]
+    fn dtmf_malformed_no_duration_falls_through() {
+        let msg = "RECV DTMF 1:";
+        assert_eq!(classify_message(msg), MessageKind::General);
+    }
+
+    #[test]
+    fn dtmf_display_with_duration() {
+        let kind = MessageKind::Dtmf {
+            source: DtmfSource::Channel,
+            digit: '5',
+            duration_ms: Some(1440),
+        };
+        assert_eq!(format!("{kind}"), "dtmf(channel:5:1440ms)");
+    }
+
+    #[test]
+    fn dtmf_display_without_duration() {
+        let kind = MessageKind::Dtmf {
+            source: DtmfSource::SipInfo,
+            digit: '9',
+            duration_ms: None,
+        };
+        assert_eq!(format!("{kind}"), "dtmf(sip-info:9)");
+    }
+
+    #[test]
+    fn dtmf_label() {
+        let kind = MessageKind::Dtmf {
+            source: DtmfSource::Rtp,
+            digit: '0',
+            duration_ms: Some(2000),
+        };
+        assert_eq!(kind.label(), "dtmf");
     }
 }

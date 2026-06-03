@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 
 use freeswitch_log_parser::{Block, LogLevel};
@@ -20,6 +22,33 @@ const DIM: &str = "\x1b[2m";
 const DIM_YELLOW: &str = "\x1b[33;2m";
 const DIM_GREEN: &str = "\x1b[32;2m";
 const BRIGHT_GREEN: &str = "\x1b[92m";
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h as u32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
+
+/// Stable per-UUID truecolor so each call is visually distinct across entries.
+fn uuid_truecolor(uuid: &str) -> (u8, u8, u8) {
+    let mut hasher = DefaultHasher::new();
+    uuid.hash(&mut hasher);
+    let hue = (hasher.finish() % 360) as f64;
+    hsl_to_rgb(hue, 0.30, 0.82)
+}
 
 fn level_color(level: Option<LogLevel>) -> &'static str {
     match level {
@@ -49,11 +78,6 @@ impl EntryPrinter {
         session: Option<&freeswitch_log_parser::SessionSnapshot>,
         filename: Option<&str>,
     ) -> io::Result<()> {
-        let uuid = if entry.uuid.is_empty() {
-            "-"
-        } else {
-            &entry.uuid
-        };
         let level = entry
             .level
             .map(|l| l.to_string())
@@ -73,6 +97,15 @@ impl EntryPrinter {
         let reset = if use_color { RESET } else { "" };
         let dim = if use_color { DIM } else { "" };
 
+        let uuid = if entry.uuid.is_empty() {
+            format!("{dim}-{reset}")
+        } else if use_color {
+            let (r, g, b) = uuid_truecolor(&entry.uuid);
+            format!("\x1b[38;2;{r};{g};{b}m{}{RESET}", entry.uuid)
+        } else {
+            entry.uuid.clone()
+        };
+
         if let Some(fname) = filename.filter(|_| self.show_filename) {
             write!(w, "{dim}{fname}{reset} ")?;
         }
@@ -83,7 +116,7 @@ impl EntryPrinter {
 
         writeln!(
             w,
-            "{lc}{kind:>9} {level:>7}{reset} {time} {dim}{uuid}{reset} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
+            "{lc}{kind:>9} {level:>7}{reset} {time} {uuid} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
             kind = entry.kind,
             mkind = entry.message_kind,
             msg = entry.message,
@@ -236,10 +269,18 @@ impl EntryPrinter {
     }
 }
 
+#[derive(Clone)]
 pub struct FilterConfig {
-    pub uuid_filter: Option<String>,
+    /// Lowercased UUID needles; an entry matches if any is a substring.
+    pub uuid_filter: Vec<String>,
+    /// Restrict UUID matching to `entry.uuid` (output pass) vs. also scanning
+    /// message and attached lines (discovery pass).
+    pub uuid_strict: bool,
+    /// Extend fgrep/grep matching into attached/block lines, not just the message.
+    pub match_blocks: bool,
     pub min_level: Option<LogLevel>,
     pub category: Option<String>,
+    /// Lowercased fixed-string needle.
     pub fgrep: Option<String>,
     pub grep: Option<regex::Regex>,
     pub from_ts: Option<String>,
@@ -247,6 +288,23 @@ pub struct FilterConfig {
 }
 
 impl FilterConfig {
+    /// A copy suited to peer-UUID discovery: category cleared (the seed term may
+    /// surface under any message kind), UUID matching loosened to message bodies
+    /// and attached lines so the seed is found wherever it appears.
+    pub fn for_discovery(&self) -> FilterConfig {
+        FilterConfig {
+            uuid_filter: self.uuid_filter.clone(),
+            uuid_strict: false,
+            match_blocks: true,
+            min_level: self.min_level,
+            category: None,
+            fgrep: self.fgrep.clone(),
+            grep: self.grep.clone(),
+            from_ts: self.from_ts.clone(),
+            until_ts: self.until_ts.clone(),
+        }
+    }
+
     pub fn matches(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
         if let Some(min) = self.min_level {
             if let Some(level) = entry.level {
@@ -256,8 +314,23 @@ impl FilterConfig {
             }
         }
 
-        if let Some(ref filter) = self.uuid_filter {
-            if !entry.uuid.to_lowercase().contains(filter) {
+        if !self.uuid_filter.is_empty() {
+            let uuid_lc = entry.uuid.to_lowercase();
+            let in_uuid = self.uuid_filter.iter().any(|f| uuid_lc.contains(f));
+            let hit = if self.uuid_strict {
+                in_uuid
+            } else {
+                in_uuid
+                    || {
+                        let msg_lc = entry.message.to_lowercase();
+                        self.uuid_filter.iter().any(|f| msg_lc.contains(f))
+                    }
+                    || entry.attached.iter().any(|l| {
+                        let l_lc = l.to_lowercase();
+                        self.uuid_filter.iter().any(|f| l_lc.contains(f))
+                    })
+            };
+            if !hit {
                 return false;
             }
         }
@@ -269,17 +342,22 @@ impl FilterConfig {
         }
 
         if let Some(ref pattern) = self.fgrep {
-            if !entry
-                .message
-                .to_lowercase()
-                .contains(&pattern.to_lowercase())
-            {
+            let in_msg = entry.message.to_lowercase().contains(pattern);
+            let hit = in_msg
+                || (self.match_blocks
+                    && entry
+                        .attached
+                        .iter()
+                        .any(|l| l.to_lowercase().contains(pattern)));
+            if !hit {
                 return false;
             }
         }
 
         if let Some(ref re) = self.grep {
-            if !re.is_match(&entry.message) {
+            let hit = re.is_match(&entry.message)
+                || (self.match_blocks && entry.attached.iter().any(|l| re.is_match(l)));
+            if !hit {
                 return false;
             }
         }
@@ -299,5 +377,88 @@ impl FilterConfig {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use freeswitch_log_parser::{AttachedLines, LineKind, LogEntry, MessageKind};
+
+    fn entry(uuid: &str, message: &str, attached: &[&str]) -> LogEntry {
+        let mut a = AttachedLines::new();
+        for l in attached {
+            a.push(l);
+        }
+        LogEntry {
+            uuid: uuid.to_string(),
+            timestamp: String::new(),
+            level: None,
+            idle_pct: None,
+            source: None,
+            message: message.to_string(),
+            kind: LineKind::Full,
+            message_kind: MessageKind::General,
+            block: None,
+            attached: a,
+            line_number: 0,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn filter() -> FilterConfig {
+        FilterConfig {
+            uuid_filter: Vec::new(),
+            uuid_strict: true,
+            match_blocks: false,
+            min_level: None,
+            category: None,
+            fgrep: None,
+            grep: None,
+            from_ts: None,
+            until_ts: None,
+        }
+    }
+
+    #[test]
+    fn uuid_or_matches_any_needle() {
+        let mut f = filter();
+        f.uuid_filter = vec!["aaaa".into(), "bbbb".into()];
+        assert!(f.matches(&entry("xx-bbbb-yy", "msg", &[])));
+        assert!(f.matches(&entry("aaaa-0000", "msg", &[])));
+        assert!(!f.matches(&entry("cccc-0000", "msg", &[])));
+    }
+
+    #[test]
+    fn uuid_strict_ignores_message_body() {
+        let mut f = filter();
+        f.uuid_filter = vec!["dead".into()];
+        // strict: only the uuid field counts, not the message text
+        assert!(!f.matches(&entry("0000", "peer dead leg", &[])));
+        f.uuid_strict = false;
+        assert!(f.matches(&entry("0000", "peer dead leg", &[])));
+    }
+
+    #[test]
+    fn fgrep_into_blocks_only_with_match_blocks() {
+        let mut f = filter();
+        f.fgrep = Some("m=audio".into());
+        let e = entry("u", "Remote SDP:", &["v=0", "m=audio 5004 RTP/AVP 0"]);
+        assert!(!f.matches(&e));
+        f.match_blocks = true;
+        assert!(f.matches(&e));
+    }
+
+    #[test]
+    fn for_discovery_clears_category_and_loosens() {
+        let mut f = filter();
+        f.category = Some("execute".into());
+        f.uuid_filter = vec!["seed".into()];
+        let d = f.for_discovery();
+        assert!(d.category.is_none());
+        assert!(!d.uuid_strict);
+        assert!(d.match_blocks);
+        // seed found in message body survives discovery despite category mismatch
+        assert!(d.matches(&entry("0000", "found seed here", &[])));
     }
 }

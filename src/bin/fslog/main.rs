@@ -1,10 +1,12 @@
 mod complete;
 #[cfg(feature = "tui")]
 mod config;
+mod context;
 mod files;
 #[cfg(feature = "tui")]
 mod monitor;
 mod output;
+mod related;
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -13,9 +15,11 @@ use std::process;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use freeswitch_log_parser::{
-    AttachedLines, LineKind, LogEntry, LogLevel, LogStream, MessageKind, SessionTracker,
-    TrackedChain, UnclassifiedTracking,
+    AttachedLines, LineKind, LogEntry, LogLevel, LogStream, MessageKind, ParseStats,
+    SessionTracker, TrackedChain, UnclassifiedTracking,
 };
+
+use context::Emitter;
 
 use files::{
     discover_log_files, filter_files_by_date, format_size, lazy_log_reader, normalize_date_from,
@@ -76,9 +80,9 @@ enum Command {
 
 #[derive(clap::Args)]
 struct FilterArgs {
-    /// UUID substring filter (case-insensitive)
+    /// UUID substring filter (case-insensitive, repeatable, OR logic)
     #[arg(short, long, value_name = "UUID")]
-    uuid: Option<String>,
+    uuid: Vec<String>,
 
     /// Minimum log level
     #[arg(short, long, value_name = "LEVEL")]
@@ -95,6 +99,10 @@ struct FilterArgs {
     /// Regex pattern search
     #[arg(long, value_name = "PATTERN")]
     grep: Option<String>,
+
+    /// Also match --fgrep/--grep/PATTERN inside attached block lines (SDP, CHANNEL_DATA)
+    #[arg(long)]
+    match_blocks: bool,
 
     /// Expand structured blocks inline (CHANNEL_DATA fields/variables, SDP bodies, codec negotiation)
     #[arg(long)]
@@ -131,12 +139,41 @@ struct SearchArgs {
     #[arg(short = 'y', long)]
     yes: bool,
 
+    /// Lines of context to show after each match
+    #[arg(short = 'A', long, value_name = "N", default_value = "0")]
+    after_context: usize,
+
+    /// Lines of context to show before each match
+    #[arg(short = 'B', long, value_name = "N", default_value = "0")]
+    before_context: usize,
+
+    /// Lines of context before and after each match (sets both -A and -B)
+    #[arg(short = 'C', long, value_name = "N")]
+    context: Option<usize>,
+
+    /// Expand to bridged/transferred peer legs of matching sessions
+    #[arg(long)]
+    related: bool,
+
     #[command(flatten)]
     filter: FilterArgs,
 
-    /// Explicit files (overrides --from/--until auto-discovery)
-    #[arg(value_name = "FILES")]
+    /// Fixed-string pattern (case-insensitive); shorthand for --fgrep
+    #[arg(value_name = "PATTERN")]
+    pattern: Option<String>,
+
+    /// Explicit files to scan (overrides --from/--until auto-discovery)
+    #[arg(long = "file", value_name = "FILE")]
     files: Vec<PathBuf>,
+}
+
+impl SearchArgs {
+    fn before(&self) -> usize {
+        self.context.unwrap_or(self.before_context)
+    }
+    fn after(&self) -> usize {
+        self.context.unwrap_or(self.after_context)
+    }
 }
 
 #[derive(clap::Args)]
@@ -202,10 +239,12 @@ fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) ->
     });
 
     FilterConfig {
-        uuid_filter: filter.uuid.as_deref().map(|u| u.to_lowercase()),
+        uuid_filter: filter.uuid.iter().map(|u| u.to_lowercase()).collect(),
+        uuid_strict: true,
+        match_blocks: filter.match_blocks,
         min_level,
         category: filter.category.clone(),
-        fgrep: filter.fgrep.clone(),
+        fgrep: filter.fgrep.as_ref().map(|p| p.to_lowercase()),
         grep,
         from_ts: from.map(normalize_date_from),
         until_ts: until.map(normalize_date_until),
@@ -276,7 +315,7 @@ fn cmd_list(dir: &Path, out: &mut dyn Write) -> io::Result<()> {
     Ok(())
 }
 
-fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
+pub(crate) fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
     LogEntry {
         uuid: String::new(),
         timestamp: String::new(),
@@ -293,21 +332,16 @@ fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
     }
 }
 
-fn cmd_search(
+/// Resolve the files a search will scan: explicit `--file` paths, or
+/// date-filtered discovery in `dir`. Returns `None` when nothing matches or the
+/// user declines the large-scan confirmation.
+fn resolve_search_files(
     dir: &Path,
     args: &SearchArgs,
-    color: ColorMode,
-    out: &mut dyn Write,
-) -> io::Result<()> {
-    let filter = build_filter(&args.filter, args.from.as_deref(), args.until.as_deref());
-    let tracking = if args.filter.unclassified {
-        UnclassifiedTracking::CaptureData
-    } else {
-        UnclassifiedTracking::CountOnly
-    };
-
-    let segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = if !args.files.is_empty() {
-        args.files
+) -> io::Result<Option<Vec<(String, PathBuf)>>> {
+    if !args.files.is_empty() {
+        let v = args
+            .files
             .iter()
             .map(|p| {
                 let name = p
@@ -315,51 +349,85 @@ fn cmd_search(
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
-                (name, lazy_log_reader(p.clone()))
+                (name, p.clone())
             })
-            .collect()
-    } else {
-        let all_files = discover_log_files(dir)?;
-        let selected =
-            filter_files_by_date(&all_files, args.from.as_deref(), args.until.as_deref());
-        if selected.is_empty() {
-            eprintln!("no log files match the date range");
-            return Ok(());
-        }
-        if !args.yes && selected.len() > 20 {
-            let total_size: u64 = selected.iter().map(|f| f.size).sum();
-            if !io::stdin().is_terminal() {
-                return Err(io::Error::other(format!(
-                    "refusing to scan {} files ({}) without confirmation; pass -y to override",
-                    selected.len(),
-                    format_size(total_size)
-                )));
-            }
-            eprint!(
-                "about to scan {} files ({}), proceed? [y/N] ",
+            .collect();
+        return Ok(Some(v));
+    }
+
+    let all_files = discover_log_files(dir)?;
+    let selected = filter_files_by_date(&all_files, args.from.as_deref(), args.until.as_deref());
+    if selected.is_empty() {
+        eprintln!("no log files match the date range");
+        return Ok(None);
+    }
+    if !args.yes && selected.len() > 20 {
+        let total_size: u64 = selected.iter().map(|f| f.size).sum();
+        if !io::stdin().is_terminal() {
+            return Err(io::Error::other(format!(
+                "refusing to scan {} files ({}) without confirmation; pass -y to override",
                 selected.len(),
                 format_size(total_size)
-            );
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            if !answer.trim().eq_ignore_ascii_case("y") {
-                return Ok(());
-            }
+            )));
         }
-        selected
-            .iter()
-            .map(|f| {
-                let name = f
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                (name, lazy_log_reader(f.path.clone()))
-            })
-            .collect()
+        eprint!(
+            "about to scan {} files ({}), proceed? [y/N] ",
+            selected.len(),
+            format_size(total_size)
+        );
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            return Ok(None);
+        }
+    }
+    let v = selected
+        .iter()
+        .map(|f| {
+            let name = f
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (name, f.path.clone())
+        })
+        .collect();
+    Ok(Some(v))
+}
+
+fn build_segments(files: &[(String, PathBuf)]) -> Vec<(String, Box<dyn Iterator<Item = String>>)> {
+    files
+        .iter()
+        .map(|(name, path)| (name.clone(), lazy_log_reader(path.clone())))
+        .collect()
+}
+
+fn cmd_search(
+    dir: &Path,
+    args: &SearchArgs,
+    color: ColorMode,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    if args.pattern.is_some() && args.filter.fgrep.is_some() {
+        return Err(io::Error::other(
+            "provide either a positional PATTERN or --fgrep, not both",
+        ));
+    }
+
+    let mut filter = build_filter(&args.filter, args.from.as_deref(), args.until.as_deref());
+    if let Some(p) = &args.pattern {
+        filter.fgrep = Some(p.to_lowercase());
+    }
+    let tracking = if args.filter.unclassified {
+        UnclassifiedTracking::CaptureData
+    } else {
+        UnclassifiedTracking::CountOnly
     };
 
-    let (chain, seg_tracker) = TrackedChain::new(segments);
+    let files = match resolve_search_files(dir, args)? {
+        Some(f) => f,
+        None => return Ok(()),
+    };
 
     let printer = EntryPrinter {
         color,
@@ -369,53 +437,23 @@ fn cmd_search(
         show_line_numbers: args.filter.line_numbers,
     };
 
-    let stream = LogStream::new(chain).unclassified_tracking(tracking);
-    let mut count: u64 = 0;
-    let mut last_seg: Option<usize> = None;
-    let mut last_date = String::new();
-
-    let mut print_matching = |out: &mut dyn Write,
-                              entry: &LogEntry,
-                              session: Option<&freeswitch_log_parser::SessionSnapshot>|
-     -> io::Result<()> {
-        count += 1;
-        if !filter.matches(entry) {
+    if args.related {
+        let discovered = related::discover(build_segments(&files), &filter.for_discovery());
+        if discovered.is_empty() {
             return Ok(());
         }
-        if args.filter.stats {
-            return Ok(());
-        }
-        if let Some((idx, name)) = seg_tracker.segment_for_line(entry.line_number) {
-            if last_seg != Some(idx) {
-                last_seg = Some(idx);
-                let sep = separator_entry(MessageKind::FileChange, name.to_string());
-                printer.print_entry(out, &sep, None, None)?;
-            }
-        }
-        if entry.timestamp.len() >= 10 {
-            let date = &entry.timestamp[..10];
-            if date != last_date {
-                last_date = date.to_string();
-                let sep = separator_entry(MessageKind::DateChange, last_date.clone());
-                printer.print_entry(out, &sep, None, None)?;
-            }
-        }
-        printer.print_entry(out, entry, session, None)
-    };
+        filter.uuid_filter = discovered.into_iter().map(|u| u.to_lowercase()).collect();
+        filter.uuid_strict = true;
+    }
 
-    let (stats, session_count) = if args.filter.session {
-        let mut tracker = SessionTracker::new(stream);
-        for enriched in tracker.by_ref() {
-            print_matching(out, &enriched.entry, enriched.session.as_ref())?;
-        }
-        (tracker.stats().clone(), tracker.sessions().len())
-    } else {
-        let mut stream = stream;
-        for entry in stream.by_ref() {
-            print_matching(out, &entry, None)?;
-        }
-        (stream.stats().clone(), 0)
-    };
+    let (stats, session_count, count) = run_output(
+        out,
+        build_segments(&files),
+        &filter,
+        &printer,
+        args,
+        tracking,
+    )?;
 
     if args.filter.stats || args.filter.unclassified {
         printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
@@ -425,6 +463,42 @@ fn cmd_search(
     }
 
     Ok(())
+}
+
+fn run_output(
+    out: &mut dyn Write,
+    segments: Vec<(String, Box<dyn Iterator<Item = String>>)>,
+    filter: &FilterConfig,
+    printer: &EntryPrinter,
+    args: &SearchArgs,
+    tracking: UnclassifiedTracking,
+) -> io::Result<(ParseStats, usize, u64)> {
+    let (chain, seg_tracker) = TrackedChain::new(segments);
+    let stream = LogStream::new(chain).unclassified_tracking(tracking);
+    let mut emitter = Emitter::new(
+        printer,
+        filter,
+        &seg_tracker,
+        args.filter.stats,
+        args.before(),
+        args.after(),
+    );
+
+    let (stats, session_count) = if args.filter.session {
+        let mut tracker = SessionTracker::new(stream);
+        for enriched in tracker.by_ref() {
+            emitter.on_entry(out, &enriched.entry, enriched.session.as_ref())?;
+        }
+        (tracker.stats().clone(), tracker.sessions().len())
+    } else {
+        let mut stream = stream;
+        for entry in stream.by_ref() {
+            emitter.on_entry(out, &entry, None)?;
+        }
+        (stream.stats().clone(), 0)
+    };
+
+    Ok((stats, session_count, emitter.count))
 }
 
 fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {

@@ -128,11 +128,80 @@ let stream = LogStream::new(chain);
 
 ## `fslog` binary
 
-The crate also ships an `fslog` CLI for searching and tailing logs.
-Build with `cargo build --release --features cli` (search/filter) or
-`--features tui` (adds the `monitor` subcommand with a ratatui call
-table). The library itself has no CLI dependencies unless a feature is
-enabled.
+The crate ships an `fslog` CLI that turns the parser into a log-search
+tool: structured, UUID-aware, and able to follow a call across its
+bridged and transferred legs. It reads rotated `.xz` files directly and
+chains them in date order, so a single query spans the whole retention
+window.
+
+Build with `cargo build --release --features cli` for everything below,
+or `--features tui` to also get the `monitor` dashboard. The library
+itself pulls no CLI dependencies unless a feature is enabled.
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `fslog list` | List discovered log files with dates and sizes |
+| `fslog search` | Filter entries across many files (date range, UUID, level, pattern) |
+| `fslog read [FILE]` | Parse a single file (or stdin with `-`) |
+| `fslog tail [FILE]` | Follow a file live, parsed and colorized |
+| `fslog monitor` | Live TUI call table (requires `--features tui`) |
+| `fslog completions <SHELL>` | Emit a shell completion script |
+
+Global flags: `--dir <PATH>` (or `FSLOG_DIR`, default
+`/var/log/freeswitch`), `--color auto|always|never`, `--no-pager`.
+
+### `search`
+
+```
+fslog search [OPTIONS] [PATTERN]
+```
+
+`PATTERN` is a case-insensitive fixed-string shorthand for `--fgrep`.
+
+Filtering:
+
+- `-u, --uuid <UUID>` — session UUID substring; repeat for OR matching
+- `-l, --level <LEVEL>` — minimum severity (`debug`…`console`)
+- `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …)
+- `--fgrep <PATTERN>` — case-insensitive fixed-string match
+- `--grep <REGEX>` — regex match
+- `--match-blocks` — also match `--fgrep`/`--grep`/`PATTERN` inside attached block lines (SDP, CHANNEL_DATA, codec negotiation), not just the message
+- `--related` — expand matching sessions to their bridged/transferred peer legs (originate, `bridge()`, `uuid_bridge`, `Other-Leg-Unique-ID`, peer-UUID channel variables)
+
+Context (grep-style), with `--` dividers between non-contiguous groups:
+
+- `-A, --after-context <N>`, `-B, --before-context <N>`, `-C, --context <N>`
+
+Output and selection:
+
+- `--blocks` — expand CHANNEL_DATA fields/variables and SDP bodies inline
+- `--session` — annotate each entry with tracked state (context, channel state, channel name)
+- `--stats` / `--unclassified` — summary and unclassified-line report
+- `-n, --line-numbers` — show physical line numbers
+- `--from <DATE>` / `--until <DATE>` — bound discovery (progressive: `2026-03`, `2026-03-08`, `2026-03-08T15:48`)
+- `--file <FILE>` — scan explicit files instead of date discovery (repeatable)
+- `-y, --yes` — skip the confirmation prompt for large scans
+
+UUIDs are rendered in a stable per-call truecolor so distinct sessions
+stay visually separable across interleaved output.
+
+### Examples
+
+```sh
+# Follow one call across all its legs, with session state
+fslog search --from 2026-03-08 -u 9bee8676 --related --session
+
+# grep a string with two lines of context on each side
+fslog search --from 2026-03-08 'receiving invite' -C 2
+
+# Find calls by an SDP attribute that only appears in the media block
+fslog search --from 2026-03-08 --grep 'm=audio' --match-blocks --blocks
+
+# Errors and worse from one session, expanding structured blocks
+fslog search --from 2026-03-08 -u 9bee8676 -l err --blocks
+```
 
 ## License
 

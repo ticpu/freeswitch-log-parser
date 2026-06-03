@@ -16,8 +16,8 @@ Lua script works but is fragile, untestable in isolation, and tied to
 fluent-bit's filter API.
 
 This crate extracts the parsing logic into a standalone, well-tested Rust
-library usable by any consumer: the SIP trace analyzer's AI tool, a
-fluent-bit replacement, an Elasticsearch uploader, or a CLI grep tool.
+library usable by any consumer: an AI triage tool, a fluent-bit
+replacement, an Elasticsearch uploader, or a CLI grep tool.
 
 ## Three-layer architecture
 

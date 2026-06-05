@@ -217,6 +217,9 @@ impl EntryPrinter {
         if let Some(ctx) = &session.dialplan_context {
             parts.push(format!("ctx={ctx}"));
         }
+        if let Some(d) = &session.initial_destination {
+            parts.push(format!("dest={d}"));
+        }
         if let Some(state) = &session.channel_state {
             parts.push(format!("state={state}"));
         }

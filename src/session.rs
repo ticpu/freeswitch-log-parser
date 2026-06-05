@@ -22,6 +22,9 @@ pub struct SessionState {
     pub channel_state: Option<String>,
     /// First dialplan context seen; set once and never overwritten.
     pub initial_context: Option<String>,
+    /// Destination of the first `Processing` line = the dialed number at ingress;
+    /// set once and never overwritten (unlike last-wins `dialplan_to`).
+    pub initial_destination: Option<String>,
     /// Current dialplan context; updated on each transfer/continue.
     pub dialplan_context: Option<String>,
     /// Source extension in the dialplan routing; `None` until a dialplan line is processed.
@@ -66,6 +69,7 @@ pub struct SessionSnapshot {
     pub channel_name: Option<String>,
     pub channel_state: Option<String>,
     pub initial_context: Option<String>,
+    pub initial_destination: Option<String>,
     pub dialplan_context: Option<String>,
     pub dialplan_from: Option<String>,
     pub dialplan_to: Option<String>,
@@ -84,6 +88,7 @@ impl SessionState {
             channel_name: self.channel_name.clone(),
             channel_state: self.channel_state.clone(),
             initial_context: self.initial_context.clone(),
+            initial_destination: self.initial_destination.clone(),
             dialplan_context: self.dialplan_context.clone(),
             dialplan_from: self.dialplan_from.clone(),
             dialplan_to: self.dialplan_to.clone(),
@@ -193,6 +198,7 @@ impl SessionState {
         if entry.message.contains("Processing ") && entry.message.contains(" in context ") {
             if let Some(dp) = parse_processing_line(&entry.message) {
                 self.initial_context.get_or_insert(dp.context.clone());
+                self.initial_destination.get_or_insert(dp.to.clone());
                 self.dialplan_context = Some(dp.context);
                 self.dialplan_from = Some(dp.from);
                 self.dialplan_to = Some(dp.to);
@@ -285,20 +291,28 @@ fn parse_dialplan_context(detail: &str) -> Option<DialplanContext> {
     })
 }
 
+/// Parse `Processing <name> <<number>>-><dest> in context <ctx>`. Field 1 (caller_id_name) is
+/// free-form and may contain spaces, `->`, `<`, so anchor on the fixed frame: the rightmost
+/// ` in context ` and the last `>->` (the `>` closing `<number>` immediately precedes `->`, and
+/// only the caller_id_number→destination boundary has that shape). Falls back to the last bare
+/// `->` for the bracketless `from->to` shape.
 fn parse_processing_line(msg: &str) -> Option<DialplanContext> {
     let proc_idx = msg.find("Processing ")?;
-    let rest = &msg[proc_idx + "Processing ".len()..];
+    let after_proc = &msg[proc_idx + "Processing ".len()..];
 
-    let arrow = rest.find("->")?;
-    let from = &rest[..arrow];
+    let ctx_idx = after_proc.rfind(" in context ")?;
+    let head = &after_proc[..ctx_idx];
+    let context = after_proc[ctx_idx + " in context ".len()..]
+        .split_whitespace()
+        .next()?;
 
-    let after_arrow = &rest[arrow + 2..];
-    let space = after_arrow.find(' ')?;
-    let to = &after_arrow[..space];
-
-    let ctx_idx = after_arrow.find("in context ")?;
-    let ctx_rest = &after_arrow[ctx_idx + "in context ".len()..];
-    let context = ctx_rest.split_whitespace().next()?;
+    let (from, to) = match head.rfind(">->") {
+        Some(i) => (&head[..i + 1], &head[i + ">->".len()..]),
+        None => {
+            let i = head.rfind("->")?;
+            (&head[..i], &head[i + "->".len()..])
+        }
+    };
 
     Some(DialplanContext {
         from: from.to_string(),
@@ -1258,6 +1272,76 @@ mod tests {
             Some("Extension 1263 <1263>")
         );
         assert_eq!(session.dialplan_to.as_deref(), Some("start_recording"));
+    }
+
+    #[test]
+    fn parse_processing_line_anchors_on_last_arrow() {
+        let dest = |msg: &str| parse_processing_line(msg).map(|dp| dp.to);
+        assert_eq!(
+            dest("Processing Anonymous <anonymous>->5550001234 in context public").as_deref(),
+            Some("5550001234"),
+        );
+        assert_eq!(
+            dest("Processing 5550009999 <5550009999>->5550001234 in context public").as_deref(),
+            Some("5550001234"),
+        );
+        assert_eq!(
+            dest("Processing Jane Doe <5550009999>->5550001234 in context internal").as_deref(),
+            Some("5550001234"),
+        );
+        // Hostile caller_id_name containing `->` must not be mistaken for the boundary.
+        assert_eq!(
+            dest("Processing Weird -> Name <5550009999>->5550001234 in context internal")
+                .as_deref(),
+            Some("5550001234"),
+        );
+        // Feature-context destination is non-numeric but still parsed.
+        assert_eq!(
+            dest("Processing Jane Doe <5550009999>->start_recording in context features")
+                .as_deref(),
+            Some("start_recording"),
+        );
+    }
+
+    #[test]
+    fn initial_destination_first_wins() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Processing Jane Doe <5550009999>->5550001234 in context public",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Processing Jane Doe <5550009999>->5550001234 in context transit",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Processing Jane Doe <5550009999>->start_recording in context features",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Processing Jane Doe <5550009999>->check_end_call in context features",
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let state = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            state.initial_destination.as_deref(),
+            Some("5550001234"),
+            "initial_destination keeps the dialed number from the first Processing line"
+        );
+        assert_eq!(
+            state.dialplan_to.as_deref(),
+            Some("check_end_call"),
+            "dialplan_to is last-wins and gets clobbered by feature-context routing"
+        );
     }
 
     #[test]

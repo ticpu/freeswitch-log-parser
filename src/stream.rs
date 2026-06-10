@@ -1558,6 +1558,76 @@ mod tests {
         assert_accounting(&stream);
     }
 
+    // Headers from older/eSInet FS builds omit the idle percentage:
+    // "TIMESTAMP [LEVEL] source:line" directly. Collisions still split.
+
+    #[test]
+    fn timestamp_collision_no_idle_pct_system() {
+        let line = format!(
+            "{TS1} [WARNING] sofia_presence.c:4546 Session does not exist, aborting REFER.{TS2} [WARNING] sofia_presence.c:4546 Session does not exist, aborting REFER."
+        );
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].message,
+            "Session does not exist, aborting REFER."
+        );
+        assert_eq!(
+            entries[1].message,
+            "Session does not exist, aborting REFER."
+        );
+        assert_eq!(stream.stats().lines_split, 1);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn timestamp_collision_no_idle_pct_uuid_suffix() {
+        // Fixture shape: no-idle System WARNING whose un-terminated message
+        // runs directly (no space) into a Full NOTICE line (UUID + timestamp).
+        let line = format!(
+            "{TS1} [WARNING] sofia_presence.c:4546 Session does not exist, aborting REFER.{UUID1} {TS2} [NOTICE] sofia.c:1114 Hangup sofia/internal/sos@192.0.2.10:5080 [CS_EXCHANGE_MEDIA] [NORMAL_CLEARING]"
+        );
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].uuid, "");
+        assert_eq!(
+            entries[0].message,
+            "Session does not exist, aborting REFER."
+        );
+        assert_eq!(entries[1].uuid, UUID1);
+        assert_eq!(entries[1].level, Some(LogLevel::Notice));
+        assert_eq!(
+            entries[1].message,
+            "Hangup sofia/internal/sos@192.0.2.10:5080 [CS_EXCHANGE_MEDIA] [NORMAL_CLEARING]"
+        );
+        assert_eq!(stream.stats().lines_split, 1);
+        assert_accounting(&stream);
+    }
+
+    #[test]
+    fn timestamp_collision_no_idle_pct_run_on() {
+        // Dozens of un-terminated REFER warnings pile onto one physical line.
+        let count: u64 = 15;
+        let line: String = (0..count)
+            .map(|n| {
+                format!(
+                    "2024-04-02 10:31:{:02}.945614 [WARNING] sofia_presence.c:4546 Session does not exist, aborting REFER.",
+                    n + 10
+                )
+            })
+            .collect();
+        let mut stream = LogStream::new(std::iter::once(line));
+        let entries: Vec<_> = stream.by_ref().collect();
+        assert_eq!(entries.len() as u64, count);
+        for e in &entries {
+            assert_eq!(e.message, "Session does not exist, aborting REFER.");
+        }
+        assert_eq!(stream.stats().lines_split, count - 1);
+        assert_accounting(&stream);
+    }
+
     #[test]
     fn channel_data_multiline_variable_spans_many_lines() {
         let lines = vec![

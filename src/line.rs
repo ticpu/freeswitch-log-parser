@@ -108,10 +108,14 @@ pub(crate) fn is_date_at(bytes: &[u8], offset: usize) -> bool {
 }
 
 /// Check for a full FreeSWITCH log header at `offset`:
-/// `YYYY-MM-DD HH:MM:SS.UUUUUU D+.D+% [`
+/// `YYYY-MM-DD HH:MM:SS.UUUUUU [D+.D+% ][`
+///
+/// The idle percentage is optional — older/eSInet FS builds omit it and emit
+/// `[LEVEL]` directly after the timestamp.
 ///
 /// Used by Layer 2 to detect same-line collisions where multiple log entries
-/// were concatenated without a newline (thread contention on file write).
+/// were concatenated without a newline (thread contention on file write, or a
+/// caller format string missing its trailing `\n`).
 pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
     // Minimum: 27-byte timestamp + space + "0% [" = 31 bytes
     if bytes.len() < offset + 31 {
@@ -145,8 +149,13 @@ pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
     {
         return false;
     }
-    // Idle percentage: starts with digit, has % within 6 bytes, then " ["
+    // Idle percentage is optional — older/eSInet FS builds emit "[LEVEL]"
+    // directly after the microsecond timestamp (switch_log.c version difference).
     let rest = &bytes[offset + 27..];
+    if rest[0] == b'[' {
+        return true;
+    }
+    // Otherwise it starts with the idle %: digit, % within 6 bytes, then " ["
     if !rest[0].is_ascii_digit() {
         return false;
     }
@@ -602,6 +611,34 @@ mod tests {
         let parsed = parse_line(&line);
         assert_eq!(parsed.kind, LineKind::Truncated);
         assert_eq!(parsed.uuid, Some(UUID1));
+    }
+
+    // --- is_log_header_at (collision split marker) ---
+
+    #[test]
+    fn log_header_with_idle_pct() {
+        let line = "2024-04-02 10:31:28.785679 98.03% [NOTICE] sofia.c:1114 Hangup";
+        assert!(is_log_header_at(line.as_bytes(), 0));
+    }
+
+    #[test]
+    fn log_header_no_idle_pct() {
+        // Older/eSInet FS builds emit "[LEVEL]" directly after the timestamp.
+        let line = "2024-04-02 10:31:28.785679 [NOTICE] sofia.c:1114 Hangup";
+        assert!(is_log_header_at(line.as_bytes(), 0));
+    }
+
+    #[test]
+    fn log_header_no_idle_pct_at_offset() {
+        let line = "Session does not exist, aborting REFER.2024-04-02 10:31:28.785679 [WARNING] sofia_presence.c:4546 x";
+        let offset = line.find("2024").unwrap();
+        assert!(is_log_header_at(line.as_bytes(), offset));
+    }
+
+    #[test]
+    fn log_header_rejects_non_header() {
+        let line = "2024-04-02 not a real timestamp here";
+        assert!(!is_log_header_at(line.as_bytes(), 0));
     }
 
     // --- No idle percentage (issue #1) ---

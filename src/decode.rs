@@ -35,14 +35,57 @@ pub struct DecodedLine {
 
 /// Classify a line's bytes as UTF-8, distinguishing a truncated codepoint (benign)
 /// from a genuinely invalid byte (corruption). Pure; no I/O.
-pub fn classify_utf8(_line: &[u8]) -> Utf8Decode {
-    unimplemented!()
+pub fn classify_utf8(line: &[u8]) -> Utf8Decode {
+    let mut rest = line;
+    let mut base = 0;
+    // Latch: first truncation skipped, so an Ok reached after a clean tail still
+    // reports TruncatedCodepoint rather than Clean.
+    let mut truncated_at: Option<usize> = None;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(_) => {
+                return match truncated_at {
+                    Some(at) => Utf8Decode::TruncatedCodepoint { at },
+                    None => Utf8Decode::Clean,
+                };
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                let at = base + valid;
+                match e.error_len() {
+                    None => {
+                        return Utf8Decode::TruncatedCodepoint {
+                            at: truncated_at.unwrap_or(at),
+                        };
+                    }
+                    Some(n) => {
+                        let bad = &rest[valid..valid + n];
+                        if !is_incomplete_multibyte(bad) {
+                            return Utf8Decode::InvalidBytes { at };
+                        }
+                        truncated_at.get_or_insert(at);
+                        base = at + n;
+                        rest = &rest[valid + n..];
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Valid lead byte followed only by valid continuations, shorter than the lead
 /// requires — i.e. a codepoint cut short rather than a malformed encoding.
-fn is_incomplete_multibyte(_seq: &[u8]) -> bool {
-    unimplemented!()
+fn is_incomplete_multibyte(seq: &[u8]) -> bool {
+    let Some((&lead, cont)) = seq.split_first() else {
+        return false;
+    };
+    let need = match lead {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return false,
+    };
+    seq.len() < need && cont.iter().all(|&b| (0x80..=0xBF).contains(&b))
 }
 
 /// Read newline-delimited log lines, decoding each with the truncated-codepoint
@@ -51,8 +94,25 @@ fn is_incomplete_multibyte(_seq: &[u8]) -> bool {
 /// Real I/O errors stay terminal `io::Error`. UTF-8 invalidity is **not** an
 /// error — the line is lossy-recovered (U+FFFD) so the record survives, and the
 /// verdict is reported in [`DecodedLine::decode`].
-pub fn read_log_lines<R: BufRead>(_r: R) -> impl Iterator<Item = io::Result<DecodedLine>> {
-    std::iter::from_fn(|| -> Option<io::Result<DecodedLine>> { unimplemented!() })
+pub fn read_log_lines<R: BufRead>(mut r: R) -> impl Iterator<Item = io::Result<DecodedLine>> {
+    std::iter::from_fn(move || {
+        let mut buf = Vec::new();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) => None,
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                let decode = classify_utf8(&buf);
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                Some(Ok(DecodedLine { text, decode }))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -95,7 +155,10 @@ mod tests {
     fn malformed_bytes_are_invalid() {
         assert_eq!(classify_utf8(b"\xff"), Utf8Decode::InvalidBytes { at: 0 });
         assert_eq!(classify_utf8(b"\x80"), Utf8Decode::InvalidBytes { at: 0 });
-        assert_eq!(classify_utf8(b"\xc0\x80"), Utf8Decode::InvalidBytes { at: 0 });
+        assert_eq!(
+            classify_utf8(b"\xc0\x80"),
+            Utf8Decode::InvalidBytes { at: 0 }
+        );
     }
 
     #[test]

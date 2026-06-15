@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+use freeswitch_log_parser::{read_log_lines, Utf8Decode};
 use xz2::read::XzDecoder;
 
 pub struct LogFile {
@@ -205,26 +206,19 @@ pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String
 
 /// Yield log lines as `String`, replacing invalid UTF-8 with U+FFFD instead of
 /// panicking. mod_logfile's 2 KiB buffer truncation can chop a multi-byte
-/// codepoint mid-character, leaving a stray byte in the file that the strict
-/// `BufRead::lines()` reader rejects.
-fn lossy_line_iter(mut reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = String>> {
-    Box::new(std::iter::from_fn(move || {
-        let mut buf = Vec::new();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => None,
-            Ok(_) => {
-                if buf.last() == Some(&b'\n') {
-                    buf.pop();
-                    if buf.last() == Some(&b'\r') {
-                        buf.pop();
-                    }
-                }
-                Some(String::from_utf8_lossy(&buf).into_owned())
+/// codepoint mid-character; that benign case is recovered silently. A byte that
+/// can't be part of any UTF-8 sequence is genuine corruption — warn, don't hide.
+fn lossy_line_iter(reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = String>> {
+    Box::new(read_log_lines(reader).map_while(|decoded| match decoded {
+        Ok(line) => {
+            if let Utf8Decode::InvalidBytes { at } = line.decode {
+                eprintln!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
             }
-            Err(e) => {
-                eprintln!("read error: {e}");
-                None
-            }
+            Some(line.text)
+        }
+        Err(e) => {
+            eprintln!("read error: {e}");
+            None
         }
     }))
 }

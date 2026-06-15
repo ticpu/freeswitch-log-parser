@@ -23,10 +23,12 @@
 //! Read lines from stdin, process through all three layers, and print enriched entries:
 //!
 //! ```no_run
-//! use std::io::{self, BufRead};
-//! use freeswitch_log_parser::{LogStream, SessionTracker};
+//! use std::io;
+//! use freeswitch_log_parser::{read_log_lines, LogStream, SessionTracker};
 //!
-//! let lines = io::stdin().lock().lines().map(|l| l.expect("read error"));
+//! // read_log_lines tolerates mod_logfile's truncated codepoints; the strict
+//! // BufRead::lines() reader would panic on them.
+//! let lines = read_log_lines(io::stdin().lock()).map(|d| d.expect("read error").text);
 //! let stream = LogStream::new(lines);
 //! let mut tracker = SessionTracker::new(stream);
 //!

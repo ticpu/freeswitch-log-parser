@@ -46,6 +46,7 @@
 
 mod attached;
 mod chain;
+mod decode;
 mod level;
 mod line;
 mod message;
@@ -54,6 +55,7 @@ mod stream;
 
 pub use attached::{AttachedLines, AttachedLinesIter};
 pub use chain::{SegmentTracker, TrackedChain};
+pub use decode::{classify_utf8, read_log_lines, DecodedLine, Utf8Decode};
 pub use freeswitch_types::{
     variables::SofiaVariable, CallDirection, CallState, ChannelState, ChannelVariable,
 };

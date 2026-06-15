@@ -85,3 +85,23 @@ post-processing, or request upstream changes for each pattern.
 of those costs. The hook runs after built-in detection, filling gaps rather
 than replacing core logic. This keeps the library focused on vanilla FreeSWITCH
 while remaining useful to deployments with custom bridging infrastructure.
+
+## Typed UTF-8 decode at the input boundary
+
+`mod_logfile`'s 2 KiB write buffer truncates mid-record, and the same cut also
+chops a multi-byte codepoint — the byte-level twin of the record-level collision
+`lines_split` already models. The library is a `String` consumer, so decoding
+happened in callers: the strict `BufRead::lines()` reader we advertised panicked
+on the truncated codepoint, and every consumer that wanted to survive it re-forked
+a lossy reader. The fork was lossy-blind — it couldn't tell a benign truncation
+(a valid lead followed only by valid continuations, cut short) from genuine
+corruption (a byte that can't start or continue any sequence), so a downstream
+scanner marked whole files unclean on either and re-scanned them forever. Layer 0
+owns the decode and types the two cases apart (`Utf8Decode::TruncatedCodepoint`
+vs `InvalidBytes`) because the consumer's keep/re-scan decision hinges on exactly
+that distinction; collapsing both to `io::ErrorKind::InvalidData` is what forced
+the re-derivation in the first place. The recovery count stays at Layer 0 rather
+than `ParseStats`: the convenience `.map(|d| d.text)` path drops the verdict
+before `LogStream` sees it, and threading it through would either break the
+`Iterator<Item = String>` contract or fork a parallel constructor — the verdict
+belongs where the bytes are read.

@@ -1077,11 +1077,11 @@ mod tests {
 
     #[test]
     fn set_variable_message() {
-        let msg = "SET sofia/internal-v6/1263@[fd51:2050:2220:198::10] [ngcs_bridge_sip_req_uri]=[conf-factory-app.qc.core.ng.911bell.ca]";
+        let msg = "SET sofia/internal-v6/1263@[2001:db8:2220:198::10] [ngcs_bridge_sip_req_uri]=[conf-factory-app.qc.core.ng.example.test]";
         match classify_message(msg) {
             MessageKind::Variable { name, value } => {
                 assert_eq!(name, "variable_ngcs_bridge_sip_req_uri");
-                assert_eq!(value, "conf-factory-app.qc.core.ng.911bell.ca");
+                assert_eq!(value, "conf-factory-app.qc.core.ng.example.test");
             }
             other => panic!("expected Variable, got {other:?}"),
         }
@@ -1090,11 +1090,11 @@ mod tests {
     #[test]
     fn export_variable_message() {
         let msg =
-            "EXPORT (export_vars) (REMOTE ONLY) [sip_from_uri]=[sip:cauca1.qc.psap.ng.911bell.ca]";
+            "EXPORT (export_vars) (REMOTE ONLY) [sip_from_uri]=[sip:psap1.qc.psap.ng.example.test]";
         match classify_message(msg) {
             MessageKind::Variable { name, value } => {
                 assert_eq!(name, "variable_sip_from_uri");
-                assert_eq!(value, "sip:cauca1.qc.psap.ng.911bell.ca");
+                assert_eq!(value, "sip:psap1.qc.psap.ng.example.test");
             }
             other => panic!("expected Variable, got {other:?}"),
         }

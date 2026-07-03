@@ -338,6 +338,54 @@ fn drain_session_removals<I: Iterator<Item = String>>(
     }
 }
 
+type LineIter = Box<dyn Iterator<Item = String>>;
+
+/// Build the parse segments: the newest rotated file (if any, skipped with a
+/// warning on failure) followed by the current log opened via `open_current`
+/// (full-then-tail for the TUI, plain read for --dump).
+fn build_segments(
+    dir: &Path,
+    path: &Path,
+    open_current: fn(&Path) -> io::Result<LineIter>,
+) -> io::Result<Vec<(String, LineIter)>> {
+    let mut segments: Vec<(String, LineIter)> = Vec::new();
+
+    match discover_log_files(dir) {
+        Ok(files) => {
+            if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
+                match open_log_reader(&prev.path) {
+                    Ok(reader) => {
+                        let name = prev
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned();
+                        segments.push((name, reader));
+                    }
+                    Err(e) => eprintln!(
+                        "fslog: skipping rotated history {}: open failed: {e}",
+                        prev.path.display()
+                    ),
+                }
+            }
+        }
+        Err(e) => eprintln!(
+            "fslog: skipping rotated history: discovery in {} failed: {e}",
+            dir.display()
+        ),
+    }
+
+    let current = open_current(path)?;
+    let current_name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    segments.push((current_name, current));
+    Ok(segments)
+}
+
 fn spawn_reader(
     dir: PathBuf,
     path: PathBuf,
@@ -351,47 +399,13 @@ fn spawn_reader(
         ));
     }
     let handle = std::thread::spawn(move || {
-        let mut segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = Vec::new();
-
-        match discover_log_files(&dir) {
-            Ok(files) => {
-                if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
-                    match open_log_reader(&prev.path) {
-                        Ok(reader) => {
-                            let name = prev
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            segments.push((name, reader));
-                        }
-                        Err(e) => eprintln!(
-                            "fslog: skipping rotated history {}: open failed: {e}",
-                            prev.path.display()
-                        ),
-                    }
-                }
-            }
-            Err(e) => eprintln!(
-                "fslog: skipping rotated history: discovery in {} failed: {e}",
-                dir.display()
-            ),
-        }
-
-        let tail = match open_full_tail_reader(&path) {
-            Ok(l) => l,
+        let segments = match build_segments(&dir, &path, open_full_tail_reader) {
+            Ok(s) => s,
             Err(e) => {
                 eprintln!("fslog: {}: {e}", path.display());
                 return;
             }
         };
-        let current_name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        segments.push((current_name, tail));
 
         let (chain, _seg_tracker) = TrackedChain::new(segments);
         let stream = LogStream::new(chain);
@@ -852,41 +866,7 @@ fn handle_menu_key(state: &mut AppState, code: KeyCode) {
 }
 
 fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Result<AppState> {
-    let mut segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = Vec::new();
-
-    match discover_log_files(dir) {
-        Ok(files) => {
-            if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
-                match open_log_reader(&prev.path) {
-                    Ok(reader) => {
-                        let name = prev
-                            .path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned();
-                        segments.push((name, reader));
-                    }
-                    Err(e) => eprintln!(
-                        "fslog: skipping rotated history {}: open failed: {e}",
-                        prev.path.display()
-                    ),
-                }
-            }
-        }
-        Err(e) => eprintln!(
-            "fslog: skipping rotated history: discovery in {} failed: {e}",
-            dir.display()
-        ),
-    }
-
-    let reader = open_log_reader(path)?;
-    let current_name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    segments.push((current_name, reader));
+    let segments = build_segments(dir, path, open_log_reader)?;
 
     let (chain, _) = TrackedChain::new(segments);
     let stream = LogStream::new(chain);

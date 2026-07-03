@@ -11,7 +11,8 @@ use regex::Regex;
 use crate::output::FilterConfig;
 
 static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").expect("UUID regex")
+    Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+        .expect("UUID regex")
 });
 
 /// Channel variables whose value is (or contains) a peer-leg UUID.

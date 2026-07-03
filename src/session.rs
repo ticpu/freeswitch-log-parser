@@ -1161,6 +1161,49 @@ mod tests {
     }
 
     #[test]
+    fn relink_removes_stale_by_other_leg_entry() {
+        // B first points at C (Other-Leg-Unique-ID), then an authoritative
+        // Peer UUID relinks B to A. The superseded C-keyed by_other_leg entry
+        // must be removed — otherwise a later New Channel on C back-links to
+        // B and clobbers the authoritative A<->B pair.
+        let lines = vec![
+            full_line(UUID2, TS1, "CHANNEL_DATA:"),
+            format!("{UUID2} Other-Leg-Unique-ID: [{UUID3}]"),
+            full_line(
+                UUID1,
+                TS2,
+                &format!(
+                    "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744] Peer UUID: {UUID2}"
+                ),
+            ),
+            full_line(
+                UUID3,
+                TS2,
+                &format!("New Channel sofia/external/dest@192.0.2.9 [{UUID3}]"),
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let a_leg = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(a_leg.other_leg_uuid.as_deref(), Some(UUID2));
+
+        let b_leg = tracker.sessions().get(UUID2).unwrap();
+        assert_eq!(
+            b_leg.other_leg_uuid.as_deref(),
+            Some(UUID1),
+            "authoritative Peer UUID link must survive the unrelated New Channel"
+        );
+
+        let c_leg = tracker.sessions().get(UUID3).unwrap();
+        assert_eq!(
+            c_leg.other_leg_uuid, None,
+            "New Channel on C must not back-link via the superseded index entry"
+        );
+    }
+
+    #[test]
     fn channel_data_populates_session() {
         let lines = vec![
             full_line(UUID1, TS1, "CHANNEL_DATA:"),

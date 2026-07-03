@@ -1200,6 +1200,70 @@ mod tests {
     }
 
     #[test]
+    fn multi_line_variable_survives_attached_rescan() {
+        // The block carries the reassembled multi-line value; re-scanning the
+        // raw attached opening fragment must not clobber it back to "v=0".
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),
+            format!("{UUID1} variable_switch_r_sdp: [v=0"),
+            "o=FreeSWITCH 1737000000 1737000001 IN IP4 192.0.2.10".to_string(),
+            "s=FreeSWITCH".to_string(),
+            "c=IN IP4 192.0.2.10".to_string(),
+            "m=audio 30000 RTP/AVP 0 101".to_string(),
+            "]".to_string(),
+            format!("{UUID1} variable_direction: [inbound]"),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let state = tracker.sessions().get(UUID1).unwrap();
+        let sdp = state
+            .variables
+            .get("switch_r_sdp")
+            .expect("switch_r_sdp variable present");
+        assert!(
+            sdp.contains('\n'),
+            "expected full reassembled value, got fragment: {sdp:?}"
+        );
+        assert!(sdp.starts_with("v=0\n"));
+        assert!(sdp.contains("m=audio 30000 RTP/AVP 0 101"));
+        assert_eq!(
+            state.variables.get("direction").map(|s| s.as_str()),
+            Some("inbound")
+        );
+        assert_eq!(
+            state.channel_name.as_deref(),
+            Some("sofia/internal/+15550001234@192.0.2.1")
+        );
+    }
+
+    #[test]
+    fn attached_processing_line_updates_context() {
+        // Format C continuation: a `Processing ...` line attached under a
+        // primary entry must update dialplan context like the primary path.
+        let lines = vec![
+            full_line(UUID1, TS1, "Ring-Ready sofia/internal-v4/sos!"),
+            format!(
+                "{UUID1} Processing Extension 1263 <1263>->start_recording in context recordings"
+            ),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+
+        let state = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(state.dialplan_context.as_deref(), Some("recordings"));
+        assert_eq!(state.dialplan_from.as_deref(), Some("Extension 1263 <1263>"));
+        assert_eq!(state.dialplan_to.as_deref(), Some("start_recording"));
+        assert_eq!(
+            state.initial_destination.as_deref(),
+            Some("start_recording")
+        );
+    }
+
+    #[test]
     fn variables_learned_from_set_execute() {
         let lines = vec![
             full_line(UUID1, TS1, "First"),

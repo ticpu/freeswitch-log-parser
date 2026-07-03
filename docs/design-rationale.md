@@ -2,7 +2,7 @@
 
 Why this library exists and the parsing decisions behind it.
 
-## Why a dedicated parser
+## Standalone library over fluent-bit regex + Lua state
 
 FreeSWITCH's log format is deceptively complex. A naive grep works for quick
 searches, but any tool that needs to correlate log lines to a specific call
@@ -42,7 +42,7 @@ The three-layer split exists because consumers have different needs:
   session context propagated across entries
 
 Every `LogEntry` carries both `block: Option<Block>` (typed, parsed view)
-and `attached: Vec<String>` (raw continuation lines). The consumer always
+and `attached: AttachedLines` (raw continuation lines). The consumer always
 has access to both representations. This follows the same transparency
 principle as `freeswitch-sofia-trace-parser`, where raw frame bytes are
 always available alongside parsed SIP messages.
@@ -61,8 +61,9 @@ This is deliberate:
    compressed log files. `LazyLock<Regex>` would work but byte checks are
    faster for fixed-position fields.
 
-2. **No dependencies** — the crate has zero dependencies. Adding `regex`
-   for something that's fundamentally positional parsing would be wrong.
+2. **Minimal dependencies** — the crate's only dependency is
+   `freeswitch-types` (shared typed enums). Adding `regex` for something
+   that's fundamentally positional parsing would be wrong.
 
 3. **Testability** — positional logic has obvious edge cases that map to
    specific test cases. Regex alternations hide failure modes.
@@ -81,10 +82,26 @@ headers (`sip_h_X-*`), or proprietary bridging commands. Without extensibility,
 consumers must either fork the parser, duplicate relationship tracking in
 post-processing, or request upstream changes for each pattern.
 
-`with_relationship_hook()` lets consumers inject custom detection without any
-of those costs. The hook runs after built-in detection, filling gaps rather
-than replacing core logic. This keeps the library focused on vanilla FreeSWITCH
-while remaining useful to deployments with custom bridging infrastructure.
+`with_pre_hook()`/`with_post_hook()` let consumers inject custom detection
+without any of those costs. The post-hook runs after built-in detection,
+filling gaps rather than replacing core logic; the pre-hook runs before it,
+so hook-seeded state (a channel name, a pending bridge target) is visible to
+the built-in patterns of the same entry. This keeps the library focused on
+vanilla FreeSWITCH while remaining useful to deployments with custom
+bridging infrastructure.
+
+## Index maintenance by diffing, not setters
+
+Hooks receive `&mut SessionState` and set fields directly — but three of
+those fields (`channel_name`, `pending_bridge_target`, `other_leg_uuid`)
+back secondary lookup indexes, and a hook-set value that never reaches its
+index silently breaks cross-session linking (a hook-set `other_leg_uuid` is
+invisible to the later New-Channel back-link lookup). Setter methods would
+keep the indexes in lockstep but forfeit the transparent field access the
+hook API promises. Instead the tracker snapshots the indexed fields before
+the pre-hook and diffs them after the post-hook, so one bracket covers every
+mutation source — pre-hook, built-in extraction, leg linking, post-hook —
+rather than trusting each mutation site to remember its index.
 
 ## Typed UTF-8 decode at the input boundary
 

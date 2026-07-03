@@ -197,6 +197,39 @@ fn format_direction(raw: Option<&str>) -> &'static str {
         .unwrap_or("-")
 }
 
+/// First 8 chars of a UUID for display. Byte slicing is safe here only because
+/// UUIDs are ASCII — keep this on UUID-typed call sites.
+fn short8(uuid: &str) -> &str {
+    if uuid.len() > 8 {
+        &uuid[..8]
+    } else {
+        uuid
+    }
+}
+
+/// The 9 display columns shared by the TUI table and `--dump` output, so the
+/// scripting surface cannot drift from what the TUI shows.
+fn row_cells(r: &CallRow, latest: &str) -> [String; 9] {
+    [
+        short8(&r.uuid).to_string(),
+        r.other_leg_uuid
+            .as_deref()
+            .map(short8)
+            .unwrap_or("-")
+            .to_string(),
+        format_direction(r.direction.as_deref()).to_string(),
+        r.caller.as_deref().unwrap_or("-").to_string(),
+        r.callee.as_deref().unwrap_or("-").to_string(),
+        r.channel_state
+            .as_deref()
+            .map(format_state)
+            .unwrap_or_else(|| "-".to_string()),
+        format_duration(call_duration(r)),
+        format_age(call_age(r, latest)),
+        r.context.as_deref().unwrap_or("-").to_string(),
+    ]
+}
+
 fn call_duration(row: &CallRow) -> Duration {
     let end = row.log_end.as_deref().unwrap_or(&row.log_last);
     log_age(&row.log_start, end)
@@ -577,42 +610,12 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
         .calls
         .iter()
         .map(|r| {
-            let ended = r.ended.is_some();
-            let style = if ended {
+            let style = if r.ended.is_some() {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
             };
-            let uuid_short = if r.uuid.len() > 8 {
-                &r.uuid[..8]
-            } else {
-                &r.uuid
-            };
-            let bleg_short = r
-                .other_leg_uuid
-                .as_deref()
-                .map(|u| if u.len() > 8 { &u[..8] } else { u })
-                .unwrap_or("-");
-            let duration = format_duration(call_duration(r));
-            let age = format_age(call_age(r, &state.latest_timestamp));
-            let st = r
-                .channel_state
-                .as_deref()
-                .map(format_state)
-                .unwrap_or_else(|| "-".to_string());
-            let dir = format_direction(r.direction.as_deref());
-            Row::new([
-                Cell::from(uuid_short.to_string()),
-                Cell::from(bleg_short.to_string()),
-                Cell::from(dir),
-                Cell::from(r.caller.as_deref().unwrap_or("-")),
-                Cell::from(r.callee.as_deref().unwrap_or("-")),
-                Cell::from(st),
-                Cell::from(duration),
-                Cell::from(age),
-                Cell::from(r.context.as_deref().unwrap_or("-")),
-            ])
-            .style(style)
+            Row::new(row_cells(r, &state.latest_timestamp).map(Cell::from)).style(style)
         })
         .collect();
 
@@ -647,16 +650,8 @@ fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
         Some(r) => r,
         None => return,
     };
-    let a_short = if row.uuid.len() > 8 {
-        &row.uuid[..8]
-    } else {
-        &row.uuid
-    };
-    let b_short = row
-        .other_leg_uuid
-        .as_deref()
-        .map(|u| if u.len() > 8 { &u[..8] } else { u })
-        .unwrap_or("?");
+    let a_short = short8(&row.uuid);
+    let b_short = row.other_leg_uuid.as_deref().map(short8).unwrap_or("?");
     let items = vec![
         ListItem::new(format!("A-leg: {a_short}...")),
         ListItem::new(format!("B-leg: {b_short}...")),
@@ -686,7 +681,7 @@ fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
         None => return,
     };
 
-    let uuid_short = if uuid.len() > 8 { &uuid[..8] } else { uuid };
+    let uuid_short = short8(uuid);
     let mut items: Vec<ListItem> = vec![
         ListItem::new(format!("search  (fslog search --uuid {uuid_short}...)")),
         ListItem::new(format!("tail    (fslog tail --uuid {uuid_short}...)")),
@@ -915,36 +910,7 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
     let state = process_log(dir, &path, context_filter)?;
 
     for r in &state.calls {
-        let uuid_short = if r.uuid.len() > 8 {
-            &r.uuid[..8]
-        } else {
-            &r.uuid
-        };
-        let bleg_short = r
-            .other_leg_uuid
-            .as_deref()
-            .map(|u| if u.len() > 8 { &u[..8] } else { u })
-            .unwrap_or("-");
-        let duration_str = format_duration(call_duration(r));
-        let age_str = format_age(call_age(r, &state.latest_timestamp));
-        let st = r
-            .channel_state
-            .as_deref()
-            .map(format_state)
-            .unwrap_or_else(|| "-".to_string());
-        let dir = format_direction(r.direction.as_deref());
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            uuid_short,
-            bleg_short,
-            dir,
-            r.caller.as_deref().unwrap_or("-"),
-            r.callee.as_deref().unwrap_or("-"),
-            st,
-            duration_str,
-            age_str,
-            r.context.as_deref().unwrap_or("-"),
-        );
+        println!("{}", row_cells(r, &state.latest_timestamp).join("\t"));
     }
 
     Ok(())

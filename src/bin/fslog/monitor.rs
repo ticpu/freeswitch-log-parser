@@ -113,6 +113,9 @@ struct AppState {
     context_filter: ContextFilter,
     filtered_uuids: HashSet<String>,
     latest_timestamp: String,
+    /// Requests the reader thread drop a UUID's SessionTracker state; `None`
+    /// in one-shot (dump) mode where the tracker dies with the read.
+    remove_tx: Option<mpsc::Sender<String>>,
 }
 
 impl AppState {
@@ -125,6 +128,16 @@ impl AppState {
 
     fn select_index(&mut self, idx: usize) {
         self.selected_uuid = self.calls.get(idx).map(|r| r.uuid.clone());
+    }
+
+    fn request_session_removal(&mut self, uuid: String) {
+        if let Some(tx) = &self.remove_tx {
+            // A closed channel means the reader thread (and its tracker) is
+            // gone, so there is no session state left to free.
+            if tx.send(uuid).is_err() {
+                self.remove_tx = None;
+            }
+        }
     }
 
     fn sort_calls(&mut self) {
@@ -314,10 +327,22 @@ fn format_age(d: Duration) -> String {
     }
 }
 
+/// Apply pending session-removal requests from the UI thread to the tracker.
+/// The tracker lives with the reader, so removal must happen here.
+fn drain_session_removals<I: Iterator<Item = String>>(
+    tracker: &mut SessionTracker<I>,
+    remove_rx: &mpsc::Receiver<String>,
+) {
+    while let Ok(uuid) = remove_rx.try_recv() {
+        tracker.remove_session(&uuid);
+    }
+}
+
 fn spawn_reader(
     dir: PathBuf,
     path: PathBuf,
     tx: mpsc::Sender<ReaderMsg>,
+    remove_rx: mpsc::Receiver<String>,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     if !path.exists() {
         return Err(io::Error::new(
@@ -373,6 +398,7 @@ fn spawn_reader(
         let mut tracker = SessionTracker::new(stream);
 
         while let Some(enriched) = tracker.next() {
+            drain_session_removals(&mut tracker, &remove_rx);
             if let Some(msg) = build_update(&enriched, tracker.sessions()) {
                 if tx.send(msg).is_err() {
                     break;
@@ -402,6 +428,10 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
     }
 
     if state.filtered_uuids.contains(&uuid) {
+        if is_hangup {
+            state.filtered_uuids.remove(&uuid);
+            state.request_session_removal(uuid);
+        }
         return;
     }
 
@@ -448,6 +478,11 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
             ended: None,
         });
     } else {
+        if is_hangup {
+            // No row exists and none will linger, so the tracker's session
+            // state for this UUID would otherwise never be freed.
+            state.request_session_removal(uuid_key);
+        }
         return;
     }
 
@@ -467,9 +502,17 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
 
 fn gc_ended(state: &mut AppState) {
     let linger = state.linger;
-    state
-        .calls
-        .retain(|r| r.ended.is_none_or(|t| t.elapsed() < linger));
+    let mut expired = Vec::new();
+    state.calls.retain(|r| {
+        let keep = r.ended.is_none_or(|t| t.elapsed() < linger);
+        if !keep {
+            expired.push(r.uuid.clone());
+        }
+        keep
+    });
+    for uuid in expired {
+        state.request_session_removal(uuid);
+    }
     if let Some(ref uuid) = state.selected_uuid {
         if !state.calls.iter().any(|r| r.uuid == *uuid) {
             state.selected_uuid = state.calls.first().map(|r| r.uuid.clone());
@@ -865,6 +908,7 @@ fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Re
         context_filter,
         filtered_uuids: HashSet::new(),
         latest_timestamp: String::new(),
+        remove_tx: None,
     };
 
     while let Some(enriched) = tracker.next() {
@@ -940,7 +984,8 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
     };
 
     let (tx, rx) = mpsc::channel();
-    let _reader = spawn_reader(dir.to_path_buf(), path, tx)?;
+    let (remove_tx, remove_rx) = mpsc::channel();
+    let _reader = spawn_reader(dir.to_path_buf(), path, tx, remove_rx)?;
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -969,6 +1014,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         context_filter,
         filtered_uuids: HashSet::new(),
         latest_timestamp: String::new(),
+        remove_tx: Some(remove_tx),
     };
 
     let mut table_state = TableState::default();
@@ -1172,7 +1218,59 @@ mod tests {
             context_filter: ContextFilter::None,
             filtered_uuids: HashSet::new(),
             latest_timestamp: String::new(),
+            remove_tx: None,
         }
+    }
+
+    #[test]
+    fn gc_ended_requests_session_removal_after_linger() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = make_state();
+        state.remove_tx = Some(tx);
+        state.linger = Duration::ZERO;
+        apply_update(
+            &mut state,
+            make_update("aaaa", "2025-01-15 10:30:45.000000", false),
+        );
+        apply_update(
+            &mut state,
+            make_update("aaaa", "2025-01-15 10:30:50.000000", true),
+        );
+        gc_ended(&mut state);
+        assert!(state.calls.is_empty());
+        assert_eq!(rx.try_recv().ok().as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn hangup_without_row_requests_session_removal() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = make_state();
+        state.remove_tx = Some(tx);
+        // Hangup for a call whose New Channel was never seen: no row exists,
+        // none will linger, so the session must be freed immediately.
+        apply_update(
+            &mut state,
+            make_update("dddd", "2025-01-15 10:30:45.000000", true),
+        );
+        assert!(state.calls.is_empty());
+        assert_eq!(rx.try_recv().ok().as_deref(), Some("dddd"));
+    }
+
+    #[test]
+    fn drain_session_removals_drops_tracker_state() {
+        let uuid = "11111111-2222-3333-4444-555555555555";
+        let lines = vec![format!(
+            "{uuid} 2025-01-15 10:30:45.123456 95.00% [DEBUG] test.c:1 hello"
+        )];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        while tracker.next().is_some() {}
+        assert!(tracker.sessions().contains_key(uuid));
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(uuid.to_string()).unwrap();
+        drain_session_removals(&mut tracker, &rx);
+        assert!(!tracker.sessions().contains_key(uuid));
     }
 
     fn make_update(uuid: &str, ts: &str, is_hangup: bool) -> ReaderMsg {

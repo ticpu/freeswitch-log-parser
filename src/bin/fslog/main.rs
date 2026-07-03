@@ -269,11 +269,17 @@ fn setup_pager(cli: &Cli) -> Option<process::Child> {
     } else {
         &args[..]
     };
-    process::Command::new(program)
+    match process::Command::new(program)
         .args(final_args)
         .stdin(process::Stdio::piped())
         .spawn()
-        .ok()
+    {
+        Ok(child) => Some(child),
+        Err(e) => {
+            eprintln!("fslog: failed to spawn pager {program}: {e}; output goes to stdout");
+            None
+        }
+    }
 }
 
 fn run_with_output(cli: Cli, use_pager: bool, out: &mut dyn Write) -> io::Result<()> {

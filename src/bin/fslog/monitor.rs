@@ -45,19 +45,98 @@ pub struct MonitorArgs {
     file: Option<String>,
 }
 
-struct CallRow {
-    uuid: String,
+/// Channel state parsed once at the reader boundary: usually a `CS_*`
+/// ChannelState, sometimes a CallState; anything else passes through raw.
+enum LegState {
+    Channel(ChannelState),
+    Call(CallState),
+    Raw(String),
+}
+
+impl LegState {
+    fn parse(raw: &str) -> Self {
+        if let Ok(cs) = ChannelState::from_str(raw) {
+            LegState::Channel(cs)
+        } else if let Ok(cs) = CallState::from_str(raw) {
+            LegState::Call(cs)
+        } else {
+            LegState::Raw(raw.to_string())
+        }
+    }
+
+    /// Short column label for the call table.
+    fn short(&self) -> String {
+        match self {
+            LegState::Channel(ChannelState::CsExchangeMedia) => "MEDIA".to_string(),
+            LegState::Channel(ChannelState::CsConsumeMedia) => "CONSUME".to_string(),
+            LegState::Channel(ChannelState::CsSoftExecute) => "SOFTEX".to_string(),
+            LegState::Channel(ChannelState::CsReporting) => "REPORT".to_string(),
+            LegState::Channel(cs) => {
+                let s = cs.to_string();
+                s.strip_prefix("CS_").unwrap_or(&s).to_string()
+            }
+            LegState::Call(cs) => cs.to_string(),
+            LegState::Raw(s) => s.clone(),
+        }
+    }
+}
+
+/// Call fields carried by reader updates and merged into the table row.
+#[derive(Default)]
+struct CallFields {
     other_leg_uuid: Option<String>,
-    direction: Option<String>,
+    direction: Option<CallDirection>,
     caller: Option<String>,
     callee: Option<String>,
-    channel_state: Option<String>,
+    channel_state: Option<LegState>,
     context: Option<String>,
+}
+
+impl CallFields {
+    /// Field-wise merge: `Some` in `update` overwrites, `None` keeps existing.
+    fn merge(&mut self, update: CallFields) {
+        let CallFields {
+            other_leg_uuid,
+            direction,
+            caller,
+            callee,
+            channel_state,
+            context,
+        } = update;
+        if other_leg_uuid.is_some() {
+            self.other_leg_uuid = other_leg_uuid;
+        }
+        if direction.is_some() {
+            self.direction = direction;
+        }
+        if caller.is_some() {
+            self.caller = caller;
+        }
+        if callee.is_some() {
+            self.callee = callee;
+        }
+        if channel_state.is_some() {
+            self.channel_state = channel_state;
+        }
+        if context.is_some() {
+            self.context = context;
+        }
+    }
+}
+
+/// When a call ended: wall clock for linger GC, log timestamp for display.
+struct CallEnd {
+    at: Instant,
+    log_ts: String,
+}
+
+struct CallRow {
+    uuid: String,
+    fields: CallFields,
     log_start: String,
     log_last: String,
-    log_end: Option<String>,
+    end: Option<CallEnd>,
     first_seen: Instant,
-    ended: Option<Instant>,
 }
 
 enum ContextFilter {
@@ -174,8 +253,8 @@ impl AppState {
 
     fn sort_calls(&mut self) {
         self.calls.sort_by(|a, b| {
-            let a_ended = a.ended.is_some();
-            let b_ended = b.ended.is_some();
+            let a_ended = a.end.is_some();
+            let b_ended = b.end.is_some();
             match (a_ended, b_ended) {
                 (false, true) => std::cmp::Ordering::Less,
                 (true, false) => std::cmp::Ordering::Greater,
@@ -185,42 +264,21 @@ impl AppState {
     }
 }
 
-enum ReaderMsg {
-    Update {
-        uuid: String,
-        timestamp: String,
-        other_leg_uuid: Option<String>,
-        channel_state: Option<String>,
-        context: Option<String>,
-        direction: Option<String>,
-        caller: Option<String>,
-        callee: Option<String>,
-        is_hangup: bool,
-        is_new_channel: bool,
-    },
+/// Lifecycle transition detected in a log entry, if any.
+enum CallEvent {
+    NewChannel,
+    Hangup,
 }
 
-fn format_state(raw: &str) -> String {
-    if let Ok(cs) = ChannelState::from_str(raw) {
-        match cs {
-            ChannelState::CsExchangeMedia => "MEDIA".to_string(),
-            ChannelState::CsConsumeMedia => "CONSUME".to_string(),
-            ChannelState::CsSoftExecute => "SOFTEX".to_string(),
-            ChannelState::CsReporting => "REPORT".to_string(),
-            _ => {
-                let s = cs.to_string();
-                s.strip_prefix("CS_").unwrap_or(&s).to_string()
-            }
-        }
-    } else if let Ok(cs) = CallState::from_str(raw) {
-        cs.to_string()
-    } else {
-        raw.to_string()
-    }
+struct ReaderMsg {
+    uuid: String,
+    timestamp: String,
+    fields: CallFields,
+    event: Option<CallEvent>,
 }
 
-fn format_direction(raw: Option<&str>) -> &'static str {
-    raw.and_then(|d| CallDirection::from_str(d).ok())
+fn format_direction(direction: Option<CallDirection>) -> &'static str {
+    direction
         .map(|d| match d {
             CallDirection::Inbound => "IN",
             CallDirection::Outbound => "OUT",
@@ -244,32 +302,39 @@ fn short8(uuid: &str) -> &str {
 fn row_cells(r: &CallRow, latest: &str) -> [String; 9] {
     [
         short8(&r.uuid).to_string(),
-        r.other_leg_uuid
+        r.fields
+            .other_leg_uuid
             .as_deref()
             .map(short8)
             .unwrap_or("-")
             .to_string(),
-        format_direction(r.direction.as_deref()).to_string(),
-        r.caller.as_deref().unwrap_or("-").to_string(),
-        r.callee.as_deref().unwrap_or("-").to_string(),
-        r.channel_state
-            .as_deref()
-            .map(format_state)
+        format_direction(r.fields.direction).to_string(),
+        r.fields.caller.as_deref().unwrap_or("-").to_string(),
+        r.fields.callee.as_deref().unwrap_or("-").to_string(),
+        r.fields
+            .channel_state
+            .as_ref()
+            .map(LegState::short)
             .unwrap_or_else(|| "-".to_string()),
         format_duration(call_duration(r)),
         format_age(call_age(r, latest)),
-        r.context.as_deref().unwrap_or("-").to_string(),
+        r.fields.context.as_deref().unwrap_or("-").to_string(),
     ]
 }
 
+fn end_ts(row: &CallRow) -> &str {
+    row.end
+        .as_ref()
+        .map(|e| e.log_ts.as_str())
+        .unwrap_or(&row.log_last)
+}
+
 fn call_duration(row: &CallRow) -> Duration {
-    let end = row.log_end.as_deref().unwrap_or(&row.log_last);
-    log_age(&row.log_start, end)
+    log_age(&row.log_start, end_ts(row))
 }
 
 fn call_age(row: &CallRow, latest: &str) -> Duration {
-    let ts = row.log_end.as_deref().unwrap_or(&row.log_last);
-    log_age(ts, latest)
+    log_age(end_ts(row), latest)
 }
 
 fn build_update(
@@ -301,26 +366,32 @@ fn build_update(
     let snap = enriched.session.as_ref();
     let state = sessions.get(&uuid);
 
-    Some(ReaderMsg::Update {
-        timestamp: enriched.entry.timestamp.clone(),
+    let event = if is_hangup {
+        Some(CallEvent::Hangup)
+    } else if is_new_channel {
+        Some(CallEvent::NewChannel)
+    } else {
+        None
+    };
+
+    let fields = CallFields {
         other_leg_uuid: state
             .and_then(|s| s.other_leg_uuid.clone())
             .or_else(|| snap.and_then(|s| s.other_leg_uuid.clone())),
         channel_state: state
-            .and_then(|s| s.channel_state.clone())
-            .or_else(|| snap.and_then(|s| s.channel_state.clone())),
+            .and_then(|s| s.channel_state.as_deref())
+            .or_else(|| snap.and_then(|s| s.channel_state.as_deref()))
+            .map(LegState::parse),
         context: state
             .and_then(|s| s.initial_context.clone())
             .or_else(|| snap.and_then(|s| s.initial_context.clone())),
-        direction: state
-            .and_then(|s| s.call_direction.map(|d| d.to_string()))
-            .or_else(|| {
-                state.and_then(|s| {
-                    s.variables
-                        .get(ChannelVariable::Direction.as_str())
-                        .cloned()
-                })
-            }),
+        direction: state.and_then(|s| s.call_direction).or_else(|| {
+            state.and_then(|s| {
+                s.variables
+                    .get(ChannelVariable::Direction.as_str())
+                    .and_then(|v| CallDirection::from_str(v).ok())
+            })
+        }),
         caller: state
             .and_then(|s| s.caller_id_number.clone())
             .or_else(|| {
@@ -337,9 +408,13 @@ fn build_update(
                 state.and_then(|s| s.variables.get(SofiaVariable::SipToUser.as_str()).cloned())
             })
             .or_else(|| state.and_then(|s| s.dialplan_to.clone())),
+    };
+
+    Some(ReaderMsg {
+        timestamp: enriched.entry.timestamp.clone(),
         uuid,
-        is_hangup,
-        is_new_channel,
+        fields,
+        event,
     })
 }
 
@@ -489,22 +564,18 @@ fn spawn_reader(
 }
 
 fn apply_update(state: &mut AppState, msg: ReaderMsg) {
-    let ReaderMsg::Update {
+    let ReaderMsg {
         uuid,
         timestamp,
-        other_leg_uuid,
-        channel_state,
-        context,
-        direction,
-        caller,
-        callee,
-        is_hangup,
-        is_new_channel,
+        fields,
+        event,
     } = msg;
 
     if !timestamp.is_empty() && timestamp > state.latest_timestamp {
         state.latest_timestamp.clone_from(&timestamp);
     }
+
+    let is_hangup = matches!(event, Some(CallEvent::Hangup));
 
     if state.filtered_uuids.contains(&uuid) {
         if is_hangup {
@@ -519,42 +590,21 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
         if !timestamp.is_empty() {
             row.log_last = timestamp.clone();
         }
-        if channel_state.is_some() {
-            row.channel_state = channel_state;
+        row.fields.merge(fields);
+        if is_hangup && row.end.is_none() {
+            row.end = Some(CallEnd {
+                at: Instant::now(),
+                log_ts: timestamp,
+            });
         }
-        if context.is_some() {
-            row.context = context;
-        }
-        if direction.is_some() {
-            row.direction = direction;
-        }
-        if caller.is_some() {
-            row.caller = caller;
-        }
-        if callee.is_some() {
-            row.callee = callee;
-        }
-        if other_leg_uuid.is_some() {
-            row.other_leg_uuid = other_leg_uuid;
-        }
-        if is_hangup && row.ended.is_none() {
-            row.ended = Some(Instant::now());
-            row.log_end = Some(timestamp);
-        }
-    } else if is_new_channel {
+    } else if matches!(event, Some(CallEvent::NewChannel)) {
         state.calls.push(CallRow {
             uuid,
-            other_leg_uuid,
-            direction,
-            caller,
-            callee,
-            channel_state,
-            context,
+            fields,
             log_last: timestamp.clone(),
             log_start: timestamp,
-            log_end: None,
+            end: None,
             first_seen: Instant::now(),
-            ended: None,
         });
     } else {
         if is_hangup {
@@ -568,7 +618,7 @@ fn apply_update(state: &mut AppState, msg: ReaderMsg) {
     if let Some(pos) = state.calls.iter().position(|r| r.uuid == uuid_key) {
         if !state
             .context_filter
-            .matches(state.calls[pos].context.as_deref())
+            .matches(state.calls[pos].fields.context.as_deref())
         {
             state.calls.remove(pos);
             state.filtered_uuids.insert(uuid_key);
@@ -583,7 +633,7 @@ fn gc_ended(state: &mut AppState) {
     let linger = state.linger;
     let mut expired = Vec::new();
     state.calls.retain(|r| {
-        let keep = r.ended.is_none_or(|t| t.elapsed() < linger);
+        let keep = r.end.as_ref().is_none_or(|e| e.at.elapsed() < linger);
         if !keep {
             expired.push(r.uuid.clone());
         }
@@ -602,7 +652,7 @@ fn gc_ended(state: &mut AppState) {
 fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableState) {
     let area = f.area();
 
-    let active_count = state.calls.iter().filter(|r| r.ended.is_none()).count();
+    let active_count = state.calls.iter().filter(|r| r.end.is_none()).count();
     let header_text = format!(
         " fslog monitor - {} active call{}",
         active_count,
@@ -642,7 +692,7 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
         .calls
         .iter()
         .map(|r| {
-            let style = if r.ended.is_some() {
+            let style = if r.end.is_some() {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
@@ -686,7 +736,12 @@ fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect, selec
         None => return,
     };
     let a_short = short8(&row.uuid);
-    let b_short = row.other_leg_uuid.as_deref().map(short8).unwrap_or("?");
+    let b_short = row
+        .fields
+        .other_leg_uuid
+        .as_deref()
+        .map(short8)
+        .unwrap_or("?");
     let items = vec![
         ListItem::new(format!("A-leg: {a_short}...")),
         ListItem::new(format!("B-leg: {b_short}...")),
@@ -821,7 +876,7 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
         }
         KeyCode::Enter => {
             if let Some(row) = state.calls.get(state.selected_index()) {
-                state.ui_mode = if row.other_leg_uuid.is_some() {
+                state.ui_mode = if row.fields.other_leg_uuid.is_some() {
                     UiMode::LegPicker { selected: 0 }
                 } else {
                     UiMode::Menu {
@@ -854,7 +909,8 @@ fn handle_leg_picker_key(state: &mut AppState, code: KeyCode) {
                 let uuid = if selected == 0 {
                     row.uuid.clone()
                 } else {
-                    row.other_leg_uuid
+                    row.fields
+                        .other_leg_uuid
                         .clone()
                         .unwrap_or_else(|| row.uuid.clone())
                 };
@@ -1120,25 +1176,29 @@ mod tests {
         assert_eq!(format_age(Duration::from_secs(259200)), "3d");
     }
 
+    fn state_short(raw: &str) -> String {
+        LegState::parse(raw).short()
+    }
+
     #[test]
     fn format_state_cs_prefix() {
-        assert_eq!(format_state("CS_EXECUTE"), "EXECUTE");
-        assert_eq!(format_state("CS_ROUTING"), "ROUTING");
-        assert_eq!(format_state("CS_HANGUP"), "HANGUP");
-        assert_eq!(format_state("CS_DESTROY"), "DESTROY");
+        assert_eq!(state_short("CS_EXECUTE"), "EXECUTE");
+        assert_eq!(state_short("CS_ROUTING"), "ROUTING");
+        assert_eq!(state_short("CS_HANGUP"), "HANGUP");
+        assert_eq!(state_short("CS_DESTROY"), "DESTROY");
     }
 
     #[test]
     fn format_state_abbreviations() {
-        assert_eq!(format_state("CS_EXCHANGE_MEDIA"), "MEDIA");
-        assert_eq!(format_state("CS_CONSUME_MEDIA"), "CONSUME");
-        assert_eq!(format_state("CS_SOFT_EXECUTE"), "SOFTEX");
-        assert_eq!(format_state("CS_REPORTING"), "REPORT");
+        assert_eq!(state_short("CS_EXCHANGE_MEDIA"), "MEDIA");
+        assert_eq!(state_short("CS_CONSUME_MEDIA"), "CONSUME");
+        assert_eq!(state_short("CS_SOFT_EXECUTE"), "SOFTEX");
+        assert_eq!(state_short("CS_REPORTING"), "REPORT");
     }
 
     #[test]
     fn format_state_unknown_passthrough() {
-        assert_eq!(format_state("SOMETHING_ELSE"), "SOMETHING_ELSE");
+        assert_eq!(state_short("SOMETHING_ELSE"), "SOMETHING_ELSE");
     }
 
     #[test]
@@ -1227,17 +1287,22 @@ mod tests {
     }
 
     fn make_update(uuid: &str, ts: &str, is_hangup: bool) -> ReaderMsg {
-        ReaderMsg::Update {
+        ReaderMsg {
             uuid: uuid.to_string(),
             timestamp: ts.to_string(),
-            other_leg_uuid: None,
-            channel_state: Some("CS_EXECUTE".to_string()),
-            context: Some("public".to_string()),
-            direction: Some("inbound".to_string()),
-            caller: Some("1234".to_string()),
-            callee: Some("5678".to_string()),
-            is_hangup,
-            is_new_channel: !is_hangup,
+            fields: CallFields {
+                channel_state: Some(LegState::parse("CS_EXECUTE")),
+                context: Some("public".to_string()),
+                direction: Some(CallDirection::Inbound),
+                caller: Some("1234".to_string()),
+                callee: Some("5678".to_string()),
+                ..CallFields::default()
+            },
+            event: Some(if is_hangup {
+                CallEvent::Hangup
+            } else {
+                CallEvent::NewChannel
+            }),
         }
     }
 
@@ -1248,32 +1313,27 @@ mod tests {
     #[test]
     fn no_row_for_call_first_seen_in_terminal_state() {
         let mut state = make_state();
-        // First message is a state change to CS_HANGUP (not is_hangup per current rules)
-        let msg = ReaderMsg::Update {
+        // First message is a state change to CS_HANGUP (not a Hangup event per
+        // current rules)
+        let msg = ReaderMsg {
             uuid: "aaaa".to_string(),
             timestamp: "2025-01-15 10:30:45.000000".to_string(),
-            other_leg_uuid: None,
-            channel_state: Some("CS_HANGUP".to_string()),
-            context: None,
-            direction: None,
-            caller: None,
-            callee: None,
-            is_hangup: false,
-            is_new_channel: false,
+            fields: CallFields {
+                channel_state: Some(LegState::parse("CS_HANGUP")),
+                ..CallFields::default()
+            },
+            event: None,
         };
         apply_update(&mut state, msg);
         // Then CS_DESTROY arrives
-        let msg = ReaderMsg::Update {
+        let msg = ReaderMsg {
             uuid: "aaaa".to_string(),
             timestamp: "2025-01-15 10:30:45.000000".to_string(),
-            other_leg_uuid: None,
-            channel_state: Some("CS_DESTROY".to_string()),
-            context: None,
-            direction: None,
-            caller: None,
-            callee: None,
-            is_hangup: true,
-            is_new_channel: false,
+            fields: CallFields {
+                channel_state: Some(LegState::parse("CS_DESTROY")),
+                ..CallFields::default()
+            },
+            event: Some(CallEvent::Hangup),
         };
         apply_update(&mut state, msg);
         assert!(

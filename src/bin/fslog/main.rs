@@ -23,7 +23,7 @@ use context::Emitter;
 
 use files::{
     discover_log_files, filter_files_by_date, format_size, lazy_log_reader, lossy_line_iter,
-    normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader,
+    normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader, resolve_log_path,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig};
 
@@ -123,6 +123,43 @@ struct FilterArgs {
     /// Show line numbers in output
     #[arg(short = 'n', long)]
     line_numbers: bool,
+}
+
+impl FilterArgs {
+    fn tracking(&self) -> UnclassifiedTracking {
+        if self.unclassified {
+            UnclassifiedTracking::CaptureData
+        } else {
+            UnclassifiedTracking::CountOnly
+        }
+    }
+
+    fn printer(&self, color: ColorMode) -> EntryPrinter {
+        EntryPrinter {
+            color,
+            show_blocks: self.blocks,
+            show_session: self.session,
+            show_filename: false,
+            show_line_numbers: self.line_numbers,
+        }
+    }
+}
+
+/// Stats/unclassified epilogue on stderr, shared by search and read.
+fn print_epilogue(
+    printer: &EntryPrinter,
+    fargs: &FilterArgs,
+    stats: &ParseStats,
+    count: u64,
+    session_count: usize,
+) -> io::Result<()> {
+    if fargs.stats || fargs.unclassified {
+        printer.print_stats(&mut io::stderr(), stats, count, session_count)?;
+    }
+    if fargs.unclassified {
+        printer.print_unclassified(&mut io::stderr(), stats)?;
+    }
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -424,24 +461,13 @@ fn cmd_search(
     if let Some(p) = &args.pattern {
         filter.fgrep = Some(p.to_lowercase());
     }
-    let tracking = if args.filter.unclassified {
-        UnclassifiedTracking::CaptureData
-    } else {
-        UnclassifiedTracking::CountOnly
-    };
 
     let files = match resolve_search_files(dir, args)? {
         Some(f) => f,
         None => return Ok(()),
     };
 
-    let printer = EntryPrinter {
-        color,
-        show_blocks: args.filter.blocks,
-        show_session: args.filter.session,
-        show_filename: false,
-        show_line_numbers: args.filter.line_numbers,
-    };
+    let printer = args.filter.printer(color);
 
     if args.related {
         let discovered = related::discover(build_segments(&files), &filter.for_discovery());
@@ -457,40 +483,30 @@ fn cmd_search(
         build_segments(&files),
         &filter,
         &printer,
-        args,
-        tracking,
+        &args.filter,
+        args.before(),
+        args.after(),
     )?;
 
-    if args.filter.stats || args.filter.unclassified {
-        printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
-    }
-    if args.filter.unclassified {
-        printer.print_unclassified(&mut io::stderr(), &stats)?;
-    }
-
-    Ok(())
+    print_epilogue(&printer, &args.filter, &stats, count, session_count)
 }
 
+/// Drive the parse over `segments`, emitting matches through `Emitter`. The
+/// single output loop for both search and read.
 fn run_output(
     out: &mut dyn Write,
     segments: Vec<(String, Box<dyn Iterator<Item = String>>)>,
     filter: &FilterConfig,
     printer: &EntryPrinter,
-    args: &SearchArgs,
-    tracking: UnclassifiedTracking,
+    fargs: &FilterArgs,
+    before: usize,
+    after: usize,
 ) -> io::Result<(ParseStats, usize, u64)> {
     let (chain, seg_tracker) = TrackedChain::new(segments);
-    let stream = LogStream::new(chain).unclassified_tracking(tracking);
-    let mut emitter = Emitter::new(
-        printer,
-        filter,
-        &seg_tracker,
-        args.filter.stats,
-        args.before(),
-        args.after(),
-    );
+    let stream = LogStream::new(chain).unclassified_tracking(fargs.tracking());
+    let mut emitter = Emitter::new(printer, filter, &seg_tracker, fargs.stats, before, after);
 
-    let (stats, session_count) = if args.filter.session {
+    let (stats, session_count) = if fargs.session {
         let mut tracker = SessionTracker::new(stream);
         for enriched in tracker.by_ref() {
             emitter.on_entry(out, &enriched.entry, enriched.session.as_ref())?;
@@ -509,14 +525,12 @@ fn run_output(
 
 fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
     let filter = build_filter(&args.filter, None, None);
-    let tracking = if args.filter.unclassified {
-        UnclassifiedTracking::CaptureData
-    } else {
-        UnclassifiedTracking::CountOnly
-    };
 
-    let lines: Box<dyn Iterator<Item = String>> = match args.file.as_deref() {
-        Some("-") => lossy_line_iter(Box::new(io::stdin().lock())),
+    let (name, lines): (String, Box<dyn Iterator<Item = String>>) = match args.file.as_deref() {
+        Some("-") => (
+            "-".to_string(),
+            lossy_line_iter(Box::new(io::stdin().lock())),
+        ),
         Some(path) => {
             let p = PathBuf::from(path);
             let p = if p.is_absolute() || p.exists() {
@@ -524,96 +538,46 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
             } else {
                 dir.join(&p)
             };
-            open_log_reader(&p)?
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            (name, open_log_reader(&p)?)
         }
         None => {
-            let p = dir.join("freeswitch.log");
-            open_log_reader(&p)?
+            let p = resolve_log_path(dir, None);
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            (name, open_log_reader(&p)?)
         }
     };
 
-    let printer = EntryPrinter {
-        color,
-        show_blocks: args.filter.blocks,
-        show_session: args.filter.session,
-        show_filename: false,
-        show_line_numbers: args.filter.line_numbers,
-    };
+    let printer = args.filter.printer(color);
+    let (stats, session_count, count) = run_output(
+        out,
+        vec![(name, lines)],
+        &filter,
+        &printer,
+        &args.filter,
+        0,
+        0,
+    )?;
 
-    let stream = LogStream::new(lines).unclassified_tracking(tracking);
-    let mut count: u64 = 0;
-    let mut last_date = String::new();
-
-    let mut print_matching = |out: &mut dyn Write,
-                              entry: &LogEntry,
-                              session: Option<&freeswitch_log_parser::SessionSnapshot>|
-     -> io::Result<()> {
-        count += 1;
-        if !filter.matches(entry) {
-            return Ok(());
-        }
-        if args.filter.stats {
-            return Ok(());
-        }
-        if entry.timestamp.len() >= 10 {
-            let date = &entry.timestamp[..10];
-            if date != last_date {
-                last_date = date.to_string();
-                let sep = separator_entry(MessageKind::DateChange, last_date.clone());
-                printer.print_entry(out, &sep, None, None)?;
-            }
-        }
-        printer.print_entry(out, entry, session, None)
-    };
-
-    let (stats, session_count) = if args.filter.session {
-        let mut tracker = SessionTracker::new(stream);
-        for enriched in tracker.by_ref() {
-            print_matching(out, &enriched.entry, enriched.session.as_ref())?;
-        }
-        (tracker.stats().clone(), tracker.sessions().len())
-    } else {
-        let mut stream = stream;
-        for entry in stream.by_ref() {
-            print_matching(out, &entry, None)?;
-        }
-        (stream.stats().clone(), 0)
-    };
-
-    if args.filter.stats || args.filter.unclassified {
-        printer.print_stats(&mut io::stderr(), &stats, count, session_count)?;
-    }
-    if args.filter.unclassified {
-        printer.print_unclassified(&mut io::stderr(), &stats)?;
-    }
-
-    Ok(())
+    print_epilogue(&printer, &args.filter, &stats, count, session_count)
 }
 
 fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
     let filter = build_filter(&args.filter, None, None);
-    let tracking = if args.filter.unclassified {
-        UnclassifiedTracking::CaptureData
-    } else {
-        UnclassifiedTracking::CountOnly
-    };
 
-    let path = match args.file.as_deref() {
-        Some(p) => PathBuf::from(p),
-        None => dir.join("freeswitch.log"),
-    };
-
+    let path = resolve_log_path(dir, args.file.as_deref());
     let lines = open_tail_reader(&path, args.lines)?;
 
-    let printer = EntryPrinter {
-        color,
-        show_blocks: args.filter.blocks,
-        show_session: args.filter.session,
-        show_filename: false,
-        show_line_numbers: args.filter.line_numbers,
-    };
-
-    let stream = LogStream::new(lines).unclassified_tracking(tracking);
+    let printer = args.filter.printer(color);
+    let stream = LogStream::new(lines).unclassified_tracking(args.filter.tracking());
     let mut tracker = SessionTracker::new(stream);
 
     for enriched in tracker.by_ref() {

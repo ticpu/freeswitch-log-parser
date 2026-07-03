@@ -24,7 +24,7 @@ use freeswitch_log_parser::{
 };
 
 use crate::config::{self, Tool};
-use crate::files::{discover_log_files, open_full_tail_reader, open_log_reader};
+use crate::files::{discover_log_files, open_full_tail_reader, open_log_reader, resolve_log_path};
 
 #[derive(clap::Args)]
 pub struct MonitorArgs {
@@ -964,10 +964,7 @@ fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Re
 }
 
 pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
-    let path = match args.file.as_deref() {
-        Some(p) => PathBuf::from(p),
-        None => dir.join("freeswitch.log"),
-    };
+    let path = resolve_log_path(dir, args.file.as_deref());
 
     let context_filter = args
         .context
@@ -992,10 +989,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
     let cfg = config::load_config(args.config.as_deref())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let path = match args.file.as_deref() {
-        Some(p) => PathBuf::from(p),
-        None => dir.join("freeswitch.log"),
-    };
+    let path = resolve_log_path(dir, args.file.as_deref());
 
     let (tx, rx) = mpsc::channel();
     let (remove_tx, remove_rx) = mpsc::channel();

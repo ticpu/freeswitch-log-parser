@@ -177,6 +177,14 @@ pub fn filter_files_by_date<'a>(
         .collect()
 }
 
+/// Resolve an optional FILE argument, defaulting to the live log in `dir`.
+pub fn resolve_log_path(dir: &Path, file: Option<&str>) -> PathBuf {
+    match file {
+        Some(p) => PathBuf::from(p),
+        None => dir.join("freeswitch.log"),
+    }
+}
+
 pub fn open_log_file(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let file = fs::File::open(path)?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");

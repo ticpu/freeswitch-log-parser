@@ -52,12 +52,37 @@ pub struct SessionState {
     pub variables: HashMap<String, String>,
 }
 
-/// Changes to indexed fields reported by `update_from_entry` for index maintenance.
+/// Changes to indexed fields, diffed across hooks and built-in extraction
+/// for index maintenance.
 #[derive(Default)]
 struct IndexedFieldChanges {
     channel_name: Option<(Option<String>, Option<String>)>,
     pending_bridge_target: Option<(Option<String>, Option<String>)>,
     other_leg_uuid: Option<(Option<String>, Option<String>)>,
+}
+
+impl IndexedFieldChanges {
+    fn diff(
+        old_channel_name: Option<String>,
+        old_pending_bridge_target: Option<String>,
+        old_other_leg_uuid: Option<String>,
+        state: &SessionState,
+    ) -> Self {
+        let mut changes = IndexedFieldChanges::default();
+        if state.channel_name != old_channel_name {
+            changes.channel_name = Some((old_channel_name, state.channel_name.clone()));
+        }
+        if state.pending_bridge_target != old_pending_bridge_target {
+            changes.pending_bridge_target = Some((
+                old_pending_bridge_target,
+                state.pending_bridge_target.clone(),
+            ));
+        }
+        if state.other_leg_uuid != old_other_leg_uuid {
+            changes.other_leg_uuid = Some((old_other_leg_uuid, state.other_leg_uuid.clone()));
+        }
+        changes
+    }
 }
 
 /// Immutable point-in-time copy of a session's state, attached to each [`EnrichedEntry`].
@@ -102,11 +127,7 @@ impl SessionState {
         }
     }
 
-    fn update_from_entry(&mut self, entry: &LogEntry) -> IndexedFieldChanges {
-        let old_channel_name = self.channel_name.clone();
-        let old_pending_bridge_target = self.pending_bridge_target.clone();
-        let old_other_leg_uuid = self.other_leg_uuid.clone();
-
+    fn update_from_entry(&mut self, entry: &LogEntry) {
         if let Some(Block::ChannelData { fields, variables }) = &entry.block {
             for (name, value) in fields {
                 match name.as_str() {
@@ -209,21 +230,6 @@ impl SessionState {
             let parsed = parse_line(attached);
             self.update_from_message(parsed.message);
         }
-
-        let mut changes = IndexedFieldChanges::default();
-        if self.channel_name != old_channel_name {
-            changes.channel_name = Some((old_channel_name, self.channel_name.clone()));
-        }
-        if self.pending_bridge_target != old_pending_bridge_target {
-            changes.pending_bridge_target = Some((
-                old_pending_bridge_target,
-                self.pending_bridge_target.clone(),
-            ));
-        }
-        if self.other_leg_uuid != old_other_leg_uuid {
-            changes.other_leg_uuid = Some((old_other_leg_uuid, self.other_leg_uuid.clone()));
-        }
-        changes
     }
 
     fn update_from_message(&mut self, msg: &str) {
@@ -451,7 +457,9 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     ///
     /// Use this to override how specific fields are extracted. Fields set
     /// by the pre-hook may be preserved by built-in extraction if it uses
-    /// `is_none()` guards.
+    /// `is_none()` guards. Indexed fields set by the hook (`channel_name`,
+    /// `other_leg_uuid`) feed cross-session leg correlation like built-in
+    /// extraction does.
     pub fn with_pre_hook<F>(mut self, hook: F) -> Self
     where
         F: Fn(&LogEntry, &mut SessionState) + Send + 'static,
@@ -465,7 +473,9 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// Use this for custom field extraction and relationship detection.
     /// The hook can read fields populated by built-in extraction and
     /// fill gaps with application-specific patterns (e.g., `uuid_bridge`
-    /// API results, custom SIP headers).
+    /// API results, custom SIP headers). Indexed fields set by the hook
+    /// (`channel_name`, `other_leg_uuid`) feed cross-session leg
+    /// correlation like built-in extraction does.
     ///
     /// # Example
     ///
@@ -686,19 +696,20 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         }
 
         let uuid = entry.uuid.clone();
-        self.sessions.entry(uuid.clone()).or_default();
+        let state = self.sessions.entry(uuid.clone()).or_default();
+
+        // Snapshot indexed fields before the pre-hook and diff after the
+        // post-hook so hook-set fields maintain the cross-session indexes
+        // exactly like built-in extraction.
+        let old_channel_name = state.channel_name.clone();
+        let old_pending_bridge_target = state.pending_bridge_target.clone();
+        let old_other_leg_uuid = state.other_leg_uuid.clone();
 
         if let Some(hook) = &self.pre_hook {
-            let state = self.sessions.get_mut(&uuid).unwrap();
             hook(&entry, state);
         }
 
-        let changes = self
-            .sessions
-            .get_mut(&uuid)
-            .unwrap()
-            .update_from_entry(&entry);
-        self.apply_index_changes(&uuid, &changes);
+        state.update_from_entry(&entry);
 
         self.link_legs(&uuid, &entry);
 
@@ -706,6 +717,14 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
             let state = self.sessions.get_mut(&uuid).unwrap();
             hook(&entry, state);
         }
+
+        let changes = IndexedFieldChanges::diff(
+            old_channel_name,
+            old_pending_bridge_target,
+            old_other_leg_uuid,
+            self.sessions.get(&uuid).unwrap(),
+        );
+        self.apply_index_changes(&uuid, &changes);
 
         let snapshot = self.sessions.get(&uuid).unwrap().snapshot();
 

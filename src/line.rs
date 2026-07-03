@@ -189,6 +189,11 @@ fn parse_idle_pct(rest: &str) -> (Option<&str>, &str) {
     {
         return (None, rest);
     }
+    // A multi-byte char where the "% " separator's space belongs means this
+    // is not an idle-percentage field.
+    if rest.len() > pct_pos + 2 && !rest.is_char_boundary(pct_pos + 2) {
+        return (None, rest);
+    }
     let idle_pct = &rest[0..=pct_pos];
     let after = if rest.len() > pct_pos + 2 {
         &rest[pct_pos + 2..]
@@ -196,6 +201,13 @@ fn parse_idle_pct(rest: &str) -> (Option<&str>, &str) {
         ""
     };
     (Some(idle_pct), after)
+}
+
+/// The header slices at bytes 26/27 (timestamp + separating space) are only
+/// valid when both land on char boundaries — a multi-byte char straddling
+/// either offset means the line is not a Format A/B header.
+fn header_boundaries_ok(s: &str) -> bool {
+    s.len() < 27 || (s.is_char_boundary(26) && s.is_char_boundary(27))
 }
 
 fn parse_timestamped_fields(
@@ -221,7 +233,7 @@ fn parse_timestamped_fields(
     };
     let level = LogLevel::from_bracketed(&rest[0..=bracket_end]);
 
-    if rest.len() < bracket_end + 3 {
+    if rest.len() < bracket_end + 3 || !rest.is_char_boundary(bracket_end + 2) {
         return (Some(timestamp), idle_pct, level, None, "");
     }
     let rest = &rest[bracket_end + 2..];
@@ -261,7 +273,7 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
         let uuid = &line[0..UUID_LEN];
         let after_uuid = &line[UUID_PREFIX_LEN..];
 
-        if is_date_at(bytes, UUID_PREFIX_LEN) {
+        if is_date_at(bytes, UUID_PREFIX_LEN) && header_boundaries_ok(after_uuid) {
             let (timestamp, idle_pct, level, source, message) =
                 parse_timestamped_fields(after_uuid);
             return RawLine {
@@ -286,7 +298,7 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
         };
     }
 
-    if is_date_at(bytes, 0) {
+    if is_date_at(bytes, 0) && header_boundaries_ok(line) {
         let (timestamp, idle_pct, level, source, message) = parse_timestamped_fields(line);
         let (uuid, message) = if is_uuid_at(message.as_bytes(), 0) {
             (Some(&message[0..UUID_LEN]), &message[UUID_PREFIX_LEN..])

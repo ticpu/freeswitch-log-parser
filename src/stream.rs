@@ -1,4 +1,5 @@
 use crate::attached::AttachedLines;
+use crate::decode::truncate_at_char_boundary;
 use crate::level::LogLevel;
 use crate::line::{
     is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind, UUID_PREFIX_LEN,
@@ -325,7 +326,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             } else {
                 warning = Some(format!(
                     "unrecognized codec negotiation line: {}",
-                    if msg.len() > 80 { &msg[..80] } else { msg }
+                    truncate_at_char_boundary(msg, 80)
                 ));
             }
         }
@@ -372,7 +373,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                             } else {
                                 warning = Some(format!(
                                     "unparseable CHANNEL_DATA line: {}",
-                                    if msg.len() > 80 { &msg[..80] } else { msg }
+                                    truncate_at_char_boundary(msg, 80)
                                 ));
                             }
                         }
@@ -385,7 +386,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             StreamState::InCodecNegotiation { .. } => {
                 warning = Some(format!(
                     "unexpected codec negotiation continuation: {}",
-                    if msg.len() > 80 { &msg[..80] } else { msg }
+                    truncate_at_char_boundary(msg, 80)
                 ));
             }
             StreamState::Idle => {}
@@ -2056,7 +2057,10 @@ mod tests {
 
     #[test]
     fn multibyte_at_warning_truncation_channel_data() {
-        let bare = format!("{}é tail beyond eighty bytes with no field separator", "x".repeat(79));
+        let bare = format!(
+            "{}é tail beyond eighty bytes with no field separator",
+            "x".repeat(79)
+        );
         assert!(!bare.is_char_boundary(80));
         let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), bare];
         let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();

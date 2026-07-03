@@ -88,6 +88,23 @@ fn is_incomplete_multibyte(seq: &[u8]) -> bool {
     seq.len() < need && cont.iter().all(|&b| (0x80..=0xBF).contains(&b))
 }
 
+/// Largest prefix of `s` at most `max_bytes` long that ends on a char boundary.
+///
+/// Byte-index truncation (`&s[..n]`) panics when `n` lands inside a multi-byte
+/// codepoint — log content carries real UTF-8 and the lossy decode inserts
+/// 3-byte U+FFFD replacements. Use this wherever text of unknown content is
+/// shortened for display or diagnostics.
+pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Read newline-delimited log lines, decoding each with the truncated-codepoint
 /// case typed distinctly from corruption.
 ///
@@ -174,6 +191,29 @@ mod tests {
     fn clean_line_is_clean() {
         assert_eq!(classify_utf8("héllo wörld".as_bytes()), Utf8Decode::Clean);
         assert_eq!(classify_utf8(b"plain ascii"), Utf8Decode::Clean);
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_shorter_input_unchanged() {
+        assert_eq!(truncate_at_char_boundary("abc", 80), "abc");
+        assert_eq!(truncate_at_char_boundary("abc", 3), "abc");
+        assert_eq!(truncate_at_char_boundary("", 0), "");
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_ascii_cut() {
+        assert_eq!(truncate_at_char_boundary("abcdef", 4), "abcd");
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_backs_off_multibyte() {
+        // 'é' spans bytes 3-4: a 4-byte cut must back off to 3.
+        assert_eq!(truncate_at_char_boundary("abcéf", 4), "abc");
+        // U+FFFD is 3 bytes.
+        let s = "ab\u{fffd}cd";
+        assert_eq!(truncate_at_char_boundary(s, 3), "ab");
+        assert_eq!(truncate_at_char_boundary(s, 4), "ab");
+        assert_eq!(truncate_at_char_boundary(s, 5), "ab\u{fffd}");
     }
 
     #[test]

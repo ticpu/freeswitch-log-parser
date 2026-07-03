@@ -234,8 +234,6 @@ Never copy production log lines verbatim into source.
 - `cargo check --message-format=short` → `cargo clippy --fix --allow-dirty --message-format=short` → `cargo fmt --all` → `cargo test --release -- --quiet`
 - Always run tests with `--release` — debug builds are too slow on xz-compressed production fixture tests
 - Build the binary with `cargo build --release --features tui` — the `tui` feature enables the monitor subcommand (includes ratatui, serde, serde_yml)
-- Before release: verify no warnings with each feature combination — `cargo check --features cli`, `cargo check --features tui` (tui implies cli)
-- Release tags: `git tag -as vX.Y.Z -m "vX.Y.Z"` (annotated + signed)
 - **Cargo.lock is never committed** — this is a library crate, Cargo.lock stays in .gitignore
 - `fslog monitor --dump` prints the call table to stdout (no TUI), useful for testing and scripting
 

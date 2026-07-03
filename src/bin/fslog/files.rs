@@ -3,6 +3,7 @@ use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use freeswitch_log_parser::{read_log_lines, Utf8Decode};
+use log::{error, warn};
 use xz2::read::XzDecoder;
 
 pub struct LogFile {
@@ -208,12 +209,12 @@ pub fn lossy_line_iter(reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = Stri
     Box::new(read_log_lines(reader).map_while(|decoded| match decoded {
         Ok(line) => {
             if let Utf8Decode::InvalidBytes { at } = line.decode {
-                eprintln!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
+                warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
             }
             Some(line.text)
         }
         Err(e) => {
-            eprintln!("read error: {e}");
+            error!("read error: {e}");
             None
         }
     }))
@@ -236,7 +237,7 @@ impl Iterator for LazyLogReader {
             match open_log_reader(&self.path) {
                 Ok(reader) => self.inner = Some(reader),
                 Err(e) => {
-                    eprintln!("fslog: skipping {}: open failed: {e}", self.path.display());
+                    warn!("skipping {}: open failed: {e}", self.path.display());
                     return None;
                 }
             }
@@ -280,10 +281,7 @@ impl Iterator for TailLines {
                     return Some(line);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "fslog: tail read error on {}, stopping: {e}",
-                        self.path.display()
-                    );
+                    error!("tail read error on {}, stopping: {e}", self.path.display());
                     return None;
                 }
             }
@@ -313,7 +311,7 @@ fn read_tail_context(path: &Path, n_lines: usize) -> io::Result<(Vec<String>, u6
     for decoded in read_log_lines(reader) {
         let line = decoded?;
         if let Utf8Decode::InvalidBytes { at } = line.decode {
-            eprintln!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
+            warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
         }
         lines.push(line.text);
     }

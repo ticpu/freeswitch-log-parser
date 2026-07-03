@@ -5,6 +5,8 @@ use std::str::FromStr;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use log::{error, warn};
+
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -503,15 +505,15 @@ fn build_segments(
                             .into_owned();
                         segments.push((name, reader));
                     }
-                    Err(e) => eprintln!(
-                        "fslog: skipping rotated history {}: open failed: {e}",
+                    Err(e) => warn!(
+                        "skipping rotated history {}: open failed: {e}",
                         prev.path.display()
                     ),
                 }
             }
         }
-        Err(e) => eprintln!(
-            "fslog: skipping rotated history: discovery in {} failed: {e}",
+        Err(e) => warn!(
+            "skipping rotated history: discovery in {} failed: {e}",
             dir.display()
         ),
     }
@@ -542,7 +544,7 @@ fn spawn_reader(
         let segments = match build_segments(&dir, &path, open_full_tail_reader) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("fslog: {}: {e}", path.display());
+                error!("reader failed to open {}: {e}", path.display());
                 return;
             }
         };

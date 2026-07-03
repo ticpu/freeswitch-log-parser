@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use log::warn;
 
 use freeswitch_log_parser::{
     AttachedLines, LineKind, LogEntry, LogLevel, LogStream, MessageKind, ParseStats,
@@ -313,7 +314,7 @@ fn setup_pager(cli: &Cli) -> Option<process::Child> {
     {
         Ok(child) => Some(child),
         Err(e) => {
-            eprintln!("fslog: failed to spawn pager {program}: {e}; output goes to stdout");
+            warn!("failed to spawn pager {program}: {e}; output goes to stdout");
             None
         }
     }
@@ -594,6 +595,8 @@ fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) 
 }
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
     let cli = Cli::parse();
 
     #[cfg(feature = "tui")]

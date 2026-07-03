@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 
-use freeswitch_log_parser::{Block, LogLevel};
+use freeswitch_log_parser::{truncate_at_char_boundary, Block, LogLevel};
 
 use crate::files::normalize_entry_timestamp;
 
@@ -163,7 +163,7 @@ impl EntryPrinter {
                 }
                 for (name, value) in variables {
                     let short = if value.len() > 80 {
-                        format!("{}...", &value[..77])
+                        format!("{}...", truncate_at_char_boundary(value, 77))
                     } else {
                         value.clone()
                     };
@@ -264,7 +264,7 @@ impl EntryPrinter {
                 u.reason,
                 u.data
                     .as_ref()
-                    .map(|d| format!(" | {}", if d.len() > 100 { &d[..100] } else { d }))
+                    .map(|d| format!(" | {}", truncate_at_char_boundary(d, 100)))
                     .unwrap_or_default(),
             )?;
         }

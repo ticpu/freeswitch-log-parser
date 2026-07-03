@@ -1293,10 +1293,8 @@ mod tests {
         }
     }
 
-    // BUG 3: A call whose New Channel we never saw (only caught its tail end)
-    // should not produce a row. Currently, any non-hangup message creates a row,
-    // even a mid-call state change from a partially-visible call.
-    // Reproduces 54ad0773/7ddcede7 showing 0:00 instead of not appearing at all.
+    // A call first seen in a terminal state (its New Channel was never
+    // observed) must not produce a row.
     #[test]
     fn no_row_for_call_first_seen_in_terminal_state() {
         let mut state = make_state();
@@ -1329,10 +1327,8 @@ mod tests {
         );
     }
 
-    // BUG 1: f2cb66d4 gets log_start from the rotated file's last timestamp
-    // (23:58:03) because LogStream carries last_timestamp across file segments.
-    // When the call DESTROYs at 08:37:32 the next day, age = 8:39:29.
-    // Real duration is ~19 seconds.
+    // Continuation lines at the start of a new file segment must not inherit
+    // the previous segment's last timestamp.
     #[test]
     fn timestamp_not_contaminated_across_file_segments() {
         use freeswitch_log_parser::LogStream;
@@ -1366,8 +1362,8 @@ mod tests {
         let stream = LogStream::new(chain);
         let entries: Vec<_> = stream.collect();
 
-        // Find the CHANNEL_DATA entry for our UUID — its timestamp must NOT be
-        // inherited from the rotated file's last line (23:58:03).
+        // The CHANNEL_DATA entry's timestamp must not come from the rotated
+        // file's last line.
         let cd_entry = entries
             .iter()
             .find(|e| e.uuid == uuid)
@@ -1379,11 +1375,8 @@ mod tests {
         );
     }
 
-    // BUG 2: Calls that appear only in the rotated file (never seen in freeswitch.log)
-    // have their age grow against latest_log_ts from the current file.
-    // 031193dc started at 23:58:02 in the rotated file, latest_log_ts advances
-    // to 09:06:41 the next day -> age 9:08:39. Should end at the rotated file's
-    // last timestamp instead.
+    // A call seen only in the rotated file must not grow its duration against
+    // timestamps from the current file.
     #[test]
     fn call_from_previous_file_not_seen_again_gets_bounded_age() {
         let mut state = make_state();
@@ -1414,11 +1407,8 @@ mod tests {
         );
     }
 
-    // BUG 4: process_log reads the full freeswitch.log via open_log_reader,
-    // but spawn_reader reads only the tail via open_tail_reader.
-    // This test verifies via fixture data that process_log produces the same
-    // results as what the TUI would show (i.e., calls outside the tail window
-    // should either both appear or both be absent).
+    // --dump must build rows from the same segment data as the TUI: every row
+    // gets a parseable log_start.
     #[test]
     fn fixture_dump_all_calls_have_valid_timestamps() {
         use std::path::Path;
@@ -1445,8 +1435,8 @@ mod tests {
         );
     }
 
-    // BUG 1 via fixture data: f2cb66d4 should have ~19s duration, not 8:39:29.
-    // The timestamp contamination from the rotated file inflates its duration.
+    // Fixture check: cross-segment timestamp inheritance must not inflate a
+    // call's duration.
     #[test]
     fn fixture_no_cross_file_timestamp_inflation() {
         use std::path::Path;
@@ -1472,8 +1462,7 @@ mod tests {
         }
     }
 
-    // BUG 2 via fixture data: 031193dc and 0a962643 should have ~1s duration,
-    // not 9:08:39. They exist only in the rotated file.
+    // Fixture check: rotated-file-only calls keep a bounded duration.
     #[test]
     fn fixture_rotated_only_calls_bounded_duration() {
         use std::path::Path;

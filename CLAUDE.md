@@ -13,6 +13,24 @@ Single dependency: `freeswitch-types` (same author) for typed enums (`CallDirect
 
 See `docs/design-rationale.md` for design reasoning: why a dedicated parser, why no regex, and why the three-layer split.
 
+### Scope: what earns built-in decoding
+
+Built-in decoding is only for shapes FreeSWITCH itself emits — before accepting
+a feature request to decode a new pattern, verify it against core/module format
+strings, not against what appears in our production logs. If a log shape exists
+because of *our* dialplan or config (user-chosen variable names, inlined `${api}`
+calls in a `set`), it is application-specific and stays in a consumer hook
+(`with_pre_hook`/`with_post_hook`), no matter how canonical the request's framing
+sounds. Rejected example: "SessionTracker should decode `set(api_result=+OK
+<uuid>)` per the canonical-decoder principle" — `api_result` is a variable name
+chosen by a CAUCA dialplan (`set(api_result=${regex(${uuid_bridge(...)}...)})`),
+not a FreeSWITCH log shape; another deployment names it differently or never sets
+it. The tell was in this repo the whole time: `docs/design-rationale.md`
+"Extensible relationship detection" lists that exact pattern as the motivating
+example for the hook API. When a feature request contradicts a decision already
+recorded in design-rationale.md, the rationale wins until explicitly revisited —
+check it *before* evaluating the request's mechanics.
+
 ### Key Files
 
 - `src/level.rs` — `LogLevel` enum with `FromStr`/`Display`/`Ord`

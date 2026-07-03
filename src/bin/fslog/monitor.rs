@@ -328,18 +328,30 @@ fn spawn_reader(
     let handle = std::thread::spawn(move || {
         let mut segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = Vec::new();
 
-        if let Ok(files) = discover_log_files(&dir) {
-            if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
-                if let Ok(reader) = open_log_reader(&prev.path) {
-                    let name = prev
-                        .path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
-                    segments.push((name, reader));
+        match discover_log_files(&dir) {
+            Ok(files) => {
+                if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
+                    match open_log_reader(&prev.path) {
+                        Ok(reader) => {
+                            let name = prev
+                                .path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned();
+                            segments.push((name, reader));
+                        }
+                        Err(e) => eprintln!(
+                            "fslog: skipping rotated history {}: open failed: {e}",
+                            prev.path.display()
+                        ),
+                    }
                 }
             }
+            Err(e) => eprintln!(
+                "fslog: skipping rotated history: discovery in {} failed: {e}",
+                dir.display()
+            ),
         }
 
         let tail = match open_full_tail_reader(&path) {
@@ -799,18 +811,30 @@ fn handle_menu_key(state: &mut AppState, code: KeyCode) {
 fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Result<AppState> {
     let mut segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = Vec::new();
 
-    if let Ok(files) = discover_log_files(dir) {
-        if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
-            if let Ok(reader) = open_log_reader(&prev.path) {
-                let name = prev
-                    .path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                segments.push((name, reader));
+    match discover_log_files(dir) {
+        Ok(files) => {
+            if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
+                match open_log_reader(&prev.path) {
+                    Ok(reader) => {
+                        let name = prev
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned();
+                        segments.push((name, reader));
+                    }
+                    Err(e) => eprintln!(
+                        "fslog: skipping rotated history {}: open failed: {e}",
+                        prev.path.display()
+                    ),
+                }
             }
         }
+        Err(e) => eprintln!(
+            "fslog: skipping rotated history: discovery in {} failed: {e}",
+            dir.display()
+        ),
     }
 
     let reader = open_log_reader(path)?;

@@ -128,6 +128,7 @@ impl SessionState {
     }
 
     fn update_from_entry(&mut self, entry: &LogEntry) {
+        let block_has_channel_data = matches!(entry.block, Some(Block::ChannelData { .. }));
         if let Some(Block::ChannelData { fields, variables }) = &entry.block {
             for (name, value) in fields {
                 match name.as_str() {
@@ -158,14 +159,6 @@ impl SessionState {
         }
 
         match &entry.message_kind {
-            MessageKind::Dialplan { detail, .. } => {
-                if let Some(dp) = parse_dialplan_context(detail) {
-                    self.initial_context.get_or_insert(dp.context.clone());
-                    self.dialplan_context = Some(dp.context);
-                    self.dialplan_from = Some(dp.from);
-                    self.dialplan_to = Some(dp.to);
-                }
-            }
             MessageKind::Execute {
                 application,
                 arguments,
@@ -186,20 +179,6 @@ impl SessionState {
                 }
                 _ => {}
             },
-            MessageKind::Variable { name, value } => {
-                let var_name = name.strip_prefix("variable_").unwrap_or(name);
-                self.variables.insert(var_name.to_string(), value.clone());
-            }
-            MessageKind::ChannelField { name, value } => match name.as_str() {
-                "Channel-Name" => self.channel_name = Some(value.clone()),
-                "Channel-State" => self.channel_state = Some(value.clone()),
-                _ => {}
-            },
-            MessageKind::StateChange { detail } => {
-                if let Some(new_state) = parse_state_change(detail) {
-                    self.channel_state = Some(new_state);
-                }
-            }
             MessageKind::ChannelLifecycle { detail } => {
                 if let Some(name) = parse_new_channel(detail) {
                     if self.channel_name.is_none() {
@@ -213,28 +192,22 @@ impl SessionState {
                     self.answered_at = Some(entry.timestamp.clone());
                 }
             }
-            _ => {}
+            kind => self.apply_kind(kind),
         }
 
-        if entry.message.contains("Processing ") && entry.message.contains(" in context ") {
-            if let Some(dp) = parse_processing_line(&entry.message) {
-                self.initial_context.get_or_insert(dp.context.clone());
-                self.initial_destination.get_or_insert(dp.to.clone());
-                self.dialplan_context = Some(dp.context);
-                self.dialplan_from = Some(dp.from);
-                self.dialplan_to = Some(dp.to);
-            }
-        }
+        self.apply_processing(&entry.message);
 
         for attached in &entry.attached {
             let parsed = parse_line(attached);
-            self.update_from_message(parsed.message);
+            self.update_from_message(parsed.message, block_has_channel_data);
         }
     }
 
-    fn update_from_message(&mut self, msg: &str) {
-        let kind = classify_message(msg);
-        match &kind {
+    /// Canonical extraction for message kinds that appear on both primary and
+    /// attached lines. Entry-only kinds (Execute, ChannelLifecycle — the
+    /// latter needs the entry timestamp) stay in `update_from_entry`.
+    fn apply_kind(&mut self, kind: &MessageKind) {
+        match kind {
             MessageKind::Dialplan { detail, .. } => {
                 if let Some(dp) = parse_dialplan_context(detail) {
                     self.initial_context.get_or_insert(dp.context.clone());
@@ -259,6 +232,34 @@ impl SessionState {
             }
             _ => {}
         }
+    }
+
+    /// `Processing <caller>-><dest> in context <ctx>` — emitted by the dialplan
+    /// hunt on both primary and attached lines; anchored on raw text because
+    /// `classify_message` folds it into `Dialplan` with the prefix stripped.
+    fn apply_processing(&mut self, msg: &str) {
+        if msg.contains("Processing ") && msg.contains(" in context ") {
+            if let Some(dp) = parse_processing_line(msg) {
+                self.initial_context.get_or_insert(dp.context.clone());
+                self.initial_destination.get_or_insert(dp.to.clone());
+                self.dialplan_context = Some(dp.context);
+                self.dialplan_from = Some(dp.from);
+                self.dialplan_to = Some(dp.to);
+            }
+        }
+    }
+
+    fn update_from_message(&mut self, msg: &str, block_provides_channel_data: bool) {
+        let kind = classify_message(msg);
+        match &kind {
+            // A ChannelData block already carries these — re-applying the raw
+            // attached lines would clobber reassembled multi-line values with
+            // their opening fragment.
+            MessageKind::Variable { .. } | MessageKind::ChannelField { .. }
+                if block_provides_channel_data => {}
+            kind => self.apply_kind(kind),
+        }
+        self.apply_processing(msg);
     }
 }
 
@@ -1255,7 +1256,10 @@ mod tests {
 
         let state = tracker.sessions().get(UUID1).unwrap();
         assert_eq!(state.dialplan_context.as_deref(), Some("recordings"));
-        assert_eq!(state.dialplan_from.as_deref(), Some("Extension 1263 <1263>"));
+        assert_eq!(
+            state.dialplan_from.as_deref(),
+            Some("Extension 1263 <1263>")
+        );
         assert_eq!(state.dialplan_to.as_deref(), Some("start_recording"));
         assert_eq!(
             state.initial_destination.as_deref(),

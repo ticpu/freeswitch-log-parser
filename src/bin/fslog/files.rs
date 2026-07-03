@@ -256,13 +256,15 @@ impl Iterator for LazyLogReader {
 struct TailLines {
     reader: BufReader<fs::File>,
     buf: String,
+    path: PathBuf,
 }
 
 impl TailLines {
-    fn new(file: fs::File) -> Self {
+    fn new(file: fs::File, path: PathBuf) -> Self {
         TailLines {
             reader: BufReader::new(file),
             buf: String::new(),
+            path,
         }
     }
 }
@@ -281,7 +283,13 @@ impl Iterator for TailLines {
                     let line = self.buf.trim_end_matches(['\n', '\r']).to_string();
                     return Some(line);
                 }
-                Err(_) => return None,
+                Err(e) => {
+                    eprintln!(
+                        "fslog: tail read error on {}, stopping: {e}",
+                        self.path.display()
+                    );
+                    return None;
+                }
             }
         }
     }
@@ -328,7 +336,7 @@ pub fn open_tail_reader(
 
     let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(file_len))?;
-    let tail = TailLines::new(file);
+    let tail = TailLines::new(file, path.to_path_buf());
 
     Ok(Box::new(context.into_iter().chain(tail)))
 }
@@ -343,7 +351,7 @@ pub fn open_full_tail_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = 
 
     let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(end_pos))?;
-    let tail = TailLines::new(file);
+    let tail = TailLines::new(file, path.to_path_buf());
 
     Ok(Box::new(lines.chain(tail)))
 }

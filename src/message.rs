@@ -22,6 +22,7 @@ pub enum SipInviteDirection {
 }
 
 /// Source of a DTMF event log line.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DtmfSource {
     /// RFC2833 DTMF decoded at the RTP layer (`switch_rtp.c`).

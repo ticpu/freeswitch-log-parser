@@ -98,13 +98,16 @@ register a hook:
 
 ```rust
 let tracker = SessionTracker::new(stream)
-    .with_relationship_hook(|entry, state| {
+    .with_post_hook(|entry, state| {
         // Check entry.message_kind, state.variables, etc.
         // Set state.other_leg_uuid if pattern matches
     });
 ```
 
-See `examples/custom_relationship.rs` for a complete example.
+A pre-hook (`with_pre_hook`) runs before built-in detection, so state it
+seeds is visible to the built-in patterns of the same entry.
+
+See `examples/custom_hooks.rs` for a complete example.
 
 ## Multi-file input with segment tracking
 

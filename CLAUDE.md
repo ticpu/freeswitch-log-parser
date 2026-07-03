@@ -160,7 +160,7 @@ InSdp:
 
 Multi-line variable values (e.g., embedded SDP) are reassembled: parser tracks open brackets and concatenates continuation lines with `\n` separators. Raw lines remain in `attached` for consumers needing the original format.
 
-Every `LogEntry` carries both `block: Option<Block>` (typed, parsed) and `attached: Vec<String>` (raw continuation lines).
+Every `LogEntry` carries both `block: Option<Block>` (typed, parsed) and `attached: AttachedLines` (raw continuation lines).
 
 ### Continuation grouping
 
@@ -246,6 +246,6 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`
 - NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers)
 - New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

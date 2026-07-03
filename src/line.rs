@@ -13,8 +13,8 @@ pub(crate) const UUID_PREFIX_LEN: usize = UUID_LEN + 1;
 ///
 /// FreeSWITCH's `switch_log_printf` emits five distinct line shapes depending
 /// on whether a session UUID is active, whether the line has a timestamp, and
-/// whether a buffer collision truncated the output. See `docs/design-rationale.md`
-/// for the full anatomy.
+/// whether a buffer collision truncated the output. The full line-shape
+/// anatomy is documented in the repository's CLAUDE.md.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {

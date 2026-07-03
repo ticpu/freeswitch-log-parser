@@ -2,7 +2,8 @@
 //!
 //! Handles the full complexity of `mod_logfile` output: five distinct line
 //! formats, multi-line CHANNEL_DATA and SDP dumps, truncated buffer collisions,
-//! and per-session state tracking — all with zero dependencies and no regex.
+//! and per-session state tracking — no regex, a single dependency
+//! (`freeswitch-types`).
 //!
 //! # Architecture
 //!
@@ -13,10 +14,12 @@
 //!   classifies messages, and detects multi-line blocks
 //! - **Layer 3** ([`SessionTracker`]) — per-UUID state machine that propagates
 //!   dialplan context, channel state, and variables across entries; extensible
-//!   via [`SessionTracker::with_relationship_hook`] for custom leg detection
+//!   via [`SessionTracker::with_pre_hook`] and [`SessionTracker::with_post_hook`]
+//!   for custom leg detection
 //!
-//! See `docs/design-rationale.md` in the repository for the full story on format
-//! discovery, parsing strategy, and why each layer exists.
+//! See `docs/design-rationale.md` in the repository for the parsing strategy
+//! and why each layer exists; the line-format anatomy lives in the repository's
+//! CLAUDE.md.
 //!
 //! # Examples
 //!

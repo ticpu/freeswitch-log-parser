@@ -730,6 +730,35 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
     }
 }
 
+/// Clear a centered popup area and render a bordered selection list in it.
+/// Height follows the item count; both dimensions are clamped to the frame.
+fn render_popup_list(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    title: &str,
+    items: Vec<ListItem>,
+    selected: usize,
+    width: u16,
+) {
+    let height = (items.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let width = width.min(area.width.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+    f.render_widget(Clear, popup);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(title.to_string())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut list_state = ratatui::widgets::ListState::default();
+    list_state.select(Some(selected));
+    f.render_stateful_widget(list, popup, &mut list_state);
+}
+
 fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect, selected: usize) {
     let row = match state.calls.get(state.selected_index()) {
         Some(r) => r,
@@ -746,23 +775,7 @@ fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect, selec
         ListItem::new(format!("A-leg: {a_short}...")),
         ListItem::new(format!("B-leg: {b_short}...")),
     ];
-    let menu_height = 4;
-    let menu_width = 30.min(area.width.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(menu_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(menu_height)) / 2;
-    let menu_area = Rect::new(x, y, menu_width, menu_height);
-    f.render_widget(Clear, menu_area);
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" Select Leg ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    let mut list_state = ratatui::widgets::ListState::default();
-    list_state.select(Some(selected));
-    f.render_stateful_widget(list, menu_area, &mut list_state);
+    render_popup_list(f, area, " Select Leg ", items, selected, 30);
 }
 
 fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect, uuid: &str, selected: usize) {
@@ -774,27 +787,7 @@ fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect, uuid: &str,
     for tool in &state.tools {
         items.push(ListItem::new(format!("{}  ({})", tool.name, tool.command)));
     }
-
-    let menu_height = (items.len() as u16 + 2).min(area.height.saturating_sub(4));
-    let menu_width = 60.min(area.width.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(menu_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(menu_height)) / 2;
-    let menu_area = Rect::new(x, y, menu_width, menu_height);
-
-    f.render_widget(Clear, menu_area);
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" Actions ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-    let mut list_state = ratatui::widgets::ListState::default();
-    list_state.select(Some(selected));
-    f.render_stateful_widget(list, menu_area, &mut list_state);
+    render_popup_list(f, area, " Actions ", items, selected, 60);
 }
 
 fn execute_action(state: &AppState, uuid: &str, action_index: usize) -> io::Result<()> {

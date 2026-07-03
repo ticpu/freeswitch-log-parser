@@ -86,36 +86,24 @@ pub fn normalize_date(input: &str) -> String {
 }
 
 pub fn normalize_date_from(input: &str) -> String {
-    let normalized = normalize_date(input);
-    pad_date_min(&normalized)
+    pad_date(
+        &normalize_date(input),
+        &["0000", "01", "01", "00", "00", "00"],
+    )
 }
 
 pub fn normalize_date_until(input: &str) -> String {
-    let normalized = normalize_date(input);
-    pad_date_max(&normalized)
+    pad_date(
+        &normalize_date(input),
+        &["9999", "12", "31", "23", "59", "59"],
+    )
 }
 
-fn pad_date_min(s: &str) -> String {
-    // YYYY-MM-DD-HH-MM-SS  (19 chars)
-    // Pad with minimum values
+/// Pad a partial `YYYY-MM-DD-HH-MM-SS` date with per-component defaults.
+fn pad_date(s: &str, defaults: &[&str; 6]) -> String {
     let parts: Vec<&str> = s.split('-').collect();
-    let defaults_min = ["0000", "01", "01", "00", "00", "00"];
     let mut result = Vec::new();
-    for (i, default) in defaults_min.iter().enumerate() {
-        if i < parts.len() && !parts[i].is_empty() {
-            result.push(parts[i].to_string());
-        } else {
-            result.push(default.to_string());
-        }
-    }
-    result.join("-")
-}
-
-fn pad_date_max(s: &str) -> String {
-    let parts: Vec<&str> = s.split('-').collect();
-    let defaults_max = ["9999", "12", "31", "23", "59", "59"];
-    let mut result = Vec::new();
-    for (i, default) in defaults_max.iter().enumerate() {
+    for (i, default) in defaults.iter().enumerate() {
         if i < parts.len() && !parts[i].is_empty() {
             result.push(parts[i].to_string());
         } else {

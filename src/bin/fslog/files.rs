@@ -313,7 +313,14 @@ fn read_tail_context(path: &Path, n_lines: usize) -> io::Result<(Vec<String>, u6
     }
 
     let reader = BufReader::new(file);
-    let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+    let mut lines = Vec::new();
+    for decoded in read_log_lines(reader) {
+        let line = decoded?;
+        if let Utf8Decode::InvalidBytes { at } = line.decode {
+            eprintln!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
+        }
+        lines.push(line.text);
+    }
 
     if seek_pos > 0 && !lines.is_empty() {
         lines.remove(0);

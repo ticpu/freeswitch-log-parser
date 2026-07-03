@@ -154,6 +154,14 @@ mod tests {
     }
 
     #[test]
+    fn harvests_uppercase_hex_uuid() {
+        let mut set = HashSet::new();
+        let peer = "AAAABBBB-2222-3333-4444-5555CCCCDDDD";
+        extract_peer_uuids(&var_entry("bridge_uuid", peer), &mut set);
+        assert!(set.contains(peer));
+    }
+
+    #[test]
     fn ignores_non_peer_var() {
         let mut set = HashSet::new();
         let other = "11111111-2222-3333-4444-555555555555";

@@ -237,7 +237,13 @@ impl Iterator for LazyLogReader {
 
     fn next(&mut self) -> Option<String> {
         if self.inner.is_none() {
-            self.inner = Some(open_log_reader(&self.path).ok()?);
+            match open_log_reader(&self.path) {
+                Ok(reader) => self.inner = Some(reader),
+                Err(e) => {
+                    eprintln!("fslog: skipping {}: open failed: {e}", self.path.display());
+                    return None;
+                }
+            }
         }
         let result = self.inner.as_mut()?.next();
         if result.is_none() {

@@ -97,14 +97,24 @@ impl ContextFilter {
     }
 }
 
+/// Which overlay owns the keyboard. The action menu always has a target, and
+/// the leg picker and menu cannot both be open — illegal combinations are
+/// unrepresentable.
+enum UiMode {
+    Table,
+    LegPicker {
+        selected: usize,
+    },
+    Menu {
+        target_uuid: String,
+        selected: usize,
+    },
+}
+
 struct AppState {
     calls: Vec<CallRow>,
     selected_uuid: Option<String>,
-    show_menu: bool,
-    show_leg_picker: bool,
-    leg_picker_selected: usize,
-    target_uuid: Option<String>,
-    menu_selected: usize,
+    ui_mode: UiMode,
     tools: Vec<Tool>,
     linger: Duration,
     should_quit: bool,
@@ -128,11 +138,7 @@ impl AppState {
         AppState {
             calls: Vec::new(),
             selected_uuid: None,
-            show_menu: false,
-            show_leg_picker: false,
-            leg_picker_selected: 0,
-            target_uuid: None,
-            menu_selected: 0,
+            ui_mode: UiMode::Table,
             tools,
             linger,
             should_quit: false,
@@ -664,14 +670,17 @@ fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableSt
 
     f.render_stateful_widget(table, chunks[1], table_state);
 
-    if state.show_leg_picker {
-        render_leg_picker(f, state, area);
-    } else if state.show_menu {
-        render_menu(f, state, area);
+    match &state.ui_mode {
+        UiMode::Table => {}
+        UiMode::LegPicker { selected } => render_leg_picker(f, state, area, *selected),
+        UiMode::Menu {
+            target_uuid,
+            selected,
+        } => render_menu(f, state, area, target_uuid, *selected),
     }
 }
 
-fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
+fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect, selected: usize) {
     let row = match state.calls.get(state.selected_index()) {
         Some(r) => r,
         None => return,
@@ -697,16 +706,11 @@ fn render_leg_picker(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut list_state = ratatui::widgets::ListState::default();
-    list_state.select(Some(state.leg_picker_selected));
+    list_state.select(Some(selected));
     f.render_stateful_widget(list, menu_area, &mut list_state);
 }
 
-fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
-    let uuid = match &state.target_uuid {
-        Some(u) => u,
-        None => return,
-    };
-
+fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect, uuid: &str, selected: usize) {
     let uuid_short = short8(uuid);
     let mut items: Vec<ListItem> = vec![
         ListItem::new(format!("search  (fslog search --uuid {uuid_short}...)")),
@@ -734,17 +738,12 @@ fn render_menu(f: &mut ratatui::Frame, state: &AppState, area: Rect) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut list_state = ratatui::widgets::ListState::default();
-    list_state.select(Some(state.menu_selected));
+    list_state.select(Some(selected));
     f.render_stateful_widget(list, menu_area, &mut list_state);
 }
 
-fn execute_action(state: &AppState, action_index: usize) -> io::Result<()> {
+fn execute_action(state: &AppState, uuid: &str, action_index: usize) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
-
-    let uuid = match &state.target_uuid {
-        Some(u) => u.as_str(),
-        None => return Ok(()),
-    };
 
     let from_date = state
         .calls
@@ -788,12 +787,10 @@ fn execute_action(state: &AppState, action_index: usize) -> io::Result<()> {
 }
 
 fn handle_key(state: &mut AppState, code: KeyCode) {
-    if state.show_leg_picker {
-        handle_leg_picker_key(state, code);
-    } else if state.show_menu {
-        handle_menu_key(state, code);
-    } else {
-        handle_table_key(state, code);
+    match state.ui_mode {
+        UiMode::Table => handle_table_key(state, code),
+        UiMode::LegPicker { .. } => handle_leg_picker_key(state, code),
+        UiMode::Menu { .. } => handle_menu_key(state, code),
     }
 }
 
@@ -824,14 +821,14 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
         }
         KeyCode::Enter => {
             if let Some(row) = state.calls.get(state.selected_index()) {
-                if row.other_leg_uuid.is_some() {
-                    state.show_leg_picker = true;
-                    state.leg_picker_selected = 0;
+                state.ui_mode = if row.other_leg_uuid.is_some() {
+                    UiMode::LegPicker { selected: 0 }
                 } else {
-                    state.target_uuid = Some(row.uuid.clone());
-                    state.show_menu = true;
-                    state.menu_selected = 0;
-                }
+                    UiMode::Menu {
+                        target_uuid: row.uuid.clone(),
+                        selected: 0,
+                    }
+                };
             }
         }
         _ => {}
@@ -839,27 +836,32 @@ fn handle_table_key(state: &mut AppState, code: KeyCode) {
 }
 
 fn handle_leg_picker_key(state: &mut AppState, code: KeyCode) {
+    let UiMode::LegPicker { selected } = state.ui_mode else {
+        return;
+    };
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => state.show_leg_picker = false,
-        KeyCode::Up | KeyCode::Char('k') if state.leg_picker_selected > 0 => {
-            state.leg_picker_selected -= 1;
+        KeyCode::Esc | KeyCode::Char('q') => state.ui_mode = UiMode::Table,
+        KeyCode::Up | KeyCode::Char('k') if selected > 0 => {
+            state.ui_mode = UiMode::LegPicker {
+                selected: selected - 1,
+            };
         }
-        KeyCode::Down | KeyCode::Char('j') if state.leg_picker_selected == 0 => {
-            state.leg_picker_selected = 1;
+        KeyCode::Down | KeyCode::Char('j') if selected == 0 => {
+            state.ui_mode = UiMode::LegPicker { selected: 1 };
         }
         KeyCode::Enter => {
             if let Some(row) = state.calls.get(state.selected_index()) {
-                let uuid = if state.leg_picker_selected == 0 {
+                let uuid = if selected == 0 {
                     row.uuid.clone()
                 } else {
                     row.other_leg_uuid
                         .clone()
                         .unwrap_or_else(|| row.uuid.clone())
                 };
-                state.target_uuid = Some(uuid);
-                state.show_leg_picker = false;
-                state.show_menu = true;
-                state.menu_selected = 0;
+                state.ui_mode = UiMode::Menu {
+                    target_uuid: uuid,
+                    selected: 0,
+                };
             }
         }
         _ => {}
@@ -869,19 +871,22 @@ fn handle_leg_picker_key(state: &mut AppState, code: KeyCode) {
 fn handle_menu_key(state: &mut AppState, code: KeyCode) {
     let item_count = 2 + state.tools.len();
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => {
-            state.show_menu = false;
-            state.target_uuid = None;
+        KeyCode::Esc | KeyCode::Char('q') => state.ui_mode = UiMode::Table,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let UiMode::Menu { selected, .. } = &mut state.ui_mode {
+                if *selected > 0 {
+                    *selected -= 1;
+                }
+            }
         }
-        KeyCode::Up | KeyCode::Char('k') if state.menu_selected > 0 => {
-            state.menu_selected -= 1;
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let UiMode::Menu { selected, .. } = &mut state.ui_mode {
+                if *selected + 1 < item_count {
+                    *selected += 1;
+                }
+            }
         }
-        KeyCode::Down | KeyCode::Char('j') if state.menu_selected + 1 < item_count => {
-            state.menu_selected += 1;
-        }
-        KeyCode::Enter => {
-            // handled in the event loop since we need terminal access
-        }
+        // Enter is handled in the event loop, which owns the terminal.
         _ => {}
     }
 }
@@ -992,9 +997,20 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
                         continue;
                     }
 
-                    if state.show_menu && !state.show_leg_picker && key.code == KeyCode::Enter {
-                        state.show_menu = false;
-                        execute_action(&state, state.menu_selected)?;
+                    if key.code == KeyCode::Enter {
+                        if let UiMode::Menu {
+                            target_uuid,
+                            selected,
+                        } = &state.ui_mode
+                        {
+                            let uuid = target_uuid.clone();
+                            let selected = *selected;
+                            state.ui_mode = UiMode::Table;
+                            // exec() replaces the process on success; an error
+                            // return means spawn failed and exits the loop.
+                            execute_action(&state, &uuid, selected)?;
+                            continue;
+                        }
                     }
 
                     handle_key(&mut state, key.code);

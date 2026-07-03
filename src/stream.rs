@@ -2024,6 +2024,77 @@ mod tests {
         assert_accounting(&stream);
     }
 
+    // --- Multi-byte content straddling the 80-byte warning truncation ---
+
+    #[test]
+    fn multibyte_at_warning_truncation_unrecognized_codec() {
+        // 'é' occupies bytes 79-80 of the message: truncating at 80 splits it.
+        let msg = format!(
+            "Audio Codec Compare {}é tail beyond eighty bytes",
+            "x".repeat(59)
+        );
+        assert!(!msg.is_char_boundary(80));
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1]/[PCMU:0:8000:20:64000:1]",
+            ),
+            full_line(UUID1, TS1, &msg),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unrecognized codec negotiation")),
+            "expected codec warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
+    #[test]
+    fn multibyte_at_warning_truncation_channel_data() {
+        let bare = format!("{}é tail beyond eighty bytes with no field separator", "x".repeat(79));
+        assert!(!bare.is_char_boundary(80));
+        let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), bare];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unparseable CHANNEL_DATA")),
+            "expected unparseable warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
+    #[test]
+    fn multibyte_at_warning_truncation_codec_continuation() {
+        let cont = format!("{}é tail beyond eighty bytes", "x".repeat(79));
+        assert!(!cont.is_char_boundary(80));
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1]/[PCMU:0:8000:20:64000:1]",
+            ),
+            format!("{UUID1} {cont}"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unexpected codec negotiation")),
+            "expected codec continuation warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
     #[test]
     fn system_line_with_embedded_uuid_gets_entry_uuid() {
         // System lines (Format B) where switch_cpp.cpp logs the UUID at the

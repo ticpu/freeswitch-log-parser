@@ -729,4 +729,62 @@ mod tests {
         let parsed = parse_line("   \t  ");
         assert_eq!(parsed.kind, LineKind::Empty);
     }
+
+    // --- Multi-byte content at fixed header offsets (must not panic) ---
+
+    #[test]
+    fn multibyte_straddling_timestamp_end_not_system() {
+        // 'é' occupies bytes 25-26: slicing the timestamp at 26 splits it.
+        let line = "2025-01-15 10:30:45.12345é more content following here";
+        assert!(!line.is_char_boundary(26));
+        let parsed = parse_line(line);
+        assert_eq!(parsed.kind, LineKind::BareContinuation);
+        assert_eq!(parsed.timestamp, None);
+        assert_eq!(parsed.message, line);
+    }
+
+    #[test]
+    fn multibyte_after_timestamp_not_system() {
+        // 'é' occupies bytes 26-27: slicing the message start at 27 splits it.
+        let line = "2025-01-15 10:30:45.123456é more content following here";
+        assert!(!line.is_char_boundary(27));
+        let parsed = parse_line(line);
+        assert_eq!(parsed.kind, LineKind::BareContinuation);
+        assert_eq!(parsed.timestamp, None);
+        assert_eq!(parsed.message, line);
+    }
+
+    #[test]
+    fn multibyte_after_uuid_timestamp_is_continuation() {
+        let line = format!("{UUID1} 2025-01-15 10:30:45.123456é more content");
+        let parsed = parse_line(&line);
+        assert_eq!(parsed.kind, LineKind::UuidContinuation);
+        assert_eq!(parsed.uuid, Some(UUID1));
+        assert_eq!(parsed.timestamp, None);
+        assert_eq!(parsed.message, "2025-01-15 10:30:45.123456é more content");
+    }
+
+    #[test]
+    fn multibyte_after_idle_pct_degrades() {
+        // 'é' where the "% " separator's trailing space should be.
+        let line = "2025-01-15 10:30:45.123456 9%é[DEBUG] x";
+        let parsed = parse_line(line);
+        assert_eq!(parsed.kind, LineKind::System);
+        assert_eq!(parsed.timestamp, Some("2025-01-15 10:30:45.123456"));
+        assert_eq!(parsed.idle_pct, None);
+        assert_eq!(parsed.level, None);
+    }
+
+    #[test]
+    fn multibyte_after_level_bracket_degrades() {
+        // 'é' where the "] " separator's trailing space should be.
+        let line = "2025-01-15 10:30:45.123456 95.97% [DEBUG]éxx";
+        let parsed = parse_line(line);
+        assert_eq!(parsed.kind, LineKind::System);
+        assert_eq!(parsed.timestamp, Some("2025-01-15 10:30:45.123456"));
+        assert_eq!(parsed.idle_pct, Some("95.97%"));
+        assert_eq!(parsed.level, Some(LogLevel::Debug));
+        assert_eq!(parsed.source, None);
+        assert_eq!(parsed.message, "");
+    }
 }

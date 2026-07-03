@@ -564,13 +564,28 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             }
         }
         if let Some((old, new)) = &changes.other_leg_uuid {
-            if let Some(old_leg) = old {
-                self.by_other_leg.remove(old_leg);
-            }
-            if let Some(new_leg) = new {
-                self.by_other_leg.insert(new_leg.clone(), uuid.to_string());
+            match new {
+                Some(new_leg) => self.index_other_leg(uuid, old.clone(), new_leg),
+                None => {
+                    if let Some(old_leg) = old {
+                        self.by_other_leg.remove(old_leg);
+                    }
+                }
             }
         }
+    }
+
+    /// Record `uuid`'s `other_leg_uuid` transition in `by_other_leg`,
+    /// removing the superseded key so a stale entry cannot mislink a later
+    /// `New Channel` back-link. Every write to the index goes through here.
+    fn index_other_leg(&mut self, uuid: &str, old_leg: Option<String>, new_leg: &str) {
+        if let Some(old) = old_leg {
+            if old != new_leg {
+                self.by_other_leg.remove(&old);
+            }
+        }
+        self.by_other_leg
+            .insert(new_leg.to_string(), uuid.to_string());
     }
 
     /// Cross-session leg linking. Called after `update_from_entry` so per-session
@@ -585,18 +600,19 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                     .get(&a_uuid)
                     .and_then(|s| s.pending_bridge_target.clone());
 
+                let mut a_old_leg = None;
                 if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                    a_state.other_leg_uuid = Some(peer_uuid.clone());
+                    a_old_leg = a_state.other_leg_uuid.replace(peer_uuid.clone());
                     a_state.pending_bridge_target = None;
                 }
-                self.by_other_leg.insert(peer_uuid.clone(), a_uuid.clone());
+                self.index_other_leg(&a_uuid, a_old_leg, &peer_uuid);
                 if let Some(old_target) = a_old_pending {
                     self.by_pending_target.remove(&old_target);
                 }
 
                 let b_state = self.sessions.entry(peer_uuid.clone()).or_default();
-                b_state.other_leg_uuid = Some(a_uuid.clone());
-                self.by_other_leg.insert(a_uuid, peer_uuid);
+                let b_old_leg = b_state.other_leg_uuid.replace(a_uuid.clone());
+                self.index_other_leg(&peer_uuid, b_old_leg, &a_uuid);
             } else if let Some(chan) = parse_originate_channel(&entry.message) {
                 // Fallback for FS builds without `Peer UUID:` suffix (e.g. 1.10.5-dev):
                 // link via unique non-terminated b-leg session whose channel_name
@@ -626,16 +642,18 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                         .get(&a_uuid)
                         .and_then(|s| s.pending_bridge_target.clone());
 
+                    let mut a_old_leg = None;
                     if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                        a_state.other_leg_uuid = Some(b_uuid.clone());
+                        a_old_leg = a_state.other_leg_uuid.replace(b_uuid.clone());
                         a_state.pending_bridge_target = None;
                     }
+                    let mut b_old_leg = None;
                     if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
-                        b_state.other_leg_uuid = Some(a_uuid.clone());
+                        b_old_leg = b_state.other_leg_uuid.replace(a_uuid.clone());
                     }
 
-                    self.by_other_leg.insert(b_uuid.clone(), a_uuid.clone());
-                    self.by_other_leg.insert(a_uuid, b_uuid);
+                    self.index_other_leg(&a_uuid, a_old_leg, &b_uuid);
+                    self.index_other_leg(&b_uuid, b_old_leg, &a_uuid);
                     if let Some(old_target) = a_old_pending {
                         self.by_pending_target.remove(&old_target);
                     }
@@ -664,16 +682,18 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                         .get(&a_uuid)
                         .and_then(|s| s.pending_bridge_target.clone());
 
+                    let mut a_old_leg = None;
                     if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                        a_state.other_leg_uuid = Some(b_uuid.clone());
+                        a_old_leg = a_state.other_leg_uuid.replace(b_uuid.clone());
                         a_state.pending_bridge_target = None;
                     }
+                    let mut b_old_leg = None;
                     if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
-                        b_state.other_leg_uuid = Some(a_uuid.clone());
+                        b_old_leg = b_state.other_leg_uuid.replace(a_uuid.clone());
                     }
 
-                    self.by_other_leg.insert(b_uuid.clone(), a_uuid.clone());
-                    self.by_other_leg.insert(a_uuid, b_uuid);
+                    self.index_other_leg(&a_uuid, a_old_leg, &b_uuid);
+                    self.index_other_leg(&b_uuid, b_old_leg, &a_uuid);
                     if let Some(old_target) = a_old_pending {
                         self.by_pending_target.remove(&old_target);
                     }

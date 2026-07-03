@@ -119,6 +119,32 @@ struct AppState {
 }
 
 impl AppState {
+    fn new(
+        dir: PathBuf,
+        context_filter: ContextFilter,
+        tools: Vec<Tool>,
+        linger: Duration,
+    ) -> Self {
+        AppState {
+            calls: Vec::new(),
+            selected_uuid: None,
+            show_menu: false,
+            show_leg_picker: false,
+            leg_picker_selected: 0,
+            target_uuid: None,
+            menu_selected: 0,
+            tools,
+            linger,
+            should_quit: false,
+            dir,
+            page_size: 20,
+            context_filter,
+            filtered_uuids: HashSet::new(),
+            latest_timestamp: String::new(),
+            remove_tx: None,
+        }
+    }
+
     fn selected_index(&self) -> usize {
         match &self.selected_uuid {
             Some(uuid) => self.calls.iter().position(|r| r.uuid == *uuid).unwrap_or(0),
@@ -867,24 +893,12 @@ fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Re
     let stream = LogStream::new(chain);
     let mut tracker = SessionTracker::new(stream);
 
-    let mut state = AppState {
-        calls: Vec::new(),
-        selected_uuid: None,
-        show_menu: false,
-        show_leg_picker: false,
-        leg_picker_selected: 0,
-        target_uuid: None,
-        menu_selected: 0,
-        tools: Vec::new(),
-        linger: Duration::from_secs(3600),
-        should_quit: false,
-        dir: dir.to_path_buf(),
-        page_size: 20,
+    let mut state = AppState::new(
+        dir.to_path_buf(),
         context_filter,
-        filtered_uuids: HashSet::new(),
-        latest_timestamp: String::new(),
-        remove_tx: None,
-    };
+        Vec::new(),
+        Duration::from_secs(3600),
+    );
 
     while let Some(enriched) = tracker.next() {
         if let Some(msg) = build_update(&enriched, tracker.sessions()) {
@@ -944,24 +958,13 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
         .map(ContextFilter::parse)
         .unwrap_or(ContextFilter::None);
 
-    let mut state = AppState {
-        calls: Vec::new(),
-        selected_uuid: None,
-        show_menu: false,
-        show_leg_picker: false,
-        leg_picker_selected: 0,
-        target_uuid: None,
-        menu_selected: 0,
-        tools: cfg.tools,
-        linger: Duration::from_secs(cfg.monitor.hangup_linger_seconds),
-        should_quit: false,
-        dir: dir.to_path_buf(),
-        page_size: 20,
+    let mut state = AppState::new(
+        dir.to_path_buf(),
         context_filter,
-        filtered_uuids: HashSet::new(),
-        latest_timestamp: String::new(),
-        remove_tx: Some(remove_tx),
-    };
+        cfg.tools,
+        Duration::from_secs(cfg.monitor.hangup_linger_seconds),
+    );
+    state.remove_tx = Some(remove_tx);
 
     let mut table_state = TableState::default();
 
@@ -1148,24 +1151,12 @@ mod tests {
     }
 
     fn make_state() -> AppState {
-        AppState {
-            calls: Vec::new(),
-            selected_uuid: None,
-            show_menu: false,
-            show_leg_picker: false,
-            leg_picker_selected: 0,
-            target_uuid: None,
-            menu_selected: 0,
-            tools: Vec::new(),
-            linger: Duration::from_secs(3600),
-            should_quit: false,
-            dir: PathBuf::from("."),
-            page_size: 20,
-            context_filter: ContextFilter::None,
-            filtered_uuids: HashSet::new(),
-            latest_timestamp: String::new(),
-            remove_tx: None,
-        }
+        AppState::new(
+            PathBuf::from("."),
+            ContextFilter::None,
+            Vec::new(),
+            Duration::from_secs(3600),
+        )
     }
 
     #[test]

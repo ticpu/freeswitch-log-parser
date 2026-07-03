@@ -1,10 +1,9 @@
-use std::io::{self, BufRead};
+use std::io;
 
-use freeswitch_log_parser::{LogStream, MessageKind, SessionTracker};
+use freeswitch_log_parser::{read_log_lines, LogStream, MessageKind, SessionTracker};
 
 fn main() {
-    let stdin = io::stdin();
-    let lines = stdin.lock().lines().map(|l| l.expect("read error"));
+    let lines = read_log_lines(io::stdin().lock()).map(|d| d.expect("read error").text);
     let stream = LogStream::new(lines);
 
     let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {

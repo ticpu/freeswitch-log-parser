@@ -208,7 +208,7 @@ pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String
 /// panicking. mod_logfile's 2 KiB buffer truncation can chop a multi-byte
 /// codepoint mid-character; that benign case is recovered silently. A byte that
 /// can't be part of any UTF-8 sequence is genuine corruption — warn, don't hide.
-fn lossy_line_iter(reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = String>> {
+pub fn lossy_line_iter(reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = String>> {
     Box::new(read_log_lines(reader).map_while(|decoded| match decoded {
         Ok(line) => {
             if let Utf8Decode::InvalidBytes { at } = line.decode {

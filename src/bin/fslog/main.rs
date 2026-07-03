@@ -8,7 +8,7 @@ mod monitor;
 mod output;
 mod related;
 
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -22,8 +22,8 @@ use freeswitch_log_parser::{
 use context::Emitter;
 
 use files::{
-    discover_log_files, filter_files_by_date, format_size, lazy_log_reader, normalize_date_from,
-    normalize_date_until, open_log_reader, open_tail_reader,
+    discover_log_files, filter_files_by_date, format_size, lazy_log_reader, lossy_line_iter,
+    normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig};
 
@@ -516,17 +516,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
     };
 
     let lines: Box<dyn Iterator<Item = String>> = match args.file.as_deref() {
-        Some("-") => {
-            let stdin = io::stdin();
-            Box::new(
-                stdin
-                    .lock()
-                    .lines()
-                    .map(|l| l.expect("read error"))
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-            )
-        }
+        Some("-") => lossy_line_iter(Box::new(io::stdin().lock())),
         Some(path) => {
             let p = PathBuf::from(path);
             let p = if p.is_absolute() || p.exists() {

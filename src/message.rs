@@ -764,9 +764,6 @@ fn parse_set_or_export(msg: &str) -> Option<MessageKind> {
         });
     }
 
-    // EXPORT with simple [name=value] (no ]=[ separator)
-    // e.g. "EXPORT (export_vars) [originate_timeout=3600]"
-    // This doesn't exist in the samples but handle it for robustness
     None
 }
 

@@ -1,31 +1,12 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::path::Path;
-
-fn lossy_lines<R: BufRead + 'static>(mut reader: R) -> Box<dyn Iterator<Item = String>> {
-    Box::new(std::iter::from_fn(move || {
-        let mut buf = Vec::new();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => None,
-            Ok(_) => {
-                if buf.last() == Some(&b'\n') {
-                    buf.pop();
-                    if buf.last() == Some(&b'\r') {
-                        buf.pop();
-                    }
-                }
-                Some(String::from_utf8_lossy(&buf).into_owned())
-            }
-            Err(_) => None,
-        }
-    }))
-}
 
 use std::collections::HashMap;
 
 use freeswitch_log_parser::{
-    classify_message, parse_line, Block, LineKind, LogEntry, LogStream, MessageKind,
-    SessionTracker, UnclassifiedTracking,
+    classify_message, parse_line, read_log_lines, truncate_at_char_boundary, Block, LineKind,
+    LogEntry, LogStream, MessageKind, SessionTracker, UnclassifiedTracking,
 };
 use xz2::read::XzDecoder;
 
@@ -41,7 +22,7 @@ fn lines_from_file(path: &Path) -> Box<dyn Iterator<Item = String>> {
         Box::new(file)
     };
 
-    lossy_lines(BufReader::new(reader))
+    Box::new(read_log_lines(BufReader::new(reader)).map(|d| d.expect("read fixture").text))
 }
 
 fn is_log_file(path: &Path) -> bool {
@@ -189,10 +170,6 @@ fn sdp_has_typed_block() {
     assert_no_violations(violations, "SDP entries missing typed block");
 }
 
-fn message_kind_label(kind: &MessageKind) -> &'static str {
-    kind.label()
-}
-
 #[test]
 fn channel_data_bare_continuations_accumulated() {
     // Production pattern: mod_logfile stops prepending the UUID mid-way through
@@ -283,7 +260,7 @@ fn comprehensive_parse_report() {
                 total_attached += entry.attached.len() as u64;
 
                 *entry_kind_counts
-                    .entry(message_kind_label(&entry.message_kind))
+                    .entry(entry.message_kind.label())
                     .or_default() += 1;
                 *entry_line_kind_counts
                     .entry(format!("{}", entry.kind))
@@ -305,12 +282,12 @@ fn comprehensive_parse_report() {
                 for attached_line in &entry.attached {
                     let parsed = parse_line(attached_line);
                     let msg_kind = classify_message(parsed.message);
-                    let label = message_kind_label(&msg_kind);
+                    let label = msg_kind.label();
                     *attached_kind_counts.entry(label).or_default() += 1;
 
                     if label == "general" && general_samples.len() < 20 {
                         let sample = if parsed.message.len() > 120 {
-                            format!("{}...", &parsed.message[..120])
+                            format!("{}...", truncate_at_char_boundary(parsed.message, 120))
                         } else {
                             parsed.message.to_string()
                         };
@@ -319,11 +296,9 @@ fn comprehensive_parse_report() {
                 }
 
                 // Also check if the entry itself is general
-                if message_kind_label(&entry.message_kind) == "general"
-                    && general_samples.len() < 20
-                {
+                if entry.message_kind.label() == "general" && general_samples.len() < 20 {
                     let sample = if entry.message.len() > 120 {
-                        format!("{}...", &entry.message[..120])
+                        format!("{}...", truncate_at_char_boundary(&entry.message, 120))
                     } else {
                         entry.message.clone()
                     };
@@ -373,7 +348,7 @@ fn comprehensive_parse_report() {
                     .as_ref()
                     .map(|d| {
                         if d.len() > 100 {
-                            format!(" | {}...", &d[..100])
+                            format!(" | {}...", truncate_at_char_boundary(d, 100))
                         } else {
                             format!(" | {d}")
                         }

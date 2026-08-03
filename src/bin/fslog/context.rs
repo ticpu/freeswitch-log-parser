@@ -28,7 +28,10 @@ pub struct Emitter<'a> {
     contiguous: bool,
     last_seg: Option<usize>,
     last_date: String,
+    /// Entries fed in, matching or not — what `--stats` reports.
     pub count: u64,
+    /// Entries that passed the filter, which is what "found nothing" means.
+    pub matched: u64,
 }
 
 impl<'a> Emitter<'a> {
@@ -54,6 +57,7 @@ impl<'a> Emitter<'a> {
             last_seg: None,
             last_date: String::new(),
             count: 0,
+            matched: 0,
         }
     }
 
@@ -74,6 +78,7 @@ impl<'a> Emitter<'a> {
             }
             return Ok(());
         }
+        self.matched += 1;
         if self.stats_only {
             return Ok(());
         }

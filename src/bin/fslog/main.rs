@@ -403,6 +403,39 @@ pub(crate) fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
     }
 }
 
+const MAX_UNCONFIRMED_FILES: usize = 20;
+const MAX_UNCONFIRMED_BYTES: u64 = 1024 * 1024 * 1024;
+
+fn max_unconfirmed_bytes() -> u64 {
+    match std::env::var("FSLOG_CONFIRM_SIZE") {
+        Err(_) => MAX_UNCONFIRMED_BYTES,
+        Ok(raw) => raw.parse().unwrap_or_else(|e| {
+            eprintln!("fslog: FSLOG_CONFIRM_SIZE={raw} is not a byte count: {e}");
+            process::exit(2);
+        }),
+    }
+}
+
+/// A human-readable span of the log files on hand, so an empty result says
+/// whether the search was even looking at the right days.
+fn coverage_note(files: &[files::LogFile]) -> Option<String> {
+    let stamps: Vec<&str> = files.iter().filter_map(|f| f.date.as_deref()).collect();
+    let active = files.iter().any(|f| f.date.is_none());
+    match (stamps.first(), active) {
+        (None, true) => Some("log coverage here: active log only".to_string()),
+        (None, false) => None,
+        (Some(first), _) => {
+            let day = |s: &str| s[..s.len().min(10)].to_string();
+            let last = if active {
+                "now".to_string()
+            } else {
+                day(stamps.last()?)
+            };
+            Some(format!("log coverage here: {} – {last}", day(first)))
+        }
+    }
+}
+
 /// Resolve the files a search will scan: explicit `--file` paths, or
 /// date-filtered discovery in `dir`. Returns `None` when nothing matches or the
 /// user declines the large-scan confirmation.
@@ -434,20 +467,18 @@ fn resolve_search_files(
         eprintln!("no log files match the date range");
         return Ok(None);
     }
-    if !args.yes && selected.len() > 20 {
-        let total_size: u64 = selected.iter().map(|f| f.size).sum();
+    let total_size: u64 = selected.iter().map(|f| f.size).sum();
+    // File count alone is a poor proxy for the wait: twenty rotated logs from a
+    // quiet box are seconds, one from a busy one can be gigabytes decompressed.
+    if !args.yes && (selected.len() > MAX_UNCONFIRMED_FILES || total_size > max_unconfirmed_bytes())
+    {
+        let scale = format!("{} files ({})", selected.len(), format_size(total_size));
         if !io::stdin().is_terminal() {
             return Err(io::Error::other(format!(
-                "refusing to scan {} files ({}) without confirmation; pass -y to override",
-                selected.len(),
-                format_size(total_size)
+                "refusing to scan {scale} without confirmation; pass -y to override"
             )));
         }
-        eprint!(
-            "about to scan {} files ({}), proceed? [y/N] ",
-            selected.len(),
-            format_size(total_size)
-        );
+        eprint!("about to scan {scale}, proceed? [y/N] ");
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         if !answer.trim().eq_ignore_ascii_case("y") {
@@ -498,6 +529,21 @@ fn cmd_search(
         None => return Ok(()),
     };
 
+    // Coverage is only meaningful for the files discovery chose; with explicit
+    // --file paths the operator already knows what was searched.
+    let report_empty = || -> io::Result<()> {
+        let note = if args.files.is_empty() {
+            coverage_note(&discover_log_files(dir)?)
+        } else {
+            None
+        };
+        match note {
+            Some(n) => eprintln!("no matching entries; {n}"),
+            None => eprintln!("no matching entries"),
+        }
+        Ok(())
+    };
+
     // A single needle that cannot span a line break lets whole files be ruled out
     // before the parse touches them. Any other search reads everything.
     if files.len() > 1 {
@@ -513,7 +559,7 @@ fn cmd_search(
         {
             files = prescan::narrow(&files, needle);
             if files.is_empty() {
-                return Ok(());
+                return report_empty();
             }
         }
     }
@@ -523,14 +569,14 @@ fn cmd_search(
     if args.related {
         let discovered = related::discover(build_segments(&files), &filter.for_discovery());
         if discovered.is_empty() {
-            return Ok(());
+            return report_empty();
         }
         let seeds: Vec<String> = discovered.into_iter().collect();
         filter.set_uuids(&seeds)?;
         filter.uuid_strict = true;
     }
 
-    let (stats, session_count, count) = run_output(
+    let (stats, session_count, count, matched) = run_output(
         out,
         build_segments(&files),
         &filter,
@@ -540,6 +586,9 @@ fn cmd_search(
         args.after(),
     )?;
 
+    if matched == 0 {
+        report_empty()?;
+    }
     print_epilogue(&printer, &args.filter, &stats, count, session_count)
 }
 
@@ -553,7 +602,7 @@ fn run_output(
     fargs: &FilterArgs,
     before: usize,
     after: usize,
-) -> io::Result<(ParseStats, usize, u64)> {
+) -> io::Result<(ParseStats, usize, u64, u64)> {
     let (chain, seg_tracker) = TrackedChain::new(segments);
     let stream = LogStream::new(chain).unclassified_tracking(fargs.tracking());
     let mut emitter = Emitter::new(printer, filter, &seg_tracker, fargs.stats, before, after);
@@ -572,7 +621,7 @@ fn run_output(
         (stream.stats().clone(), 0)
     };
 
-    Ok((stats, session_count, emitter.count))
+    Ok((stats, session_count, emitter.count, emitter.matched))
 }
 
 fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
@@ -609,7 +658,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
     };
 
     let printer = args.filter.printer(color);
-    let (stats, session_count, count) = run_output(
+    let (stats, session_count, count, _) = run_output(
         out,
         vec![(name, lines)],
         &filter,
@@ -679,5 +728,52 @@ fn main() {
             eprintln!("fslog: {e}");
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn log_file(date: Option<&str>) -> files::LogFile {
+        files::LogFile {
+            path: PathBuf::from("freeswitch.log"),
+            date: date.map(str::to_string),
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn coverage_spans_first_stamp_to_last() {
+        let files = vec![
+            log_file(Some("2026-05-01-00-00-00")),
+            log_file(Some("2026-05-20-00-00-00")),
+        ];
+        assert_eq!(
+            coverage_note(&files).unwrap(),
+            "log coverage here: 2026-05-01 – 2026-05-20"
+        );
+    }
+
+    #[test]
+    fn active_log_makes_the_upper_bound_now() {
+        let files = vec![log_file(Some("2026-05-01-00-00-00")), log_file(None)];
+        assert_eq!(
+            coverage_note(&files).unwrap(),
+            "log coverage here: 2026-05-01 – now"
+        );
+    }
+
+    #[test]
+    fn active_log_alone_has_no_span() {
+        assert_eq!(
+            coverage_note(&[log_file(None)]).unwrap(),
+            "log coverage here: active log only"
+        );
+    }
+
+    #[test]
+    fn no_files_no_note() {
+        assert!(coverage_note(&[]).is_none());
     }
 }

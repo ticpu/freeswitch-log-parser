@@ -90,6 +90,21 @@ the built-in patterns of the same entry. This keeps the library focused on
 vanilla FreeSWITCH while remaining useful to deployments with custom
 bridging infrastructure.
 
+## Downstream re-derivations belong on the public surface
+
+Helpers a consumer can only write by re-deriving parser knowledge — which channel
+variables carry a peer leg's UUID, how a UUID is spelled inside a message body, how a
+bridge argument yields its origination UUID, how a rotated log's filename encodes its
+stamp — are public API rather than each binary's private business. Two consumers had
+already forked every one of them, and the forks drifted the way forks do: one copy's UUID
+pattern accepted only lowercase hex, so an uppercase-hex peer UUID was invisible to that
+binary's relationship discovery and to no other. Promoting them also stops the no-regex
+decision from leaking, since a consumer that must find a UUID inside a message reaches for
+a regex crate unless the parser offers the positional scanner it already uses internally.
+Deployment-specific variable names stay out: the peer-variable walk takes a caller
+predicate, so a site with its own correlation variables extends the allowlist without
+forking the walk.
+
 ## Index maintenance by diffing, not setters
 
 Hooks receive `&mut SessionState` and set fields directly — but three of

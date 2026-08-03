@@ -1,9 +1,11 @@
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 
 use freeswitch_log_parser::{
-    normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel,
+    find_uuids, normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,57 @@ fn uuid_truecolor(uuid: &str) -> (u8, u8, u8) {
     uuid.hash(&mut hasher);
     let hue = (hasher.finish() % 360) as f64;
     hsl_to_rgb(hue, 0.30, 0.82)
+}
+
+fn write_uuid(out: &mut String, uuid: &str) {
+    let (r, g, b) = uuid_truecolor(uuid);
+    let _ = write!(out, "\x1b[38;2;{r};{g};{b}m{uuid}{RESET}");
+}
+
+/// Paint UUIDs embedded in `text` with the same per-UUID color the UUID column
+/// uses, so a peer leg named mid-message is recognizable at a glance. `resume`
+/// restores the caller's color after each match.
+fn colorize_uuids<'a>(text: &'a str, resume: &str) -> Cow<'a, str> {
+    let mut hits = find_uuids(text).peekable();
+    if hits.peek().is_none() {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut last = 0;
+    for (start, uuid) in hits {
+        out.push_str(&text[last..start]);
+        write_uuid(&mut out, uuid);
+        out.push_str(resume);
+        last = start + uuid.len();
+    }
+    out.push_str(&text[last..]);
+    Cow::Owned(out)
+}
+
+/// Paint a dialplan condition's verdict, the one thing worth spotting in a wall
+/// of `Regex (PASS|FAIL)` continuation lines.
+fn colorize_pass_fail<'a>(text: &'a str, resume: &str) -> Cow<'a, str> {
+    if !text.contains("(PASS)") && !text.contains("(FAIL)") {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 32);
+    let mut rest = text;
+    while let Some((idx, verdict, color)) = rest
+        .find("(PASS)")
+        .map(|i| (i, "(PASS)", BRIGHT_GREEN))
+        .into_iter()
+        .chain(rest.find("(FAIL)").map(|i| (i, "(FAIL)", RED)))
+        .min_by_key(|(i, _, _)| *i)
+    {
+        out.push_str(&rest[..idx]);
+        out.push_str(color);
+        out.push_str(verdict);
+        out.push_str(RESET);
+        out.push_str(resume);
+        rest = &rest[idx + verdict.len()..];
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
 }
 
 fn level_color(level: Option<LogLevel>) -> &'static str {
@@ -100,10 +153,17 @@ impl EntryPrinter {
         let uuid = if entry.uuid.is_empty() {
             format!("{dim}-{reset}")
         } else if use_color {
-            let (r, g, b) = uuid_truecolor(&entry.uuid);
-            format!("\x1b[38;2;{r};{g};{b}m{}{RESET}", entry.uuid)
+            let mut s = String::new();
+            write_uuid(&mut s, &entry.uuid);
+            s
         } else {
             entry.uuid.clone()
+        };
+
+        let msg = if use_color {
+            colorize_uuids(&entry.message, lc)
+        } else {
+            Cow::Borrowed(entry.message.as_str())
         };
 
         if let Some(fname) = filename.filter(|_| self.show_filename) {
@@ -119,7 +179,6 @@ impl EntryPrinter {
             "{lc}{kind:>9} {level:>7}{reset} {time} {uuid} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
             kind = entry.kind,
             mkind = entry.message_kind,
-            msg = entry.message,
         )?;
 
         if self.show_blocks {
@@ -141,11 +200,27 @@ impl EntryPrinter {
 
         if !entry.attached.is_empty() {
             let dim_s = if use_color { DIM } else { "" };
-            writeln!(
-                w,
-                "{dim_s}         ({} attached lines){reset}",
-                entry.attached.len()
-            )?;
+            // Continuation lines the parser did not fold into a typed block are
+            // the entry's only content — dialplan regex verdicts, EXECUTE traces.
+            // Collapsing those to a count leaves nothing readable behind.
+            let inline = (self.show_blocks && entry.block.is_none()) || entry.attached.len() == 1;
+            if inline {
+                for line in &entry.attached {
+                    let rendered = if use_color {
+                        let uuids = colorize_uuids(line, dim_s);
+                        Cow::Owned(colorize_pass_fail(&uuids, dim_s).into_owned())
+                    } else {
+                        Cow::Borrowed(line)
+                    };
+                    writeln!(w, "{dim_s}         {rendered}{reset}")?;
+                }
+            } else {
+                writeln!(
+                    w,
+                    "{dim_s}         ({} attached lines){reset}",
+                    entry.attached.len()
+                )?;
+            }
         }
 
         Ok(())
@@ -162,12 +237,7 @@ impl EntryPrinter {
                     writeln!(w, "{bc}         field  {name}: {value}{reset}")?;
                 }
                 for (name, value) in variables {
-                    let short = if value.len() > 80 {
-                        format!("{}...", truncate_at_char_boundary(value, 77))
-                    } else {
-                        value.clone()
-                    };
-                    writeln!(w, "{bc}         var    {name}: {short}{reset}")?;
+                    writeln!(w, "{bc}         var    {name}: {value}{reset}")?;
                 }
             }
             Block::Sdp { direction, body } => {
@@ -407,6 +477,114 @@ mod tests {
             line_number: 0,
             warnings: Vec::new(),
         }
+    }
+
+    const PEER: &str = "11111111-2222-3333-4444-555555555555";
+
+    fn printer(color: ColorMode, show_blocks: bool) -> EntryPrinter {
+        EntryPrinter {
+            color,
+            show_blocks,
+            show_session: false,
+            show_filename: false,
+            show_line_numbers: false,
+        }
+    }
+
+    fn render(printer: &EntryPrinter, entry: &LogEntry) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        printer.print_entry(&mut out, entry, None, None).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn attached_lines_inline_under_blocks() {
+        let e = entry(
+            "u",
+            "Dialplan: parsing",
+            &["Regex (PASS) x =~ /y/", "Action set"],
+        );
+        let out = render(&printer(ColorMode::Never, true), &e);
+        assert!(out.contains("Regex (PASS) x =~ /y/"), "{out}");
+        assert!(out.contains("Action set"), "{out}");
+        assert!(!out.contains("attached lines"), "{out}");
+    }
+
+    #[test]
+    fn attached_lines_collapse_without_blocks() {
+        let e = entry("u", "Dialplan: parsing", &["one", "two"]);
+        let out = render(&printer(ColorMode::Never, false), &e);
+        assert!(out.contains("(2 attached lines)"), "{out}");
+    }
+
+    #[test]
+    fn lone_attached_line_always_inline() {
+        let e = entry("u", "msg", &["the only continuation"]);
+        let out = render(&printer(ColorMode::Never, false), &e);
+        assert!(out.contains("the only continuation"), "{out}");
+    }
+
+    #[test]
+    fn typed_block_keeps_attached_lines_collapsed() {
+        // The block already renders this content; printing both duplicates it.
+        let mut e = entry(
+            "u",
+            "CHANNEL_DATA:",
+            &["Channel-Name: [x]", "variable_a: [b]"],
+        );
+        e.block = Some(Block::ChannelData {
+            fields: Vec::new(),
+            variables: Vec::new(),
+        });
+        let out = render(&printer(ColorMode::Never, true), &e);
+        assert!(out.contains("(2 attached lines)"), "{out}");
+    }
+
+    #[test]
+    fn embedded_uuid_gets_its_own_color() {
+        let e = entry("aaaa", &format!("Peer UUID: {PEER}"), &[]);
+        let out = render(&printer(ColorMode::Always, false), &e);
+        let (r, g, b) = uuid_truecolor(PEER);
+        assert!(
+            out.contains(&format!("\x1b[38;2;{r};{g};{b}m{PEER}")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn embedded_uuid_left_alone_without_color() {
+        let e = entry("aaaa", &format!("Peer UUID: {PEER}"), &[]);
+        let out = render(&printer(ColorMode::Never, false), &e);
+        assert!(out.contains(&format!("Peer UUID: {PEER}")), "{out}");
+        assert!(!out.contains("\x1b["), "{out}");
+    }
+
+    #[test]
+    fn pass_and_fail_are_colored_in_attached_lines() {
+        let e = entry(
+            "u",
+            "Dialplan: parsing",
+            &["Regex (PASS) a", "Regex (FAIL) b"],
+        );
+        let out = render(&printer(ColorMode::Always, true), &e);
+        assert!(
+            out.contains(&format!("{BRIGHT_GREEN}(PASS){RESET}")),
+            "{out}"
+        );
+        assert!(out.contains(&format!("{RED}(FAIL){RESET}")), "{out}");
+    }
+
+    #[test]
+    fn long_variable_values_are_not_truncated() {
+        let long = "x".repeat(500);
+        let mut e = entry("u", "CHANNEL_DATA:", &[]);
+        e.block = Some(Block::ChannelData {
+            fields: Vec::new(),
+            variables: vec![("variable_sip_multipart".to_string(), long.clone())],
+        });
+        let out = render(&printer(ColorMode::Never, true), &e);
+        assert!(out.contains(&long), "{out}");
+        assert!(!out.contains("..."), "{out}");
     }
 
     fn filter() -> FilterConfig {

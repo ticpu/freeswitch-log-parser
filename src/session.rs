@@ -379,6 +379,7 @@ pub fn parse_bridge_args(arguments: &str) -> Option<BridgeInfo> {
 
 /// What a `bridge()` argument list says about the leg it is about to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BridgeInfo {
     /// The UUID the new leg is being forced to take, when the dial string sets one.
     pub origination_uuid: Option<String>,

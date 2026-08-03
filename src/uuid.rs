@@ -16,6 +16,7 @@ pub fn find_uuids(text: &str) -> FindUuids<'_> {
 }
 
 /// Iterator returned by [`find_uuids`].
+#[derive(Debug, Clone)]
 pub struct FindUuids<'a> {
     text: &'a str,
     pos: usize,
@@ -106,5 +107,12 @@ mod tests {
     fn no_match_in_plain_text() {
         assert!(found("no identifiers here at all").is_empty());
         assert!(found("deadbeef-dead-beef-dead").is_empty());
+    }
+
+    #[test]
+    fn a_longer_hex_run_yields_its_leading_uuid() {
+        // Substring semantics, not tokenization: nothing here delimits a UUID, so
+        // the first 36 conforming bytes are the match.
+        assert_eq!(found(&format!("{A}99")), vec![A]);
     }
 }

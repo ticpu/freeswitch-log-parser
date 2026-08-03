@@ -92,9 +92,9 @@ pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
                     }
                 }
             }
-            // The dial string's own `origination_uuid` names the leg this bridge
-            // is about to create, before that leg logs anything of its own.
-            "bridge" => {
+            // The dial string's own `origination_uuid` names the leg this call is
+            // about to create, before that leg logs anything of its own.
+            "bridge" | "att_xfer" => {
                 if let Some(uuid) = parse_bridge_args(arguments).and_then(|i| i.origination_uuid) {
                     f(&uuid);
                 }
@@ -211,6 +211,20 @@ mod tests {
             ))),
             vec![PEER]
         );
+    }
+
+    #[test]
+    fn att_xfer_names_its_leg_the_same_way() {
+        let e = entry(
+            MessageKind::Execute {
+                depth: 0,
+                channel: "sofia/internal/1001".to_string(),
+                application: "att_xfer".to_string(),
+                arguments: format!("[origination_uuid={PEER}]sofia/internal/1002"),
+            },
+            None,
+        );
+        assert_eq!(collect(&e), vec![PEER]);
     }
 
     #[test]

@@ -27,14 +27,16 @@ pub fn log_rotation_stamp(filename: &str) -> Option<&str> {
 /// rather than rejected, so a partially parsed entry still windows sanely.
 pub fn normalize_entry_timestamp(ts: &str) -> String {
     const TS_LEN: usize = 19;
-    if ts.len() < TS_LEN {
-        let mut s = ts.replace(['T', ':', ' '], "-");
-        while s.ends_with('-') {
-            s.pop();
-        }
-        return s;
+    // `get` rather than a byte slice: a caller can hand this any string, and a
+    // multibyte codepoint straddling either bound would panic on `&ts[..n]`.
+    if let (Some(date), Some(time)) = (ts.get(..10), ts.get(11..TS_LEN)) {
+        return format!("{date}-{}", time.replace(':', "-"));
     }
-    format!("{}-{}", &ts[..10], ts[11..TS_LEN].replace(':', "-"))
+    let mut s = ts.replace(['T', ':', ' '], "-");
+    while s.ends_with('-') {
+        s.pop();
+    }
+    s
 }
 
 #[cfg(test)]
@@ -87,6 +89,20 @@ mod tests {
         assert_eq!(normalize_entry_timestamp("2026-03-08"), "2026-03-08");
         assert_eq!(normalize_entry_timestamp("2026-03-08 "), "2026-03-08");
         assert_eq!(normalize_entry_timestamp(""), "");
+    }
+
+    #[test]
+    fn multibyte_entry_timestamp_does_not_panic() {
+        // A codepoint straddling either slice bound would panic on a byte slice.
+        assert_eq!(
+            normalize_entry_timestamp("2026-03-08é16:52:07"),
+            "2026-03-08é16-52-07"
+        );
+        assert_eq!(
+            normalize_entry_timestamp("2026-03-0é 16:52:07"),
+            "2026-03-0é-16-52-07"
+        );
+        assert_eq!(normalize_entry_timestamp("ééééééééé"), "ééééééééé");
     }
 
     #[test]

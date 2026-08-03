@@ -185,7 +185,7 @@ mod tests {
     use super::*;
     use freeswitch_log_parser::{AttachedLines, LineKind, TrackedChain};
 
-    use crate::output::ColorMode;
+    use crate::output::{ColorMode, FilterParams};
 
     fn entry(uuid: &str) -> LogEntry {
         LogEntry {
@@ -212,18 +212,10 @@ mod tests {
             show_filename: false,
             show_line_numbers: false,
         };
-        let mut filter = FilterConfig {
-            uuid_filter: vec!["m".into()],
-            uuid_strict: true,
-            match_blocks: false,
-            min_level: None,
-            category: None,
-            fgrep: None,
-            grep: None,
-            from_ts: None,
-            until_ts: None,
-        };
-        filter.uuid_strict = true;
+        let filter = crate::output::tests::filter(FilterParams {
+            uuid: vec!["m".into()],
+            ..Default::default()
+        });
         let (_chain, tracker) = TrackedChain::new(Vec::new());
         let mut emitter = Emitter::new(&printer, &filter, &tracker, false, before, after);
         let mut out: Vec<u8> = Vec::new();

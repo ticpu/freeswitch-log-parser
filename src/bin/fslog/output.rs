@@ -4,6 +4,8 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
+
 use freeswitch_log_parser::{
     find_uuids, normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel,
 };
@@ -348,39 +350,92 @@ impl EntryPrinter {
     }
 }
 
-#[derive(Clone)]
-pub struct FilterConfig {
-    /// Lowercased UUID needles; an entry matches if any is a substring.
-    pub uuid_filter: Vec<String>,
-    /// Restrict UUID matching to `entry.uuid` (output pass) vs. also scanning
-    /// message and attached lines (discovery pass).
+/// Build a case-insensitive multi-needle matcher. One automaton scans a haystack
+/// once for every needle, so a `--related` pass carrying hundreds of discovered
+/// leg UUIDs costs the same per entry as a single `-u`.
+fn build_matcher(needles: &[String]) -> io::Result<Option<AhoCorasick>> {
+    if needles.is_empty() {
+        return Ok(None);
+    }
+    AhoCorasickBuilder::new()
+        .ascii_case_insensitive(true)
+        .build(needles)
+        .map(Some)
+        .map_err(|e| {
+            io::Error::other(format!(
+                "cannot build a matcher for {} pattern(s): {e}",
+                needles.len()
+            ))
+        })
+}
+
+/// Construction parameters for [`FilterConfig::new`]. `Default` lets call sites
+/// name only the fields they set, rather than pass nine positionals where two
+/// transposed `Option<String>`s would compile and silently invert a date range.
+#[derive(Default)]
+pub struct FilterParams {
+    pub uuid: Vec<String>,
     pub uuid_strict: bool,
-    /// Extend fgrep/grep matching into attached/block lines, not just the message.
     pub match_blocks: bool,
     pub min_level: Option<LogLevel>,
-    pub category: Option<String>,
-    /// Lowercased fixed-string needle.
+    pub category: Vec<String>,
     pub fgrep: Option<String>,
     pub grep: Option<regex::Regex>,
     pub from_ts: Option<String>,
     pub until_ts: Option<String>,
 }
 
+#[derive(Clone, Default)]
+pub struct FilterConfig {
+    uuid_ac: Option<AhoCorasick>,
+    /// Restrict UUID matching to `entry.uuid` (output pass) vs. also scanning
+    /// message and attached lines (discovery pass).
+    pub uuid_strict: bool,
+    /// Extend fgrep/grep matching into attached/block lines, not just the message.
+    pub match_blocks: bool,
+    pub min_level: Option<LogLevel>,
+    /// Message-kind labels; an entry matches if it carries any of them.
+    pub category: Vec<String>,
+    fgrep_ac: Option<AhoCorasick>,
+    pub grep: Option<regex::Regex>,
+    pub from_ts: Option<String>,
+    pub until_ts: Option<String>,
+}
+
 impl FilterConfig {
+    pub fn new(p: FilterParams) -> io::Result<Self> {
+        Ok(FilterConfig {
+            uuid_ac: build_matcher(&p.uuid)?,
+            uuid_strict: p.uuid_strict,
+            match_blocks: p.match_blocks,
+            min_level: p.min_level,
+            category: p.category,
+            fgrep_ac: build_matcher(p.fgrep.as_slice())?,
+            grep: p.grep,
+            from_ts: p.from_ts,
+            until_ts: p.until_ts,
+        })
+    }
+
+    pub fn set_uuids(&mut self, needles: &[String]) -> io::Result<()> {
+        self.uuid_ac = build_matcher(needles)?;
+        Ok(())
+    }
+
+    pub fn set_fgrep(&mut self, needle: &str) -> io::Result<()> {
+        self.fgrep_ac = build_matcher(std::slice::from_ref(&needle.to_string()))?;
+        Ok(())
+    }
+
     /// A copy suited to peer-UUID discovery: category cleared (the seed term may
     /// surface under any message kind), UUID matching loosened to message bodies
     /// and attached lines so the seed is found wherever it appears.
     pub fn for_discovery(&self) -> FilterConfig {
         FilterConfig {
-            uuid_filter: self.uuid_filter.clone(),
             uuid_strict: false,
             match_blocks: true,
-            min_level: self.min_level,
-            category: None,
-            fgrep: self.fgrep.clone(),
-            grep: self.grep.clone(),
-            from_ts: self.from_ts.clone(),
-            until_ts: self.until_ts.clone(),
+            category: Vec::new(),
+            ..self.clone()
         }
     }
 
@@ -393,41 +448,28 @@ impl FilterConfig {
             }
         }
 
-        if !self.uuid_filter.is_empty() {
-            let uuid_lc = entry.uuid.to_lowercase();
-            let in_uuid = self.uuid_filter.iter().any(|f| uuid_lc.contains(f));
-            let hit = if self.uuid_strict {
-                in_uuid
-            } else {
-                in_uuid
-                    || {
-                        let msg_lc = entry.message.to_lowercase();
-                        self.uuid_filter.iter().any(|f| msg_lc.contains(f))
-                    }
-                    || entry.attached.iter().any(|l| {
-                        let l_lc = l.to_lowercase();
-                        self.uuid_filter.iter().any(|f| l_lc.contains(f))
-                    })
-            };
+        if let Some(ref ac) = self.uuid_ac {
+            let hit = ac.is_match(entry.uuid.as_bytes())
+                || (!self.uuid_strict
+                    && (ac.is_match(entry.message.as_bytes())
+                        || entry.attached.iter().any(|l| ac.is_match(l.as_bytes()))));
             if !hit {
                 return false;
             }
         }
 
-        if let Some(ref cat) = self.category {
-            if entry.message_kind.label() != cat.as_str() {
-                return false;
-            }
+        if !self.category.is_empty()
+            && !self
+                .category
+                .iter()
+                .any(|c| entry.message_kind.label() == c.as_str())
+        {
+            return false;
         }
 
-        if let Some(ref pattern) = self.fgrep {
-            let in_msg = entry.message.to_lowercase().contains(pattern);
-            let hit = in_msg
-                || (self.match_blocks
-                    && entry
-                        .attached
-                        .iter()
-                        .any(|l| l.to_lowercase().contains(pattern)));
+        if let Some(ref ac) = self.fgrep_ac {
+            let hit = ac.is_match(entry.message.as_bytes())
+                || (self.match_blocks && entry.attached.iter().any(|l| ac.is_match(l.as_bytes())));
             if !hit {
                 return false;
             }
@@ -460,7 +502,7 @@ impl FilterConfig {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use freeswitch_log_parser::{AttachedLines, LineKind, LogEntry, MessageKind};
 
@@ -593,33 +635,40 @@ mod tests {
         assert!(!out.contains("..."), "{out}");
     }
 
-    fn filter() -> FilterConfig {
-        FilterConfig {
-            uuid_filter: Vec::new(),
+    pub fn filter(p: FilterParams) -> FilterConfig {
+        FilterConfig::new(FilterParams {
             uuid_strict: true,
-            match_blocks: false,
-            min_level: None,
-            category: None,
-            fgrep: None,
-            grep: None,
-            from_ts: None,
-            until_ts: None,
-        }
+            ..p
+        })
+        .unwrap()
     }
 
     #[test]
     fn uuid_or_matches_any_needle() {
-        let mut f = filter();
-        f.uuid_filter = vec!["aaaa".into(), "bbbb".into()];
+        let f = filter(FilterParams {
+            uuid: vec!["aaaa".into(), "bbbb".into()],
+            ..Default::default()
+        });
         assert!(f.matches(&entry("xx-bbbb-yy", "msg", &[])));
         assert!(f.matches(&entry("aaaa-0000", "msg", &[])));
         assert!(!f.matches(&entry("cccc-0000", "msg", &[])));
     }
 
     #[test]
+    fn uuid_match_is_case_insensitive() {
+        let f = filter(FilterParams {
+            uuid: vec!["AAAABBBB".into()],
+            ..Default::default()
+        });
+        assert!(f.matches(&entry("aaaabbbb-2222-3333-4444-555555555555", "msg", &[])));
+    }
+
+    #[test]
     fn uuid_strict_ignores_message_body() {
-        let mut f = filter();
-        f.uuid_filter = vec!["dead".into()];
+        let mut f = filter(FilterParams {
+            uuid: vec!["dead".into()],
+            ..Default::default()
+        });
         // strict: only the uuid field counts, not the message text
         assert!(!f.matches(&entry("0000", "peer dead leg", &[])));
         f.uuid_strict = false;
@@ -628,8 +677,10 @@ mod tests {
 
     #[test]
     fn fgrep_into_blocks_only_with_match_blocks() {
-        let mut f = filter();
-        f.fgrep = Some("m=audio".into());
+        let mut f = filter(FilterParams {
+            fgrep: Some("m=audio".into()),
+            ..Default::default()
+        });
         let e = entry("u", "Remote SDP:", &["v=0", "m=audio 5004 RTP/AVP 0"]);
         assert!(!f.matches(&e));
         f.match_blocks = true;
@@ -637,12 +688,39 @@ mod tests {
     }
 
     #[test]
+    fn fgrep_is_case_insensitive() {
+        let f = filter(FilterParams {
+            fgrep: Some("RECEIVING INVITE".into()),
+            ..Default::default()
+        });
+        assert!(f.matches(&entry("u", "receiving invite from 192.0.2.1", &[])));
+    }
+
+    #[test]
+    fn category_matches_any_of_several() {
+        let f = filter(FilterParams {
+            category: vec!["execute".into(), "dialplan".into()],
+            ..Default::default()
+        });
+        let mut e = entry("u", "msg", &[]);
+        e.message_kind = MessageKind::Dialplan {
+            channel: "sofia/internal/1001".to_string(),
+            detail: "parsing".to_string(),
+        };
+        assert!(f.matches(&e));
+        e.message_kind = MessageKind::General;
+        assert!(!f.matches(&e));
+    }
+
+    #[test]
     fn for_discovery_clears_category_and_loosens() {
-        let mut f = filter();
-        f.category = Some("execute".into());
-        f.uuid_filter = vec!["seed".into()];
+        let f = filter(FilterParams {
+            category: vec!["execute".into()],
+            uuid: vec!["seed".into()],
+            ..Default::default()
+        });
         let d = f.for_discovery();
-        assert!(d.category.is_none());
+        assert!(d.category.is_empty());
         assert!(!d.uuid_strict);
         assert!(d.match_blocks);
         // seed found in message body survives discovery despite category mismatch

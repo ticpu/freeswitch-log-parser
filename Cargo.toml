@@ -16,9 +16,12 @@ name = "freeswitch_log_parser"
 
 [dependencies]
 freeswitch-types = { version = "1.0.0-rc.2", default-features = false, features = ["esl"] }
+aho-corasick = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4", optional = true }
 xz2 = { version = "0.1", optional = true }
+jiff = { version = "0.2", optional = true }
+rayon = { version = "1", optional = true }
 regex = { version = "1", optional = true }
 log = { version = "0.4", optional = true }
 env_logger = { version = "0.11", optional = true }
@@ -32,7 +35,17 @@ path = "src/bin/fslog/main.rs"
 required-features = ["cli"]
 
 [features]
-cli = ["dep:clap", "dep:clap_complete", "dep:xz2", "dep:regex", "dep:log", "dep:env_logger"]
+cli = [
+    "dep:aho-corasick",
+    "dep:clap",
+    "dep:clap_complete",
+    "dep:env_logger",
+    "dep:jiff",
+    "dep:log",
+    "dep:rayon",
+    "dep:regex",
+    "dep:xz2",
+]
 tui = ["cli", "dep:ratatui", "dep:serde", "dep:serde_yml"]
 
 [dev-dependencies]

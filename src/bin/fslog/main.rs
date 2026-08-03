@@ -7,6 +7,7 @@ mod files;
 #[cfg(feature = "tui")]
 mod monitor;
 mod output;
+mod prescan;
 mod related;
 
 use std::io::{self, IsTerminal, Write};
@@ -27,7 +28,7 @@ use files::{
     discover_log_files, filter_files_by_date, format_size, lazy_log_reader, lossy_line_iter,
     normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader, resolve_log_path,
 };
-use output::{ColorMode, EntryPrinter, FilterConfig};
+use output::{ColorMode, EntryPrinter, FilterConfig, FilterParams};
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ColorWhen {
@@ -90,9 +91,9 @@ struct FilterArgs {
     #[arg(short, long, value_name = "LEVEL")]
     level: Option<String>,
 
-    /// Message category filter
+    /// Message category filter (repeatable, OR logic)
     #[arg(short, long, value_name = "KIND")]
-    category: Option<String>,
+    category: Vec<String>,
 
     /// Fixed string substring search (case-insensitive)
     #[arg(long, value_name = "PATTERN")]
@@ -174,6 +175,14 @@ struct SearchArgs {
     #[arg(long)]
     until: Option<String>,
 
+    /// A single date, shorthand for --from DATE --until DATE
+    #[arg(long, value_name = "DATE", conflicts_with_all = ["from", "until"])]
+    on: Option<String>,
+
+    /// Today only, in the machine's local timezone
+    #[arg(long, conflicts_with_all = ["from", "until", "on"])]
+    today: bool,
+
     /// Skip confirmation prompt for large file sets
     #[arg(short = 'y', long)]
     yes: bool,
@@ -212,6 +221,19 @@ impl SearchArgs {
     }
     fn after(&self) -> usize {
         self.context.unwrap_or(self.after_context)
+    }
+
+    /// Resolve the date bounds, collapsing the `--on`/`--today` shorthands into
+    /// the same pair of partial dates `--from`/`--until` supply.
+    fn window(&self) -> io::Result<(Option<String>, Option<String>)> {
+        if self.today {
+            let today = jiff::Zoned::now().date().to_string();
+            return Ok((Some(today.clone()), Some(today)));
+        }
+        if let Some(on) = &self.on {
+            return Ok((Some(on.clone()), Some(on.clone())));
+        }
+        Ok((self.from.clone(), self.until.clone()))
     }
 }
 
@@ -262,7 +284,7 @@ fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) ->
         })
     });
 
-    if let Some(ref cat) = filter.category {
+    for cat in &filter.category {
         if !MessageKind::ALL_LABELS.contains(&cat.as_str()) {
             eprintln!("invalid category: {cat}");
             eprintln!("valid categories: {}", MessageKind::ALL_LABELS.join(", "));
@@ -277,17 +299,21 @@ fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) ->
         })
     });
 
-    FilterConfig {
-        uuid_filter: filter.uuid.iter().map(|u| u.to_lowercase()).collect(),
+    FilterConfig::new(FilterParams {
+        uuid: filter.uuid.clone(),
         uuid_strict: true,
         match_blocks: filter.match_blocks,
         min_level,
         category: filter.category.clone(),
-        fgrep: filter.fgrep.as_ref().map(|p| p.to_lowercase()),
+        fgrep: filter.fgrep.clone(),
         grep,
         from_ts: from.map(normalize_date_from),
         until_ts: until.map(normalize_date_until),
-    }
+    })
+    .unwrap_or_else(|e| {
+        eprintln!("fslog: {e}");
+        process::exit(2);
+    })
 }
 
 fn setup_pager(cli: &Cli) -> Option<process::Child> {
@@ -383,6 +409,8 @@ pub(crate) fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
 fn resolve_search_files(
     dir: &Path,
     args: &SearchArgs,
+    from: Option<&str>,
+    until: Option<&str>,
 ) -> io::Result<Option<Vec<(String, PathBuf)>>> {
     if !args.files.is_empty() {
         let v = args
@@ -401,7 +429,7 @@ fn resolve_search_files(
     }
 
     let all_files = discover_log_files(dir)?;
-    let selected = filter_files_by_date(&all_files, args.from.as_deref(), args.until.as_deref());
+    let selected = filter_files_by_date(&all_files, from, until);
     if selected.is_empty() {
         eprintln!("no log files match the date range");
         return Ok(None);
@@ -459,15 +487,36 @@ fn cmd_search(
         ));
     }
 
-    let mut filter = build_filter(&args.filter, args.from.as_deref(), args.until.as_deref());
+    let (from, until) = args.window()?;
+    let mut filter = build_filter(&args.filter, from.as_deref(), until.as_deref());
     if let Some(p) = &args.pattern {
-        filter.fgrep = Some(p.to_lowercase());
+        filter.set_fgrep(p)?;
     }
 
-    let files = match resolve_search_files(dir, args)? {
+    let mut files = match resolve_search_files(dir, args, from.as_deref(), until.as_deref())? {
         Some(f) => f,
         None => return Ok(()),
     };
+
+    // A single needle that cannot span a line break lets whole files be ruled out
+    // before the parse touches them. Any other search reads everything.
+    if files.len() > 1 {
+        if let Some(needle) = args
+            .pattern
+            .as_deref()
+            .or(args.filter.fgrep.as_deref())
+            .or(match args.filter.uuid.as_slice() {
+                [only] => Some(only.as_str()),
+                _ => None,
+            })
+            .filter(|n| prescan::is_single_line_safe(n))
+        {
+            files = prescan::narrow(&files, needle);
+            if files.is_empty() {
+                return Ok(());
+            }
+        }
+    }
 
     let printer = args.filter.printer(color);
 
@@ -476,7 +525,8 @@ fn cmd_search(
         if discovered.is_empty() {
             return Ok(());
         }
-        filter.uuid_filter = discovered.into_iter().map(|u| u.to_lowercase()).collect();
+        let seeds: Vec<String> = discovered.into_iter().collect();
+        filter.set_uuids(&seeds)?;
         filter.uuid_strict = true;
     }
 

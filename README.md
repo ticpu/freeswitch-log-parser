@@ -43,6 +43,14 @@ alongside the raw `LogEntry`.
 
 Each layer wraps the previous and can be used independently.
 
+Alongside them the crate exposes the primitives a consumer would
+otherwise re-derive: `find_uuids`/`is_uuid` locate channel UUIDs inside a
+message or a needle without a regex, `for_each_peer_uuid` walks the
+channel variables that name another leg (`for_each_peer_uuid_with` takes a
+predicate for names a deployment adds), `parse_bridge_args` reads a
+`bridge()` argument list, and `log_rotation_stamp`/`normalize_entry_timestamp`
+put a rotated filename and an entry timestamp into one comparable form.
+
 ## Performance
 
 Built to handle the worst `mod_logfile` produces — 2 KiB buffer
@@ -167,7 +175,7 @@ Filtering:
 
 - `-u, --uuid <UUID>` — session UUID substring; repeat for OR matching
 - `-l, --level <LEVEL>` — minimum severity (`debug`…`console`)
-- `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …)
+- `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …); repeat for OR matching
 - `--fgrep <PATTERN>` — case-insensitive fixed-string match
 - `--grep <REGEX>` — regex match
 - `--match-blocks` — also match `--fgrep`/`--grep`/`PATTERN` inside attached block lines (SDP, CHANNEL_DATA, codec negotiation), not just the message
@@ -179,16 +187,51 @@ Context (grep-style), with `--` dividers between non-contiguous groups:
 
 Output and selection:
 
-- `--blocks` — expand CHANNEL_DATA fields/variables and SDP bodies inline
+- `--blocks` — expand structured content inline (see below)
 - `--session` — annotate each entry with tracked state (context, channel state, channel name)
 - `--stats` / `--unclassified` — summary and unclassified-line report
 - `-n, --line-numbers` — show physical line numbers
 - `--from <DATE>` / `--until <DATE>` — bound discovery (progressive: `2026-03`, `2026-03-08`, `2026-03-08T15:48`)
+- `--on <DATE>` — a single day; `--today` — today, in the machine's local timezone
 - `--file <FILE>` — scan explicit files instead of date discovery (repeatable)
 - `-y, --yes` — skip the confirmation prompt for large scans
 
-UUIDs are rendered in a stable per-call truecolor so distinct sessions
-stay visually separable across interleaved output.
+### Reading the output
+
+Each entry is one line — line kind, level, time, UUID, message kind,
+message — followed by whatever structure it carries.
+
+UUIDs get a stable per-call truecolor, in the UUID column and wherever one
+appears inside a message or a continuation line, so a bridge target is the
+same color as the leg it names.
+
+Continuation lines the parser did not fold into a typed block — dialplan
+condition traces, EXECUTE output — print inline under `--blocks`, with
+`(PASS)` and `(FAIL)` verdicts colored. Without `--blocks` they collapse to
+a count, unless there is only one.
+
+`--blocks` also expands:
+
+- **CHANNEL_DATA** — every field and variable, values in full
+- **SDP** — the body, tagged local or remote
+- **Codec negotiation** — offered-versus-local comparisons and what matched
+- **Dial strings** — `bridge()` and `att_xfer()` arguments broken into their
+  global variables, failover groups and endpoints, with `ARRAY::` values
+  split into entries and `presence_id` surfaced as the extension
+
+### Speed
+
+`search` decompresses and parses only what it must. When the search term is
+a full UUID or a SIP Call-ID — identifiers that cannot span a line break —
+candidate files are scanned for the raw bytes in parallel first, and those
+that cannot match are never parsed. Free-text and regex searches read
+everything, because a match there can legitimately span an entry and the
+continuation lines the parser reassembles into it.
+
+Scanning a large set prompts first; `-y` skips the prompt, and
+`FSLOG_CONFIRM_SIZE` (bytes) moves the threshold. When nothing matches,
+`search` reports the span of log files on hand, so "not in these logs" is
+distinguishable from "already rotated away".
 
 ### Examples
 
@@ -204,6 +247,9 @@ fslog search --from 2026-03-08 --grep 'm=audio' --match-blocks --blocks
 
 # Errors and worse from one session, expanding structured blocks
 fslog search --from 2026-03-08 -u 9bee8676 -l err --blocks
+
+# Today's dialplan and execute traces, expanded
+fslog search --today -c dialplan -c execute --blocks
 ```
 
 ## License

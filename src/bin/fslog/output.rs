@@ -2,9 +2,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 
-use freeswitch_log_parser::{truncate_at_char_boundary, Block, LogLevel};
-
-use crate::files::normalize_entry_timestamp;
+use freeswitch_log_parser::{
+    normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {

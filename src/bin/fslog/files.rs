@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use freeswitch_log_parser::{decode_log_line, read_log_lines, Utf8Decode};
+use freeswitch_log_parser::{decode_log_line, log_rotation_stamp, read_log_lines, Utf8Decode};
 use log::{error, warn};
 use xz2::read::XzDecoder;
 
@@ -28,7 +28,7 @@ pub fn discover_log_files(dir: &Path) -> io::Result<Vec<LogFile>> {
         if !meta.is_file() {
             continue;
         }
-        let date = extract_date(&name);
+        let date = log_rotation_stamp(&name).map(str::to_string);
         files.push(LogFile {
             path,
             date,
@@ -37,44 +37,6 @@ pub fn discover_log_files(dir: &Path) -> io::Result<Vec<LogFile>> {
     }
     files.sort_by(|a, b| a.date.cmp(&b.date));
     Ok(files)
-}
-
-fn extract_date(filename: &str) -> Option<String> {
-    let prefix = "freeswitch.log.";
-    if !filename.starts_with(prefix) {
-        return None;
-    }
-    let rest = &filename[prefix.len()..];
-    if rest.len() < 19 {
-        return None;
-    }
-    let candidate = &rest[..19];
-    if !validate_date_pattern(candidate) {
-        return None;
-    }
-    Some(candidate.to_string())
-}
-
-fn validate_date_pattern(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.len() != 19 {
-        return false;
-    }
-    for (i, &b) in bytes.iter().enumerate() {
-        match i {
-            4 | 7 | 10 | 13 | 16 => {
-                if b != b'-' {
-                    return false;
-                }
-            }
-            _ => {
-                if !b.is_ascii_digit() {
-                    return false;
-                }
-            }
-        }
-    }
-    true
 }
 
 pub fn normalize_date(input: &str) -> String {
@@ -112,17 +74,6 @@ fn pad_date(s: &str, defaults: &[&str; 6]) -> String {
         }
     }
     result.join("-")
-}
-
-pub fn normalize_entry_timestamp(ts: &str) -> String {
-    // Entry timestamps: "YYYY-MM-DD HH:MM:SS.ffffff"
-    // Normalize to "YYYY-MM-DD-HH-MM-SS" for comparison
-    if ts.len() < 19 {
-        return normalize_date(ts);
-    }
-    let date_part = &ts[..10];
-    let time_part = &ts[11..19.min(ts.len())];
-    format!("{}-{}", date_part, time_part.replace(':', "-"))
 }
 
 pub fn filter_files_by_date<'a>(
@@ -446,32 +397,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_date_standard() {
-        assert_eq!(
-            extract_date("freeswitch.log.2026-03-08-16-52-07.1.xz"),
-            Some("2026-03-08-16-52-07".to_string()),
-        );
-    }
-
-    #[test]
-    fn extract_date_no_extension() {
-        assert_eq!(
-            extract_date("freeswitch.log.2025-12-15-16-34-42.1"),
-            Some("2025-12-15-16-34-42".to_string()),
-        );
-    }
-
-    #[test]
-    fn extract_date_current_log() {
-        assert_eq!(extract_date("freeswitch.log"), None);
-    }
-
-    #[test]
-    fn extract_date_invalid() {
-        assert_eq!(extract_date("freeswitch.log.not-a-date.xz"), None);
-    }
-
-    #[test]
     fn normalize_iso_date() {
         assert_eq!(normalize_date("2026-03-08T15:48"), "2026-03-08-15-48");
     }
@@ -507,14 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_entry_ts() {
-        assert_eq!(
-            normalize_entry_timestamp("2026-03-08 15:48:30.123456"),
-            "2026-03-08-15-48-30",
-        );
-    }
-
-    #[test]
     fn format_size_megabytes() {
         assert_eq!(format_size(12_900_000), "12.3M");
     }
@@ -532,16 +449,5 @@ mod tests {
     #[test]
     fn format_size_bytes() {
         assert_eq!(format_size(512), "512B");
-    }
-
-    #[test]
-    fn validate_date_pattern_valid() {
-        assert!(validate_date_pattern("2026-03-08-16-52-07"));
-    }
-
-    #[test]
-    fn validate_date_pattern_invalid() {
-        assert!(!validate_date_pattern("not-a-date-pattern!"));
-        assert!(!validate_date_pattern("2026-03-08"));
     }
 }

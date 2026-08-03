@@ -1,93 +1,14 @@
 use std::collections::HashSet;
-use std::str::FromStr;
-use std::sync::LazyLock;
 
-use freeswitch_log_parser::{
-    Block, LogEntry, LogStream, MessageKind, SessionTracker, TrackedChain,
-};
-use freeswitch_types::{BridgeDialString, ChannelVariable, DialString};
-use regex::Regex;
+use freeswitch_log_parser::{for_each_peer_uuid_with, LogStream, SessionTracker, TrackedChain};
 
 use crate::output::FilterConfig;
 
-static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-        .expect("UUID regex")
-});
-
-/// Channel variables whose value is (or contains) a peer-leg UUID.
-static UUID_BEARING_VARS: &[ChannelVariable] = &[
-    ChannelVariable::BridgeUuid,
-    ChannelVariable::SignalBond,
-    ChannelVariable::SignalBridge,
-    ChannelVariable::LastBridgeTo,
-    ChannelVariable::OriginatingLegUuid,
-    ChannelVariable::OriginationUuid,
-    ChannelVariable::OriginatedLegs,
-    ChannelVariable::TransferSource,
-    ChannelVariable::TransferHistory,
-];
-
-fn is_peer_uuid_var(name: &str) -> bool {
-    ChannelVariable::from_str(name)
-        .map(|v| UUID_BEARING_VARS.contains(&v))
-        .unwrap_or(false)
-}
-
-fn harvest_uuids(value: &str, collector: &mut HashSet<String>) {
-    for mat in UUID_RE.find_iter(value) {
-        collector.insert(mat.as_str().to_string());
-    }
-}
-
-/// Harvest peer-leg UUIDs from a parsed entry's structured variable
-/// assignments only — never from raw message/attached text, which would pull
-/// shared-context vars (domain_uuid, extension_uuid) and match unrelated calls.
-fn extract_peer_uuids(entry: &LogEntry, collector: &mut HashSet<String>) {
-    if let Some(Block::ChannelData { variables, .. }) = &entry.block {
-        for (raw_name, value) in variables {
-            let name = raw_name.strip_prefix("variable_").unwrap_or(raw_name);
-            if is_peer_uuid_var(name) {
-                harvest_uuids(value, collector);
-            }
-        }
-    }
-    match &entry.message_kind {
-        MessageKind::Variable { name, value } => {
-            let name = name.strip_prefix("variable_").unwrap_or(name);
-            if is_peer_uuid_var(name) {
-                harvest_uuids(value, collector);
-            }
-        }
-        MessageKind::Execute {
-            application,
-            arguments,
-            ..
-        } if matches!(application.as_str(), "set" | "export") => {
-            if let Some((name, value)) = arguments.split_once('=') {
-                if is_peer_uuid_var(name) {
-                    harvest_uuids(value, collector);
-                } else if name == "api_result" && value.starts_with("+OK ") {
-                    // uuid_bridge API response: "+OK <bridged-uuid>".
-                    harvest_uuids(value, collector);
-                }
-            }
-        }
-        MessageKind::Execute {
-            application,
-            arguments,
-            ..
-        } if application == "bridge" => {
-            if let Ok(dial) = BridgeDialString::from_str(arguments) {
-                if let Some(ep) = dial.groups().first().and_then(|g| g.first()) {
-                    if let Some(uuid) = ep.variables().and_then(|v| v.get("origination_uuid")) {
-                        collector.insert(uuid.to_string());
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
+/// Variable names this deployment treats as peer-bearing on top of the vanilla
+/// set. `api_result` is where a Lua `uuid_bridge` lands its `+OK <uuid>` reply —
+/// a dialplan-chosen name, so it belongs here rather than in the parser.
+fn extra_peer_var(name: &str) -> bool {
+    name == "api_result"
 }
 
 /// Discovery pass: stream the logs once, collect the UUIDs of every session the
@@ -109,7 +30,9 @@ pub fn discover(
         if !enriched.entry.uuid.is_empty() {
             uuids.insert(enriched.entry.uuid.clone());
         }
-        extract_peer_uuids(&enriched.entry, &mut uuids);
+        for_each_peer_uuid_with(&enriched.entry, extra_peer_var, |uuid| {
+            uuids.insert(uuid.to_string());
+        });
         if let Some(peer) = enriched
             .session
             .as_ref()
@@ -124,9 +47,11 @@ pub fn discover(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use freeswitch_log_parser::{AttachedLines, LineKind};
+    use freeswitch_log_parser::{AttachedLines, LineKind, LogEntry, MessageKind};
 
-    fn var_entry(name: &str, value: &str) -> LogEntry {
+    const PEER: &str = "11111111-2222-3333-4444-555555555555";
+
+    fn set_entry(name: &str, value: &str) -> LogEntry {
         LogEntry {
             uuid: "self".to_string(),
             timestamp: String::new(),
@@ -135,9 +60,11 @@ mod tests {
             source: None,
             message: String::new(),
             kind: LineKind::Full,
-            message_kind: MessageKind::Variable {
-                name: name.to_string(),
-                value: value.to_string(),
+            message_kind: MessageKind::Execute {
+                depth: 0,
+                channel: "sofia/internal/1001".to_string(),
+                application: "set".to_string(),
+                arguments: format!("{name}={value}"),
             },
             block: None,
             attached: AttachedLines::new(),
@@ -146,27 +73,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn harvests_from_whitelisted_var() {
-        let mut set = HashSet::new();
-        let peer = "11111111-2222-3333-4444-555555555555";
-        extract_peer_uuids(&var_entry("bridge_uuid", peer), &mut set);
-        assert!(set.contains(peer));
+    fn collect(entry: &LogEntry) -> Vec<String> {
+        let mut out = Vec::new();
+        for_each_peer_uuid_with(entry, extra_peer_var, |u| out.push(u.to_string()));
+        out
     }
 
     #[test]
-    fn harvests_uppercase_hex_uuid() {
-        let mut set = HashSet::new();
-        let peer = "AAAABBBB-2222-3333-4444-5555CCCCDDDD";
-        extract_peer_uuids(&var_entry("bridge_uuid", peer), &mut set);
-        assert!(set.contains(peer));
+    fn api_result_is_harvested_here_not_in_the_parser() {
+        let entry = set_entry("api_result", &format!("+OK {PEER}"));
+        assert_eq!(collect(&entry), vec![PEER]);
+
+        let mut vanilla = Vec::new();
+        freeswitch_log_parser::for_each_peer_uuid(&entry, |u| vanilla.push(u.to_string()));
+        assert!(vanilla.is_empty());
     }
 
     #[test]
-    fn ignores_non_peer_var() {
-        let mut set = HashSet::new();
-        let other = "11111111-2222-3333-4444-555555555555";
-        extract_peer_uuids(&var_entry("domain_uuid", other), &mut set);
-        assert!(set.is_empty());
+    fn vanilla_peer_var_still_harvested() {
+        assert_eq!(collect(&set_entry("bridge_uuid", PEER)), vec![PEER]);
+    }
+
+    #[test]
+    fn shared_context_var_stays_ignored() {
+        assert!(collect(&set_entry("domain_uuid", PEER)).is_empty());
     }
 }

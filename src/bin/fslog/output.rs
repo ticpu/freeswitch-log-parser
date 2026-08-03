@@ -58,7 +58,7 @@ fn uuid_truecolor(uuid: &str) -> (u8, u8, u8) {
 
 fn write_uuid(out: &mut String, uuid: &str) {
     let (r, g, b) = uuid_truecolor(uuid);
-    let _ = write!(out, "\x1b[38;2;{r};{g};{b}m{uuid}{RESET}");
+    write!(out, "\x1b[38;2;{r};{g};{b}m{uuid}{RESET}").expect("writing to a String cannot fail");
 }
 
 /// Paint UUIDs embedded in `text` with the same per-UUID color the UUID column
@@ -215,8 +215,15 @@ impl EntryPrinter {
             if inline {
                 for line in &entry.attached {
                     let rendered = if use_color {
-                        let uuids = colorize_uuids(line, dim_s);
-                        Cow::Owned(colorize_pass_fail(&uuids, dim_s).into_owned())
+                        // Chained through Cow so a line neither pass touches —
+                        // the common case — is never copied.
+                        match colorize_uuids(line, dim_s) {
+                            Cow::Borrowed(s) => colorize_pass_fail(s, dim_s),
+                            Cow::Owned(s) => match colorize_pass_fail(&s, dim_s) {
+                                Cow::Borrowed(_) => Cow::Owned(s),
+                                Cow::Owned(both) => Cow::Owned(both),
+                            },
+                        }
                     } else {
                         Cow::Borrowed(line)
                     };

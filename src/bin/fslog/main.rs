@@ -407,13 +407,19 @@ const MAX_UNCONFIRMED_FILES: usize = 20;
 const MAX_UNCONFIRMED_BYTES: u64 = 1024 * 1024 * 1024;
 
 fn max_unconfirmed_bytes() -> u64 {
-    match std::env::var("FSLOG_CONFIRM_SIZE") {
-        Err(_) => MAX_UNCONFIRMED_BYTES,
-        Ok(raw) => raw.parse().unwrap_or_else(|e| {
-            eprintln!("fslog: FSLOG_CONFIRM_SIZE={raw} is not a byte count: {e}");
+    let raw = match std::env::var("FSLOG_CONFIRM_SIZE") {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return MAX_UNCONFIRMED_BYTES,
+        // Set but unreadable is a misconfiguration, not an absent setting.
+        Err(e) => {
+            eprintln!("fslog: FSLOG_CONFIRM_SIZE is set but unusable: {e}");
             process::exit(2);
-        }),
-    }
+        }
+    };
+    raw.parse().unwrap_or_else(|e| {
+        eprintln!("fslog: FSLOG_CONFIRM_SIZE={raw} is not a byte count: {e}");
+        process::exit(2);
+    })
 }
 
 /// A human-readable span of the log files on hand, so an empty result says
@@ -524,7 +530,7 @@ fn cmd_search(
         filter.set_fgrep(p)?;
     }
 
-    let mut files = match resolve_search_files(dir, args, from.as_deref(), until.as_deref())? {
+    let files = match resolve_search_files(dir, args, from.as_deref(), until.as_deref())? {
         Some(f) => f,
         None => return Ok(()),
     };
@@ -544,10 +550,10 @@ fn cmd_search(
         Ok(())
     };
 
-    // A single needle that cannot span a line break lets whole files be ruled out
-    // before the parse touches them. Any other search reads everything.
-    if files.len() > 1 {
-        if let Some(needle) = args
+    // A needle that cannot span a line break lets whole files be ruled out before
+    // the parse touches them. Any other search reads everything.
+    let seeded = if files.len() > 1 {
+        match args
             .pattern
             .as_deref()
             .or(args.filter.fgrep.as_deref())
@@ -557,28 +563,36 @@ fn cmd_search(
             })
             .filter(|n| prescan::is_single_line_safe(n))
         {
-            files = prescan::narrow(&files, needle);
-            if files.is_empty() {
-                return report_empty();
-            }
+            Some(needle) => prescan::narrow(&files, needle),
+            None => files.clone(),
         }
+    } else {
+        files.clone()
+    };
+    if seeded.is_empty() {
+        return report_empty();
     }
 
     let printer = args.filter.printer(color);
 
+    // The narrowed set is sound for discovery, which matches the seed the prescan
+    // looked for. It is not sound for output: `--related` re-keys the filter onto
+    // the discovered peer legs, and a peer's own file need never mention the seed.
+    let mut rendered = seeded;
     if args.related {
-        let discovered = related::discover(build_segments(&files), &filter.for_discovery());
+        let discovered = related::discover(build_segments(&rendered), &filter.for_discovery());
         if discovered.is_empty() {
             return report_empty();
         }
         let seeds: Vec<String> = discovered.into_iter().collect();
         filter.set_uuids(&seeds)?;
         filter.uuid_strict = true;
+        rendered = files;
     }
 
     let (stats, session_count, count, matched) = run_output(
         out,
-        build_segments(&files),
+        build_segments(&rendered),
         &filter,
         &printer,
         &args.filter,

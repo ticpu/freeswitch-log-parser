@@ -1,7 +1,7 @@
 //! Byte-level pre-filter that drops candidate files which cannot contain the
 //! search term, so the full parse never opens them.
 
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -38,9 +38,15 @@ fn is_sip_call_id(s: &str) -> bool {
 /// exists to save work, and guessing "no match" from a read failure would hide
 /// entries the full parse would have reported.
 pub fn narrow(files: &[(String, PathBuf)], needle: &str) -> Vec<(String, PathBuf)> {
+    debug_assert!(
+        !needle.is_empty(),
+        "an empty needle matches nothing usefully"
+    );
     let total = files.len();
     debug!("prescanning {total} file(s) for {needle:?}");
     let done = AtomicUsize::new(0);
+    // Progress is a terminal affordance; to a pipe or a log it is only escape noise.
+    let progress = std::io::stderr().is_terminal();
 
     let mut kept: Vec<(usize, (String, PathBuf))> = files
         .par_iter()
@@ -49,11 +55,15 @@ pub fn narrow(files: &[(String, PathBuf)], needle: &str) -> Vec<(String, PathBuf
             let (name, path) = entry;
             let hit = file_contains(path, needle);
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            eprint!("\r\x1b[Kscanning {n}/{total}: {name}");
+            if progress {
+                eprint!("\r\x1b[Kscanning {n}/{total}: {name}");
+            }
             hit.then(|| (i, entry.clone()))
         })
         .collect();
-    eprint!("\r\x1b[K");
+    if progress {
+        eprint!("\r\x1b[K");
+    }
 
     // par_iter yields in completion order; the parse depends on chronological
     // file order, so restore it.

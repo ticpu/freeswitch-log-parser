@@ -355,12 +355,18 @@ fn is_answered(detail: &str) -> bool {
 /// Extract `origination_uuid` and the bridge target channel from bridge() arguments.
 /// Uses `BridgeDialString` from freeswitch-types for correct parsing of `[]`, `{}`,
 /// `|` failover, and `,` simultaneous ring syntax.
-fn parse_bridge_args(arguments: &str) -> Option<BridgeInfo> {
+///
+/// Returns `None` when the arguments do not parse as a dial string or name no
+/// endpoint at all.
+pub fn parse_bridge_args(arguments: &str) -> Option<BridgeInfo> {
     let dial = BridgeDialString::from_str(arguments).ok()?;
     let first_ep = dial.groups().first()?.first()?;
+    // `{}` variables apply to every endpoint, so a single-leg bridge can name
+    // the new leg's UUID there instead of in the endpoint's own `[]`.
     let origination_uuid = first_ep
         .variables()
         .and_then(|v| v.get("origination_uuid"))
+        .or_else(|| dial.variables().and_then(|v| v.get("origination_uuid")))
         .map(|s| s.to_string());
     let mut bare = first_ep.clone();
     bare.set_variables(None);
@@ -371,9 +377,14 @@ fn parse_bridge_args(arguments: &str) -> Option<BridgeInfo> {
     })
 }
 
-struct BridgeInfo {
-    origination_uuid: Option<String>,
-    target_channel: String,
+/// What a `bridge()` argument list says about the leg it is about to create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeInfo {
+    /// The UUID the new leg is being forced to take, when the dial string sets one.
+    pub origination_uuid: Option<String>,
+    /// The first endpoint with its `{}`/`[]` variables removed, matching the form
+    /// the new channel will report as its channel name.
+    pub target_channel: String,
 }
 
 /// Parse "Originate Resulted in Success: [channel] Peer UUID: uuid"

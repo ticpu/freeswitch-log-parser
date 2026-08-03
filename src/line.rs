@@ -68,28 +68,22 @@ pub struct RawLine<'a> {
     pub kind: LineKind,
 }
 
+/// The 36 canonical UUID bytes at `offset`, with nothing required after them —
+/// an embedded UUID can end a line or abut punctuation.
+pub(crate) fn is_uuid_body_at(bytes: &[u8], offset: usize) -> bool {
+    let Some(uuid) = bytes.get(offset..offset + UUID_LEN) else {
+        return false;
+    };
+    uuid.iter().enumerate().all(|(i, &b)| match i {
+        8 | 13 | 18 | 23 => b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
+}
+
+/// A UUID at `offset` acting as a line's session prefix: the space delimiter is
+/// required, so a message that merely starts with hex is not mistaken for one.
 pub(crate) fn is_uuid_at(bytes: &[u8], offset: usize) -> bool {
-    if bytes.len() < offset + UUID_PREFIX_LEN {
-        return false;
-    }
-    if bytes[offset + UUID_LEN] != b' ' {
-        return false;
-    }
-    for (i, &b) in bytes[offset..offset + UUID_LEN].iter().enumerate() {
-        match i {
-            8 | 13 | 18 | 23 => {
-                if b != b'-' {
-                    return false;
-                }
-            }
-            _ => {
-                if !b.is_ascii_hexdigit() {
-                    return false;
-                }
-            }
-        }
-    }
-    true
+    bytes.get(offset + UUID_LEN) == Some(&b' ') && is_uuid_body_at(bytes, offset)
 }
 
 fn find_uuid_in(bytes: &[u8]) -> Option<usize> {

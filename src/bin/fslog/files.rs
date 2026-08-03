@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use freeswitch_log_parser::{read_log_lines, Utf8Decode};
+use freeswitch_log_parser::{decode_log_line, read_log_lines, Utf8Decode};
 use log::{error, warn};
 use xz2::read::XzDecoder;
 
@@ -250,35 +250,44 @@ impl Iterator for LazyLogReader {
     }
 }
 
-struct TailLines {
-    reader: BufReader<fs::File>,
-    buf: String,
+struct TailLines<R: BufRead> {
+    reader: R,
+    /// Bytes of a line the writer has not terminated yet. Emitting it would hand
+    /// the parser half a record and the remainder as a bogus continuation.
+    pending: Vec<u8>,
     path: PathBuf,
 }
 
-impl TailLines {
+impl TailLines<BufReader<fs::File>> {
     fn new(file: fs::File, path: PathBuf) -> Self {
         TailLines {
             reader: BufReader::new(file),
-            buf: String::new(),
+            pending: Vec::new(),
             path,
         }
     }
 }
 
-impl Iterator for TailLines {
+impl<R: BufRead> Iterator for TailLines<R> {
     type Item = String;
 
     fn next(&mut self) -> Option<String> {
         loop {
-            self.buf.clear();
-            match self.reader.read_line(&mut self.buf) {
-                Ok(0) => {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                }
+            match self.reader.read_until(b'\n', &mut self.pending) {
+                Ok(0) => std::thread::sleep(std::time::Duration::from_millis(250)),
                 Ok(_) => {
-                    let line = self.buf.trim_end_matches(['\n', '\r']).to_string();
-                    return Some(line);
+                    if self.pending.last() != Some(&b'\n') {
+                        continue;
+                    }
+                    let decoded = decode_log_line(&self.pending);
+                    self.pending.clear();
+                    if let Utf8Decode::InvalidBytes { at } = decoded.decode {
+                        warn!(
+                            "invalid UTF-8 byte at offset {at} while tailing {}, recovered with U+FFFD",
+                            self.path.display()
+                        );
+                    }
+                    return Some(decoded.text);
                 }
                 Err(e) => {
                     error!("tail read error on {}, stopping: {e}", self.path.display());
@@ -375,6 +384,66 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drive the follower over a fixed buffer. Every assertion below consumes
+    /// only terminated lines, so the EOF sleep is never reached.
+    fn tail_over<R: BufRead>(reader: R) -> TailLines<R> {
+        TailLines {
+            reader,
+            pending: Vec::new(),
+            path: PathBuf::from("test.log"),
+        }
+    }
+
+    fn cursor(bytes: &[u8]) -> io::Cursor<Vec<u8>> {
+        io::Cursor::new(bytes.to_vec())
+    }
+
+    /// Errors instead of reporting EOF, so a test can reach the terminal arm of
+    /// `TailLines::next` without waiting on the follower's EOF sleep.
+    struct FailAtEof(io::Cursor<Vec<u8>>);
+
+    impl io::Read for FailAtEof {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match io::Read::read(&mut self.0, buf)? {
+                0 => Err(io::Error::other("simulated read failure")),
+                n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn tail_survives_truncated_codepoint() {
+        // "é" (0xC3 0xA9) cut after its lead byte, as mod_logfile's 2 KiB
+        // buffer does; the follower must keep going, not stop on InvalidData.
+        let lines: Vec<String> = tail_over(cursor(b"caf\xc3\nnext line\n")).take(2).collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("caf"), "line: {:?}", lines[0]);
+        assert_eq!(lines[1], "next line");
+    }
+
+    #[test]
+    fn tail_recovers_invalid_bytes() {
+        let lines: Vec<String> = tail_over(cursor(b"bad\xffbyte\nafter\n")).take(2).collect();
+        assert_eq!(lines[0], "bad\u{fffd}byte");
+        assert_eq!(lines[1], "after");
+    }
+
+    #[test]
+    fn tail_strips_crlf() {
+        let lines: Vec<String> = tail_over(cursor(b"one\r\ntwo\n")).take(2).collect();
+        assert_eq!(lines, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn tail_withholds_unterminated_line() {
+        // The writer has not flushed the newline yet: emitting now would yield
+        // half a record, and the remainder as a bogus continuation.
+        let mut tail = tail_over(BufReader::new(FailAtEof(cursor(b"complete\nhalf-writ"))));
+        assert_eq!(tail.next(), Some("complete".to_string()));
+        assert_eq!(tail.next(), None);
+        assert_eq!(tail.pending, b"half-writ");
+    }
 
     #[test]
     fn extract_date_standard() {

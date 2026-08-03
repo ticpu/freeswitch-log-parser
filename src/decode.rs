@@ -105,6 +105,25 @@ pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Decode one raw log line: strip the terminator, classify, lossy-recover.
+///
+/// For readers that own their read loop. A `tail -f` follower cannot use
+/// [`read_log_lines`], which ends at EOF rather than waiting for more bytes, but
+/// must classify identically instead of re-deriving this decision.
+pub fn decode_log_line(bytes: &[u8]) -> DecodedLine {
+    let mut buf = bytes;
+    if let Some((&b'\n', rest)) = buf.split_last() {
+        buf = match rest.split_last() {
+            Some((&b'\r', rest)) => rest,
+            _ => rest,
+        };
+    }
+    DecodedLine {
+        text: String::from_utf8_lossy(buf).into_owned(),
+        decode: classify_utf8(buf),
+    }
+}
+
 /// Read newline-delimited log lines, decoding each with the truncated-codepoint
 /// case typed distinctly from corruption.
 ///
@@ -116,17 +135,7 @@ pub fn read_log_lines<R: BufRead>(mut r: R) -> impl Iterator<Item = io::Result<D
         let mut buf = Vec::new();
         match r.read_until(b'\n', &mut buf) {
             Ok(0) => None,
-            Ok(_) => {
-                if buf.last() == Some(&b'\n') {
-                    buf.pop();
-                    if buf.last() == Some(&b'\r') {
-                        buf.pop();
-                    }
-                }
-                let decode = classify_utf8(&buf);
-                let text = String::from_utf8_lossy(&buf).into_owned();
-                Some(Ok(DecodedLine { text, decode }))
-            }
+            Ok(_) => Some(Ok(decode_log_line(&buf))),
             Err(e) => Some(Err(e)),
         }
     })

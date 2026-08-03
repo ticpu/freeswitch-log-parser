@@ -2,6 +2,7 @@ mod complete;
 #[cfg(feature = "tui")]
 mod config;
 mod context;
+mod dialstring;
 mod files;
 #[cfg(feature = "tui")]
 mod monitor;

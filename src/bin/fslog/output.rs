@@ -8,6 +8,8 @@ use freeswitch_log_parser::{
     find_uuids, normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel,
 };
 
+use crate::dialstring::{dial_string_of, print_dial_string};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     Always,
@@ -184,6 +186,10 @@ impl EntryPrinter {
         if self.show_blocks {
             if let Some(block) = &entry.block {
                 self.print_block(w, block, use_color)?;
+            }
+            if let Some(args) = dial_string_of(&entry.message_kind) {
+                let (lbl, val) = if use_color { (CYAN, DIM) } else { ("", "") };
+                print_dial_string(w, args, lbl, val, reset)?;
             }
         }
 

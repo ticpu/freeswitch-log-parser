@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 
 use freeswitch_log_parser::{
-    find_uuids, normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel,
+    find_uuids, normalize_entry_timestamp, truncate_at_char_boundary, Block, LogLevel, MessageKind,
 };
 
 use crate::dialstring::{dial_string_of, print_dial_string};
@@ -177,6 +177,15 @@ impl EntryPrinter {
         let reset = if use_color { RESET } else { "" };
         let dim = if use_color { DIM } else { "" };
 
+        // Markers carry no time, level or UUID, so the entry columns would all be
+        // empty. A rule reads as what it is: a break between files or days.
+        if matches!(
+            entry.message_kind,
+            MessageKind::FileChange | MessageKind::DateChange
+        ) {
+            return writeln!(w, "{dim}── {}{reset}", entry.message);
+        }
+
         let uuid = if entry.uuid.is_empty() {
             format!("{dim}-{reset}")
         } else if use_color {
@@ -270,7 +279,9 @@ impl EntryPrinter {
                     };
                     writeln!(w, "{dim_s}         {rendered}{reset}")?;
                 }
-            } else {
+            } else if !(self.show_blocks && entry.block.is_some()) {
+                // A block already printed above is these same lines, parsed —
+                // counting them again says nothing the reader cannot see.
                 writeln!(
                     w,
                     "{dim_s}         ({} attached lines){reset}",
@@ -682,20 +693,38 @@ pub mod tests {
         assert!(out.contains("the only continuation"), "{out}");
     }
 
-    #[test]
-    fn typed_block_keeps_attached_lines_collapsed() {
-        // The block already renders this content; printing both duplicates it.
+    fn channel_data_entry() -> LogEntry {
         let mut e = entry(
             "u",
             "CHANNEL_DATA:",
             &["Channel-Name: [x]", "variable_a: [b]"],
         );
         e.block = Some(Block::ChannelData {
-            fields: Vec::new(),
-            variables: Vec::new(),
+            fields: vec![("Channel-Name".into(), "x".into())],
+            variables: vec![("variable_a".into(), "b".into())],
         });
-        let out = render(&printer(ColorMode::Never, true), &e);
+        e
+    }
+
+    #[test]
+    fn an_expanded_block_does_not_also_count_its_raw_lines() {
+        let out = render(&printer(ColorMode::Never, true), &channel_data_entry());
+        assert!(out.contains("field  Channel-Name: x"), "{out}");
+        assert!(!out.contains("attached lines"), "{out}");
+    }
+
+    #[test]
+    fn without_blocks_the_count_is_the_only_signal() {
+        let out = render(&printer(ColorMode::Never, false), &channel_data_entry());
         assert!(out.contains("(2 attached lines)"), "{out}");
+    }
+
+    #[test]
+    fn a_marker_prints_as_a_rule_not_empty_columns() {
+        let mut e = entry("", "freeswitch.log.1.xz", &[]);
+        e.message_kind = MessageKind::FileChange;
+        let out = render(&printer(ColorMode::Never, true), &e);
+        assert_eq!(out, "── freeswitch.log.1.xz\n");
     }
 
     #[test]

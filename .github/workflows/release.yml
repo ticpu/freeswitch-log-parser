@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+        - runner: ubuntu-latest
+          arch: amd64
+        - runner: ubuntu-24.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+    # Full history: the Makefile derives the package version from the tag.
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Build .deb
+      run: make deb DEB_ARCH=${{ matrix.arch }}
+
+    - name: Name the bare binary
+      run: |
+        version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+        cp "dist/${{ matrix.arch }}/fslog" "fslog-$version-linux-${{ matrix.arch }}"
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: fslog-${{ matrix.arch }}
+        path: |
+          *.deb
+          fslog-*-linux-*
+        if-no-files-found: error
+
+  release:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - uses: actions/download-artifact@v8
+      with:
+        path: assets
+        merge-multiple: true
+
+    - name: Check tag matches Cargo.toml version
+      run: |
+        version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+        if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+          echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+          exit 1
+        fi
+        echo "VERSION=$version" >> "$GITHUB_ENV"
+
+    - name: Source tarball and checksums
+      run: |
+        git archive --format=tar.gz \
+          --prefix="freeswitch-log-parser-$VERSION/" \
+          -o "assets/freeswitch-log-parser-$VERSION.tar.gz" "$GITHUB_REF_NAME"
+        cd assets
+        sha256sum fslog-* *.deb *.tar.gz > SHA256SUMS
+
+    # The annotated tag's message is the changelog the release process writes.
+    - name: Create release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" \
+          --title "$GITHUB_REF_NAME" \
+          --notes "$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")" \
+          assets/*

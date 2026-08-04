@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -61,3 +61,20 @@ jobs:
 
     - name: Build
       run: cargo build --features tui --release
+
+  # amd64 only: enough to catch a broken Containerfile or control file, without
+  # paying for the second architecture on every push.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Build .deb
+      run: make deb
+
+    - name: Inspect .deb
+      run: |
+        dpkg-deb -I fslog_*_amd64.deb
+        dpkg-deb -c fslog_*_amd64.deb

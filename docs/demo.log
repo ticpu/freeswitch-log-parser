@@ -1,0 +1,32 @@
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:02.104233 96.10% [NOTICE] switch_channel.c:1142 New Channel sofia/internal/1001 [a1b2c3d4-1111-4a2b-8c3d-000000000001]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:02.104233 96.10% [DEBUG] switch_channel.c:2615 (sofia/internal/1001) State Change CS_NEW -> CS_INIT
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:02.104233 96.10% [DEBUG] switch_core_state_machine.c:659 (sofia/internal/1001) State ROUTING
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:02.124107 96.10% [INFO] mod_dialplan_xml.c:637 Processing 1001 <1001>->5551234 in context default
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 parsing [default->unloop] continue=false
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 Regex (PASS) [unloop] ${unroll_loops}(true) =~ /^true$/ break=on-false
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 Regex (FAIL) [unloop] ${sip_looped_call}() =~ /^true$/ break=on-false
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 parsing [default->outbound] continue=true
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 Regex (PASS) [outbound] ${destination_number}(5551234) =~ /^(\d{7})$/ break=on-false
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 Action export(origination_caller_id_number=${sip_auth_username})
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 Action set(ringback=${us-ring})
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Dialplan: sofia/internal/1001 Action bridge(${outbound_dial_string})
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:02.144188 96.08% [DEBUG] switch_core_session.c:2907 EXECUTE [depth=0] sofia/internal/1001 bridge({origination_uuid=a1b2c3d4-2222-4a2b-8c3d-000000000002}[presence_id=1001@example.test]sofia/gateway/gw1/5551234|sofia/gateway/gw2/5551234)
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:02.144188 96.08% [INFO] mod_dptools.c:1999 CHANNEL_DATA:
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Channel-State: [CS_EXECUTE]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Channel-Name: [sofia/internal/1001]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Unique-ID: [a1b2c3d4-1111-4a2b-8c3d-000000000001]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Call-Direction: [inbound]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 Caller-Destination-Number: [5551234]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 variable_sip_from_host: [example.test]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 variable_sip_network_ip: [192.0.2.41]
+a1b2c3d4-1111-4a2b-8c3d-000000000001 variable_origination_uuid: [a1b2c3d4-2222-4a2b-8c3d-000000000002]
+a1b2c3d4-2222-4a2b-8c3d-000000000002 2026-03-08 15:48:02.164902 96.08% [NOTICE] switch_channel.c:1142 New Channel sofia/gateway/gw1/5551234 [a1b2c3d4-2222-4a2b-8c3d-000000000002]
+a1b2c3d4-2222-4a2b-8c3d-000000000002 2026-03-08 15:48:02.184771 96.02% [DEBUG] sofia_glue.c:1676 Local SDP sofia/gateway/gw1/5551234:
+a1b2c3d4-2222-4a2b-8c3d-000000000002 v=0
+a1b2c3d4-2222-4a2b-8c3d-000000000002 o=FreeSWITCH 1741400000 1741400001 IN IP4 192.0.2.10
+a1b2c3d4-2222-4a2b-8c3d-000000000002 c=IN IP4 192.0.2.10
+a1b2c3d4-2222-4a2b-8c3d-000000000002 m=audio 24580 RTP/AVP 0 101
+a1b2c3d4-2222-4a2b-8c3d-000000000002 a=rtpmap:0 PCMU/8000
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:09.884210 95.94% [NOTICE] switch_ivr_originate.c:3861 Originate Resulted in Success: [sofia/gateway/gw1/5551234] Peer UUID: a1b2c3d4-2222-4a2b-8c3d-000000000002
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:09.884210 95.94% [DEBUG] switch_channel.c:2615 (sofia/internal/1001) Callstate Change RINGING -> ACTIVE
+a1b2c3d4-1111-4a2b-8c3d-000000000001 2026-03-08 15:48:41.204119 95.90% [NOTICE] switch_ivr_bridge.c:1002 Hangup sofia/internal/1001 [CS_EXECUTE] [NORMAL_CLEARING]

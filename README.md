@@ -145,6 +145,10 @@ bridged and transferred legs. It reads rotated `.xz` files directly and
 chains them in date order, so a single query spans the whole retention
 window.
 
+![fslog rendering one call with --blocks](https://raw.githubusercontent.com/ticpu/freeswitch-log-parser/master/docs/fslog-demo.webp)
+
+*`fslog read docs/demo.log --blocks` — one synthetic call, start to hangup.*
+
 Build with `cargo build --release --features cli` for everything below,
 or `--features tui` to also get the `monitor` dashboard. The library
 itself pulls no CLI dependencies unless a feature is enabled.

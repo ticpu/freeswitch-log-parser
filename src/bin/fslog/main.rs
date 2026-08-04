@@ -38,7 +38,7 @@ enum ColorWhen {
 }
 
 #[derive(Parser)]
-#[command(name = "fslog", about = "FreeSWITCH log file query tool")]
+#[command(name = "fslog", version, about = "FreeSWITCH log file query tool")]
 struct Cli {
     /// Log directory
     #[arg(long, default_value = "/var/log/freeswitch", env = "FSLOG_DIR")]

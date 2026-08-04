@@ -182,7 +182,8 @@ is enabled.
 | `fslog completions <SHELL>` | Emit a shell completion script |
 
 Global flags: `--dir <PATH>` (or `FSLOG_DIR`, default
-`/var/log/freeswitch`), `--color auto|always|never`, `--no-pager`.
+`/var/log/freeswitch`), `--color auto|always|never`, `--no-pager`,
+`--version`.
 
 ### `search`
 

@@ -281,20 +281,10 @@ fn parse_dialplan_context(detail: &str) -> Option<DialplanContext> {
     let from_part = &inner[..arrow];
     let to_part = &inner[arrow + 2..];
 
-    let context = if rest.len() > bracket_end + 1 {
-        let after = rest[bracket_end + 1..].trim();
-        if let Some(stripped) = after.strip_prefix("continue=") {
-            let _ = stripped;
-        }
-        from_part.to_string()
-    } else {
-        from_part.to_string()
-    };
-
     Some(DialplanContext {
         from: from_part.to_string(),
         to: to_part.to_string(),
-        context,
+        context: from_part.to_string(),
     })
 }
 

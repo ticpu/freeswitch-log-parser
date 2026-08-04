@@ -729,7 +729,9 @@ fn main() {
         let mut stdin = child.stdin.take().expect("pager stdin");
         let result = run_with_output(cli, use_pager, &mut stdin);
         drop(stdin);
-        let _ = child.wait();
+        if let Err(e) = child.wait() {
+            warn!("waiting for the pager failed: {e}");
+        }
         result
     } else {
         let stdout = io::stdout();

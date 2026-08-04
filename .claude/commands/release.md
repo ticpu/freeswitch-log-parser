@@ -75,6 +75,10 @@ cargo publish
 
 6. Report the tag and changelog.
 
+   Pushing the tag triggers `.github/workflows/release.yml`, which builds the
+   amd64/arm64 `.deb`s and binaries and creates the GitHub release using the tag
+   annotation as its body — so the changelog above is what the release page shows.
+
 ## Important
 
 - **Never commit Cargo.lock** — library crate, stays gitignored.

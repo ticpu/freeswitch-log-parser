@@ -149,9 +149,26 @@ window.
 
 *`fslog read docs/demo.log --blocks` — one synthetic call, start to hangup.*
 
-Build with `cargo build --release --features cli` for everything below,
-or `--features tui` to also get the `monitor` dashboard. The library
-itself pulls no CLI dependencies unless a feature is enabled.
+### Install
+
+Each release carries an `amd64` and an `arm64` `.deb` (binary plus
+bash/zsh/fish completions), the same binaries standalone, and
+`SHA256SUMS`:
+
+```
+curl -LO https://github.com/ticpu/freeswitch-log-parser/releases/latest/download/fslog_<version>_amd64.deb
+sudo dpkg -i fslog_<version>_amd64.deb
+```
+
+They are built in a Debian bullseye container, so they run on any glibc
+2.30 or newer — Debian 11+, Ubuntu 20.04+, RHEL 9+ — and need only
+`liblzma5` beyond libc. `make deb` reproduces them locally with podman
+(`DEB_ARCH=arm64` for the other architecture).
+
+From source, build with `cargo build --release --features cli` for
+everything below, or `--features tui` to also get the `monitor`
+dashboard. The library itself pulls no CLI dependencies unless a feature
+is enabled.
 
 ### Commands
 

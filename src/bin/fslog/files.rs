@@ -450,4 +450,81 @@ mod tests {
     fn format_size_bytes() {
         assert_eq!(format_size(512), "512B");
     }
+
+    /// A rotation stamp is the *end* of the file's span, so the selection has to
+    /// reach one file past each bound. These fixtures rotate daily at midnight.
+    fn day_files(days: &[Option<&str>]) -> Vec<LogFile> {
+        days.iter()
+            .map(|d| LogFile {
+                path: PathBuf::from("freeswitch.log"),
+                date: d.map(|d| format!("2026-03-{d}-00-00-00")),
+                size: 0,
+            })
+            .collect()
+    }
+
+    fn selected(files: &[LogFile], from: Option<&str>, until: Option<&str>) -> Vec<String> {
+        filter_files_by_date(files, from, until)
+            .iter()
+            .map(|f| match &f.date {
+                Some(d) => d[8..10].to_string(),
+                None => "live".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unbounded_selection_keeps_everything() {
+        let files = day_files(&[Some("08"), Some("09"), None]);
+        assert_eq!(selected(&files, None, None), ["08", "09", "live"]);
+    }
+
+    #[test]
+    fn from_reaches_back_one_file() {
+        // Entries from the 10th live in the file stamped the 11th, and the file
+        // stamped the 10th holds the small hours the 9th's rotation left behind.
+        let files = day_files(&[Some("08"), Some("09"), Some("10"), Some("11")]);
+        assert_eq!(
+            selected(&files, Some("2026-03-10"), None),
+            ["09", "10", "11"]
+        );
+    }
+
+    #[test]
+    fn from_drops_files_that_end_before_the_next_one_starts() {
+        let files = day_files(&[Some("08"), Some("09"), Some("10"), Some("11")]);
+        assert_eq!(selected(&files, Some("2026-03-11"), None), ["10", "11"]);
+    }
+
+    #[test]
+    fn until_keeps_the_file_the_bound_falls_inside() {
+        // The 10th's file spans the 9th, so an `until` on the 9th still needs it;
+        // the 11th's cannot hold anything that early.
+        let files = day_files(&[Some("08"), Some("09"), Some("10"), Some("11")]);
+        assert_eq!(
+            selected(&files, None, Some("2026-03-09")),
+            ["08", "09", "10"]
+        );
+    }
+
+    #[test]
+    fn the_active_log_is_never_excluded_by_date() {
+        // It has no stamp, so nothing can prove it lacks entries in the window.
+        let files = day_files(&[Some("08"), Some("09"), None]);
+        assert_eq!(
+            selected(&files, None, Some("2026-03-08")),
+            ["08", "09", "live"]
+        );
+        assert_eq!(selected(&files, Some("2026-03-20"), None), ["09", "live"]);
+    }
+
+    #[test]
+    fn a_month_bound_spans_the_whole_month() {
+        let files = day_files(&[Some("08"), Some("09")]);
+        assert_eq!(
+            selected(&files, Some("2026-03"), Some("2026-03")),
+            ["08", "09"]
+        );
+        assert!(selected(&files, Some("2026-04"), Some("2026-04")).is_empty());
+    }
 }

@@ -225,15 +225,15 @@ impl SearchArgs {
 
     /// Resolve the date bounds, collapsing the `--on`/`--today` shorthands into
     /// the same pair of partial dates `--from`/`--until` supply.
-    fn window(&self) -> io::Result<(Option<String>, Option<String>)> {
+    fn window(&self) -> (Option<String>, Option<String>) {
         if self.today {
             let today = jiff::Zoned::now().date().to_string();
-            return Ok((Some(today.clone()), Some(today)));
+            return (Some(today.clone()), Some(today));
         }
         if let Some(on) = &self.on {
-            return Ok((Some(on.clone()), Some(on.clone())));
+            return (Some(on.clone()), Some(on.clone()));
         }
-        Ok((self.from.clone(), self.until.clone()))
+        (self.from.clone(), self.until.clone())
     }
 }
 
@@ -524,7 +524,7 @@ fn cmd_search(
         ));
     }
 
-    let (from, until) = args.window()?;
+    let (from, until) = args.window();
     let mut filter = build_filter(&args.filter, from.as_deref(), until.as_deref());
     if let Some(p) = &args.pattern {
         filter.set_fgrep(p)?;

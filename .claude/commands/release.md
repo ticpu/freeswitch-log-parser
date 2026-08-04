@@ -53,25 +53,36 @@ cargo publish --dry-run
    - what changed
    ```
 
-4. Stage, commit, tag, push:
+4. Commit the bump on master and push it:
 
 ```sh
 git add Cargo.toml
 git commit -m "release: vX.Y.Z"
+git push
+```
+
+5. Tag a detached child commit that pins `Cargo.lock`. The tag is the only ref
+   that reaches it, so the lock never lands on master while the released
+   binaries still build from an exact dependency set:
+
+```sh
+git checkout --detach
+git add -f Cargo.lock
+git commit -m "build: pin Cargo.lock for vX.Y.Z"
 git tag -as vX.Y.Z -m "$(cat <<'EOF'
 vX.Y.Z
 
 <changelog>
 EOF
 )"
-git push && git push --tags
-```
-
-5. Publish:
-
-```sh
+git push origin vX.Y.Z
 cargo publish
+git switch master
 ```
+
+   `cargo publish` runs while still detached, so the published crate matches the
+   tag exactly. `git switch master` deletes the working-tree `Cargo.lock` (it is
+   untracked there); the next cargo command regenerates it.
 
 6. Report the tag and changelog.
 
@@ -81,6 +92,7 @@ cargo publish
 
 ## Important
 
-- **Never commit Cargo.lock** — library crate, stays gitignored.
+- **Cargo.lock never reaches master** — library crate, stays gitignored there. It
+  exists only on the tag's own commit, so a release build is reproducible.
 - The tag is IMMUTABLE once pushed — never retag. Wrong? Make a new patch release.
 - **`cargo publish --dry-run` must pass** before real publish.

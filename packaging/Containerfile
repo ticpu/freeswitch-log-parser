@@ -9,8 +9,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     binutils
 
 WORKDIR /app
-COPY Cargo.toml ./
-COPY src/ ./src/
+# The Makefile stages the context (Cargo.toml, src/, and Cargo.lock when the tag
+# pinned one); the repo root would ship a multi-GB target/ and the log fixtures.
+COPY . ./
 
 # Everything the .deb needs ends up under /app/out so the Makefile extracts it
 # in one `cp`. The glibc floor is read off the binary here rather than guessed

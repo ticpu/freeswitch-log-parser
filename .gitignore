@@ -1,6 +1,4 @@
 /target
 /Cargo.lock
 tests/fixtures/
-/dist/
-/package.tmp/
 /*.deb

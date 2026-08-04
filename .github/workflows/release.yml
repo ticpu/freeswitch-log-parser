@@ -33,7 +33,7 @@ jobs:
     - name: Name the bare binary
       run: |
         version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
-        cp "dist/${{ matrix.arch }}/fslog" "fslog-$version-linux-${{ matrix.arch }}"
+        cp "target/dist/${{ matrix.arch }}/fslog" "fslog-$version-linux-${{ matrix.arch }}"
 
     - uses: actions/upload-artifact@v7
       with:

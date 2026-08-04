@@ -17,9 +17,12 @@ DEB_AMD64 := $(BINARY)_$(DEB_VERSION)_amd64.deb
 DEB_ARM64 := $(BINARY)_$(DEB_VERSION)_arm64.deb
 DEB := $(BINARY)_$(DEB_VERSION)_$(DEB_ARCH).deb
 
-DIST := dist/$(DEB_ARCH)
+# Staging lives under target/: on bcachefs that is a subvolume, so build
+# artifacts stay out of the repo's snapshots.
+DIST := target/dist/$(DEB_ARCH)
 IMG := fslog-build:$(DEB_ARCH)-$(DEBIAN_SUITE)
-PKG := package.tmp
+PKG := target/package.tmp
+CTX := target/context.tmp
 
 .PHONY: all binary deb deb-all clean
 
@@ -34,12 +37,19 @@ deb-all:
 	$(MAKE) deb DEB_ARCH=arm64
 
 # Built in the container, extracted through a throwaway container: the image is
-# kept (stable tag) so a rebuild reuses its layer and registry caches.
+# kept (stable tag) so a rebuild reuses its layer and registry caches. The build
+# context is staged rather than the repo root, which carries target/ and the log
+# fixtures. Cargo.lock only exists on a release tag; without it cargo resolves.
 $(DIST)/fslog: packaging/Containerfile Cargo.toml $(shell find src -name '*.rs')
+	rm -rf "$(CTX)"
+	mkdir -p "$(CTX)"
+	cp -a Cargo.toml src "$(CTX)/"
+	if [ -f Cargo.lock ]; then cp -a Cargo.lock "$(CTX)/"; fi
 	$(DOCKER) build --platform linux/$(DEB_ARCH) --build-arg SUITE=$(DEBIAN_SUITE) \
-		--tag "$(IMG)" -f packaging/Containerfile .
+		--tag "$(IMG)" -f packaging/Containerfile "$(CTX)"
+	rm -rf "$(CTX)"
 	rm -rf "$(DIST)"
-	mkdir -p dist
+	mkdir -p target/dist
 	cid=$$($(DOCKER) create "$(IMG)") && \
 	$(DOCKER) cp "$$cid:/app/out" "$(DIST)"; \
 	rc=$$?; $(DOCKER) rm "$$cid" > /dev/null; exit $$rc
@@ -74,4 +84,4 @@ $(DEB): $(DIST)/fslog packaging/control LICENSE
 	rm -rf "$(PKG)"
 
 clean:
-	rm -rf "$(PKG)" dist $(BINARY)_*.deb
+	rm -rf "$(PKG)" "$(CTX)" target/dist $(BINARY)_*.deb

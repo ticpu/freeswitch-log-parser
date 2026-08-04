@@ -56,6 +56,29 @@ fn uuid_truecolor(uuid: &str) -> (u8, u8, u8) {
     hsl_to_rgb(hue, 0.30, 0.82)
 }
 
+/// Split `Dialplan: <channel> <data>` into the part every line of the block
+/// repeats and the part that differs. The channel never contains a space, so the
+/// one after it ends the prefix.
+fn split_dialplan_line(msg: &str) -> Option<(&str, &str)> {
+    let tag = ["Dialplan: ", "Chatplan: "]
+        .into_iter()
+        .find(|t| msg.starts_with(t))?;
+    let (_channel, data) = msg[tag.len()..].split_once(' ')?;
+    Some((&msg[..msg.len() - data.len() - 1], data))
+}
+
+/// Drop what a continuation line repeats from the entry that owns it: its own
+/// UUID, and the `Dialplan:`/`Chatplan:` channel the header already names. Every
+/// line of a dialplan block carries both, which buries the verdict past column 90
+/// where nothing lines up.
+fn strip_repeated_prefix<'a>(line: &'a str, uuid: &str) -> &'a str {
+    let rest = line
+        .strip_prefix(uuid)
+        .and_then(|r| r.strip_prefix(' '))
+        .unwrap_or(line);
+    split_dialplan_line(rest).map_or(rest, |(_, data)| data)
+}
+
 fn write_uuid(out: &mut String, uuid: &str) {
     let (r, g, b) = uuid_truecolor(uuid);
     write!(out, "\x1b[38;2;{r};{g};{b}m{uuid}{RESET}").expect("writing to a String cannot fail");
@@ -164,10 +187,26 @@ impl EntryPrinter {
             entry.uuid.clone()
         };
 
+        // Continuation lines print inline only when nothing else carries the
+        // entry's content; a typed block or a bare count already does.
+        let inline = !entry.attached.is_empty()
+            && ((self.show_blocks && entry.block.is_none()) || entry.attached.len() == 1);
+
+        // With a body to head, the channel goes on the header alone and its data
+        // joins the body — otherwise the header would be the one line carrying
+        // both, and the block would not read as a column.
+        let (head, head_data) = match inline
+            .then(|| split_dialplan_line(&entry.message))
+            .flatten()
+        {
+            Some((channel, data)) => (channel, Some(data)),
+            None => (entry.message.as_str(), None),
+        };
+
         let msg = if use_color {
-            colorize_uuids(&entry.message, lc)
+            colorize_uuids(head, lc)
         } else {
-            Cow::Borrowed(entry.message.as_str())
+            Cow::Borrowed(head)
         };
 
         if let Some(fname) = filename.filter(|_| self.show_filename) {
@@ -178,10 +217,12 @@ impl EntryPrinter {
             write!(w, "{lc}L{line:>6} ", line = entry.line_number)?;
         }
 
+        // Time and level share the level color: a run of one severity reads as a
+        // single band down the left edge. The line kind is Layer 1's business —
+        // `[{mkind}]` is what a reader of a call actually wants there.
         writeln!(
             w,
-            "{lc}{kind:>9} {level:>7}{reset} {time} {uuid} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
-            kind = entry.kind,
+            "{lc}{time:>15} {level:>7}{reset} {uuid} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
             mkind = entry.message_kind,
         )?;
 
@@ -211,9 +252,9 @@ impl EntryPrinter {
             // Continuation lines the parser did not fold into a typed block are
             // the entry's only content — dialplan regex verdicts, EXECUTE traces.
             // Collapsing those to a count leaves nothing readable behind.
-            let inline = (self.show_blocks && entry.block.is_none()) || entry.attached.len() == 1;
             if inline {
-                for line in &entry.attached {
+                for line in head_data.into_iter().chain(&entry.attached) {
+                    let line = strip_repeated_prefix(line, &entry.uuid);
                     let rendered = if use_color {
                         // Chained through Cow so a line neither pass touches —
                         // the common case — is never copied.
@@ -563,6 +604,68 @@ pub mod tests {
         assert!(out.contains("Regex (PASS) x =~ /y/"), "{out}");
         assert!(out.contains("Action set"), "{out}");
         assert!(!out.contains("attached lines"), "{out}");
+    }
+
+    const CHAN: &str = "sofia/internal/1262@pbx.example.test:5062";
+
+    #[test]
+    fn the_channel_heads_the_block_and_every_body_line_is_data() {
+        let uuid = "9865d278-537b-4d4a-af91-f836729f78f2";
+        let e = entry(
+            uuid,
+            &format!("Dialplan: {CHAN} parsing [default->unloop] continue=false"),
+            &[format!("{uuid} Dialplan: {CHAN} Regex (PASS) [unloop] break=on-false").as_str()],
+        );
+        let out = render(&printer(ColorMode::Never, true), &e);
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert!(lines[0].ends_with(&format!("Dialplan: {CHAN}")), "{out}");
+        assert_eq!(lines[1].trim(), "parsing [default->unloop] continue=false");
+        assert_eq!(lines[2].trim(), "Regex (PASS) [unloop] break=on-false");
+    }
+
+    #[test]
+    fn a_dialplan_line_with_no_body_keeps_its_data() {
+        // Splitting a lone line would put its data on a continuation row of its own.
+        let e = entry(
+            "u",
+            &format!("Dialplan: {CHAN} Absolute Condition [global]"),
+            &[],
+        );
+        let out = render(&printer(ColorMode::Never, true), &e);
+        assert!(
+            out.trim_end().ends_with("Absolute Condition [global]"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_foreign_uuid_in_a_body_line_survives() {
+        // Only the entry's own UUID is redundant; any other one is a real value.
+        let e = entry(
+            "u",
+            &format!("Dialplan: {CHAN} parsing [a->b] continue=true"),
+            &[format!("u Dialplan: {CHAN} Regex (FAIL) ${{hdr}}({PEER}) =~ /^$/").as_str()],
+        );
+        let out = render(&printer(ColorMode::Never, true), &e);
+        assert!(out.contains(PEER), "{out}");
+        assert!(!out.contains(&format!("Dialplan: {CHAN} Regex")), "{out}");
+    }
+
+    #[test]
+    fn a_non_dialplan_continuation_only_loses_its_uuid() {
+        let e = entry(
+            "u",
+            "msg",
+            &["u EXECUTE [depth=0] sofia/internal/1001 bridge(sofia/gateway/gw/5551234)"],
+        );
+        let out = render(&printer(ColorMode::Never, false), &e);
+        assert!(
+            out.contains(
+                "  EXECUTE [depth=0] sofia/internal/1001 bridge(sofia/gateway/gw/5551234)"
+            ),
+            "{out}"
+        );
     }
 
     #[test]

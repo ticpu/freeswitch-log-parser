@@ -198,8 +198,9 @@ Output and selection:
 
 ### Reading the output
 
-Each entry is one line — line kind, level, time, UUID, message kind,
-message — followed by whatever structure it carries.
+Each entry is one line — time, level, UUID, message kind, message —
+followed by whatever structure it carries. Time and level share the level's
+color, so a run of one severity reads as a band down the left edge.
 
 UUIDs get a stable per-call truecolor, in the UUID column and wherever one
 appears inside a message or a continuation line, so a bridge target is the
@@ -209,6 +210,17 @@ Continuation lines the parser did not fold into a typed block — dialplan
 condition traces, EXECUTE output — print inline under `--blocks`, with
 `(PASS)` and `(FAIL)` verdicts colored. Without `--blocks` they collapse to
 a count, unless there is only one.
+
+A dialplan block prints its channel once, on the header, and every line
+under it starts with what differs:
+
+```
+19:06:09.550802    info 9865d278-…78f2 [dialplan] Dialplan: sofia/internal/1262@pbx:5062
+         parsing [default->unloop] continue=false
+         Regex (PASS) [unloop] ${unroll_loops}(true) =~ /^true$/ break=on-false
+         Regex (FAIL) [unloop] ${sip_looped_call}() =~ /^true$/ break=on-false
+         Action set(call_debug=false)
+```
 
 `--blocks` also expands:
 

@@ -149,8 +149,9 @@ enum StreamState {
     InChannelData {
         fields: Vec<(String, String)>,
         variables: Vec<(String, String)>,
-        open_var_name: Option<String>,
-        open_var_value: Option<String>,
+        // Name and accumulated value of a variable whose `[` has not been closed
+        // yet. One field, so a half-open variable cannot be represented.
+        open_var: Option<(String, String)>,
     },
     InSdp {
         direction: SdpDirection,
@@ -253,12 +254,11 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             StreamState::InChannelData {
                 fields,
                 mut variables,
-                open_var_name,
-                open_var_value,
+                open_var,
             } => {
-                if let (Some(ref name), Some(value)) = (&open_var_name, open_var_value) {
+                if let Some((name, value)) = open_var {
                     warnings.push(format!("unclosed multi-line variable: {name}"));
-                    variables.push((name.clone(), value));
+                    variables.push((name, value));
                 }
                 (Some(Block::ChannelData { fields, variables }), warnings)
             }
@@ -293,8 +293,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             MessageKind::ChannelData => StreamState::InChannelData {
                 fields: Vec::new(),
                 variables: Vec::new(),
-                open_var_name: None,
-                open_var_value: None,
+                open_var: None,
             },
             MessageKind::SdpMarker { direction } => StreamState::InSdp {
                 direction: direction.clone(),
@@ -342,17 +341,15 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             StreamState::InChannelData {
                 fields,
                 variables,
-                open_var_name,
-                open_var_value,
+                open_var,
             } => {
-                if let Some(ref mut val) = open_var_value {
+                if let Some((_, val)) = open_var {
                     val.push('\n');
                     val.push_str(msg);
                     if msg.ends_with(']') {
-                        let trimmed = val.trim_end_matches(']').to_string();
-                        let name = open_var_name.take().unwrap();
-                        *open_var_value = None;
-                        variables.push((name, trimmed));
+                        if let Some((name, val)) = open_var.take() {
+                            variables.push((name, val.trim_end_matches(']').to_string()));
+                        }
                     }
                 } else {
                     match &msg_kind {
@@ -361,8 +358,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                         }
                         MessageKind::Variable { name, value } => {
                             if !msg.ends_with(']') && msg.contains(": [") {
-                                *open_var_name = Some(name.clone());
-                                *open_var_value = Some(value.clone());
+                                *open_var = Some((name.clone(), value.clone()));
                             } else {
                                 variables.push((name.clone(), value.clone()));
                             }

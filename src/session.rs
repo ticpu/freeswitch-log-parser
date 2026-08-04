@@ -647,8 +647,8 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                     })
                     .unwrap_or_default();
 
-                if candidates.len() == 1 {
-                    let b_uuid = candidates.into_iter().next().unwrap();
+                if let [b_uuid] = candidates.as_slice() {
+                    let b_uuid = b_uuid.clone();
                     let a_old_pending = self
                         .sessions
                         .get(&a_uuid)
@@ -746,20 +746,23 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
 
         self.link_legs(&uuid, &entry);
 
+        // `entry().or_default()` rather than an unwrapped lookup: the session was
+        // inserted above and nothing here removes it, but re-asserting that with a
+        // panic buys nothing when the map can simply hand back the same state.
         if let Some(hook) = &self.post_hook {
-            let state = self.sessions.get_mut(&uuid).unwrap();
+            let state = self.sessions.entry(uuid.clone()).or_default();
             hook(&entry, state);
         }
 
+        let state = self.sessions.entry(uuid.clone()).or_default();
         let changes = IndexedFieldChanges::diff(
             old_channel_name,
             old_pending_bridge_target,
             old_other_leg_uuid,
-            self.sessions.get(&uuid).unwrap(),
+            state,
         );
+        let snapshot = state.snapshot();
         self.apply_index_changes(&uuid, &changes);
-
-        let snapshot = self.sessions.get(&uuid).unwrap().snapshot();
 
         Some(EnrichedEntry {
             entry,

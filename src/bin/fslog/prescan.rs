@@ -38,10 +38,9 @@ fn is_sip_call_id(s: &str) -> bool {
 /// exists to save work, and guessing "no match" from a read failure would hide
 /// entries the full parse would have reported.
 pub fn narrow(files: &[(String, PathBuf)], needle: &str) -> Vec<(String, PathBuf)> {
-    debug_assert!(
-        !needle.is_empty(),
-        "an empty needle matches nothing usefully"
-    );
+    // Not a debug_assert: an empty needle reaches `windows(0)`, which panics in
+    // release too, with nothing to say about where it came from.
+    assert!(!needle.is_empty(), "prescan needle is empty");
     let total = files.len();
     debug!("prescanning {total} file(s) for {needle:?}");
     let done = AtomicUsize::new(0);
@@ -73,13 +72,18 @@ pub fn narrow(files: &[(String, PathBuf)], needle: &str) -> Vec<(String, PathBuf
 }
 
 fn file_contains(path: &Path, needle: &str) -> bool {
-    let mut reader = match open_log_file(path) {
-        Ok(r) => r,
+    match open_log_file(path) {
+        Ok(reader) => reader_contains(reader, needle, &path.display()),
         Err(e) => {
             warn!("prescan: cannot open {}: {e}; keeping it", path.display());
-            return true;
+            true
         }
-    };
+    }
+}
+
+/// Whether any single line of `reader` contains `needle`, case-insensitively.
+/// `what` names the source in the warning a read error produces.
+fn reader_contains<R: BufRead>(mut reader: R, needle: &str, what: &dyn std::fmt::Display) -> bool {
     let needle = needle.to_ascii_lowercase().into_bytes();
     let mut buf = Vec::new();
     loop {
@@ -95,7 +99,7 @@ fn file_contains(path: &Path, needle: &str) -> bool {
                 }
             }
             Err(e) => {
-                warn!("prescan: read error on {}: {e}; keeping it", path.display());
+                warn!("prescan: read error on {what}: {e}; keeping it");
                 return true;
             }
         }
@@ -121,6 +125,35 @@ mod tests {
         assert!(!is_single_line_safe("receiving invite"));
         assert!(!is_single_line_safe("m=audio"));
         assert!(!is_single_line_safe(""));
+    }
+
+    fn scan(text: &str, needle: &str) -> bool {
+        reader_contains(std::io::Cursor::new(text), needle, &"test")
+    }
+
+    #[test]
+    fn scan_matches_ignoring_case() {
+        let log = format!("2026-03-08 16:52:07 [DEBUG] switch.c:1 uuid {UUID}\n");
+        assert!(scan(&log, UUID));
+        assert!(scan(&log, &UUID.to_ascii_uppercase()));
+        assert!(!scan(&log, "99999999-2222-3333-4444-555555555555"));
+    }
+
+    #[test]
+    fn scan_does_not_join_lines() {
+        // The guarantee `is_single_line_safe` rests on: a needle split across a
+        // newline is not a match, so only needles that cannot split may prescan.
+        assert!(!scan("11111111-2222-3333\n-4444-555555555555\n", UUID));
+    }
+
+    #[test]
+    fn scan_tolerates_an_unterminated_last_line() {
+        assert!(scan(&format!("first line\n{UUID}"), UUID));
+    }
+
+    #[test]
+    fn scan_reports_no_match_on_empty_input() {
+        assert!(!scan("", UUID));
     }
 
     #[test]

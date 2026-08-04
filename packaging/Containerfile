@@ -1,0 +1,30 @@
+ARG SUITE=bullseye
+FROM docker.io/library/rust:1-slim-${SUITE}
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    liblzma-dev \
+    binutils
+
+WORKDIR /app
+COPY Cargo.toml ./
+COPY src/ ./src/
+
+# Everything the .deb needs ends up under /app/out so the Makefile extracts it
+# in one `cp`. The glibc floor is read off the binary here rather than guessed
+# in the control file: it changes with the base image, and a floor that is too
+# low installs cleanly and then dies at exec on a symbol version.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git \
+    cargo build --release --features tui && \
+    mkdir -p /app/out/completions && \
+    cp target/release/fslog /app/out/fslog && \
+    strip /app/out/fslog && \
+    for shell in bash zsh fish; do \
+      /app/out/fslog completions "$shell" > "/app/out/completions/$shell"; \
+    done && \
+    objdump -T /app/out/fslog \
+      | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' \
+      | sort -Vu | tail -1 > /app/out/glibc-floor

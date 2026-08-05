@@ -6,6 +6,7 @@ license = "LGPL-2.1-or-later"
 authors = ["Jérôme Poulin <jeromepoulin@gmail.com>"]
 description = "Parser for FreeSWITCH log files — handles compressed .xz files, multi-line dumps, truncated buffers, and stateful UUID/timestamp tracking"
 repository = "https://github.com/ticpu/freeswitch-log-parser"
+homepage = "https://github.com/ticpu/freeswitch-log-parser"
 keywords = ["freeswitch", "log", "parser", "voip", "telephony"]
 categories = ["parser-implementations", "network-programming"]
 documentation = "https://docs.rs/freeswitch-log-parser"
@@ -15,7 +16,7 @@ exclude = ["packaging/", "Makefile", ".gitleaks.toml", "tests/fixtures/", "tests
 name = "freeswitch_log_parser"
 
 [dependencies]
-freeswitch-types = { version = "1.0.0-rc.2", default-features = false, features = ["esl"] }
+freeswitch-types = { version = "1.4", default-features = false, features = ["esl"] }
 aho-corasick = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4", optional = true }
@@ -27,7 +28,7 @@ log = { version = "0.4", optional = true }
 env_logger = { version = "0.11", optional = true }
 ratatui = { version = "0.30", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-serde_yml = { version = "0.0.12", optional = true }
+serde_yml = { version = "0.0.13", optional = true }
 
 [[bin]]
 name = "fslog"

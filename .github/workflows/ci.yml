@@ -19,7 +19,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - name: Cache cargo
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           ~/.cargo/bin/
@@ -50,7 +50,7 @@ jobs:
 
     - name: Update test count badge
       if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-      uses: schneegans/dynamic-badges-action@v1.7.0
+      uses: schneegans/dynamic-badges-action@v1.9.0
       with:
         auth: ${{ secrets.GIST_SECRET }}
         gistID: 5d6e27e07995772a5bf424d4cf51e608

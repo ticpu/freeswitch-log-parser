@@ -286,6 +286,23 @@ fslog search --from 2026-03-08 -u 9bee8676 -l err --blocks
 fslog search --today -c dialplan -c execute --blocks
 ```
 
+## Related crates
+
+FreeSWITCH and SIP crates by the same author, usable independently:
+
+- [`freeswitch-types`](https://crates.io/crates/freeswitch-types) — typed
+  FreeSWITCH enums (call direction, channel/call state, hangup causes). This
+  crate's only runtime dependency.
+- [`freeswitch-sofia-trace-parser`](https://crates.io/crates/freeswitch-sofia-trace-parser)
+  — parses sofia's `tport` SIP traces. Complements this crate: `fslog` gives you
+  the channel-level view, the trace parser gives you the SIP messages behind it.
+- [`freeswitch-esl-tokio`](https://crates.io/crates/freeswitch-esl-tokio) — async
+  ESL client, for reading events off a live switch rather than off its logs.
+- [`sip-uri`](https://crates.io/crates/sip-uri) — RFC 3261 SIP/SIPS, RFC 3966
+  `tel:`, RFC 8141 URN parser. Zero dependencies.
+- [`sip-header`](https://crates.io/crates/sip-header) — SIP header field parsers
+  (name-addr, Call-Info, History-Info, Geolocation, conference-info).
+
 ## License
 
 LGPL-2.1-or-later

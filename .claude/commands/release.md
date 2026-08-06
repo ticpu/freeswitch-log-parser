@@ -53,19 +53,14 @@ cargo publish --dry-run
    - what changed
    ```
 
-4. Commit the bump on master and push it:
+4. Commit the bump and build the tag locally — nothing is pushed yet. The tag
+   sits on a detached child commit that pins `Cargo.lock`, so the lock never
+   lands on master while the released binaries still build from an exact
+   dependency set:
 
 ```sh
 git add Cargo.toml
 git commit -m "release: vX.Y.Z"
-git push
-```
-
-5. Tag a detached child commit that pins `Cargo.lock`. The tag is the only ref
-   that reaches it, so the lock never lands on master while the released
-   binaries still build from an exact dependency set:
-
-```sh
 git checkout --detach
 git add -f Cargo.lock
 git commit -m "build: pin Cargo.lock for vX.Y.Z"
@@ -75,24 +70,59 @@ vX.Y.Z
 <changelog>
 EOF
 )"
+git switch master
+```
+
+5. Push master, wait for CI green:
+
+```sh
+git push
+gh run watch "$(gh run list --workflow=ci.yml -b master -L1 --json databaseId --jq '.[0].databaseId')" --exit-status
+```
+
+   No run within a couple of minutes: check the `Actions` component at
+   `https://www.githubstatus.com/api/v2/components.json` — during an outage no
+   run is created and missed events are never backfilled. Stop and report.
+
+   Red: fix on master, rebuild the tag onto the new head, restart this step.
+
+6. Push the tag, wait for the release workflow:
+
+```sh
 git push origin vX.Y.Z
+gh run watch "$(gh run list --workflow=release.yml -L1 --json databaseId --jq '.[0].databaseId')" --exit-status
+```
+
+   It builds the amd64/arm64 `.deb`s and binaries and creates the GitHub release
+   using the tag annotation as its body.
+
+   Red, or no run created: stop. Never retag — a fix is a new patch release. If
+   the workflow never ran because Actions was down, dispatch it once Actions
+   recovers (`gh workflow run release.yml --ref vX.Y.Z`) and wait for that run.
+
+7. Publish, from the tagged commit:
+
+```sh
+git checkout vX.Y.Z
 cargo publish
 git switch master
 ```
 
-   `cargo publish` runs while still detached, so the published crate matches the
-   tag exactly. `git switch master` deletes the working-tree `Cargo.lock` (it is
-   untracked there); the next cargo command regenerates it.
+   `git switch master` deletes the working-tree `Cargo.lock` (untracked there);
+   the next cargo command regenerates it.
 
-6. Report the tag and changelog.
-
-   Pushing the tag triggers `.github/workflows/release.yml`, which builds the
-   amd64/arm64 `.deb`s and binaries and creates the GitHub release using the tag
-   annotation as its body — so the changelog above is what the release page shows.
+8. Report the tag, the changelog, the CI runs that gated the publish, and the
+   crates.io version.
 
 ## Important
 
+- **Never publish a commit CI has not run on.** If the tree changed after the
+  checks — a rebase, a hand-resolved conflict, a dependency that resolved
+  differently — the earlier green run does not cover it. Re-run the checks and
+  go back to step 5.
+- **Ask before publishing when anything deviated from these steps.** An outage,
+  a rebase, a skipped step, a red-then-fixed run: report the state and let me
+  decide.
 - **Cargo.lock never reaches master** — library crate, stays gitignored there. It
   exists only on the tag's own commit, so a release build is reproducible.
 - The tag is IMMUTABLE once pushed — never retag. Wrong? Make a new patch release.
-- **`cargo publish --dry-run` must pass** before real publish.

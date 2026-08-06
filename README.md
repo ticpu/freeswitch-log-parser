@@ -50,8 +50,9 @@ when present, by matching a live b-leg `channel_name` when FreeSWITCH
 omits it, or by mod_loopback's A/B leg naming. Conference membership is
 tracked per conference instance, so a name reused by a later conference
 does not merge the two; `SessionTracker::conference_members` lists an
-instance's UUIDs. Yields `EnrichedEntry` with a `SessionSnapshot`
-alongside the raw `LogEntry`.
+instance's UUIDs. `SessionState::variable` reads a learned variable by
+typed name, taking any of `freeswitch-types`' variable-name enums. Yields
+`EnrichedEntry` with a `SessionSnapshot` alongside the raw `LogEntry`.
 
 Each layer wraps the previous and can be used independently.
 

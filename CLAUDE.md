@@ -206,7 +206,7 @@ Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in 
 
 - `channel_name`, `channel_state` — from CHANNEL_DATA blocks
 - `dialplan_context`, `dialplan_from`, `dialplan_to` — from dialplan processing messages
-- `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines
+- `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines. Keys have the `variable_` prefix stripped; `SessionState::variable(V: VariableName)` hides that and takes any `freeswitch-types` variable-name enum
 - `conference` — name and instance from `conference()` / a transfer to an inline `conference:` extension; member id and conference UUID only when a dump supplies them
 - `media` — matched codec and deduped remote offer set per media type, plus the engine's read implementation. FreeSWITCH logs no write codec at DEBUG, so none is modelled
 
@@ -247,6 +247,7 @@ Never copy production log lines verbatim into source.
 ### Style
 - Minimal dependencies (`freeswitch-types` only) — do not add crates without discussion
 - No regex — all parsing is positional byte checks
+- FreeSWITCH channel variable names come from `freeswitch-types`' variable enums (`ChannelVariable`, `SofiaVariable`, `CoreMediaVariable`, `LoopbackVariable`, `ConferenceVariable`), never string literals — those enums carry drift checks against FreeSWITCH source
 - `pub use` re-exports in `lib.rs` for clean public API
 - Every line format and edge case gets its own `#[test]`
 - Tests use realistic but fictional log lines that exercise the exact byte positions the parser checks

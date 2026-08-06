@@ -37,7 +37,9 @@ check it *before* evaluating the request's mechanics.
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
 - `src/message.rs` — `classify_message()` pure function, `MessageKind`, `SdpDirection`
 - `src/stream.rs` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`
-- `src/session.rs` — `SessionTracker`, `SessionState`, `EnrichedEntry`, `SessionSnapshot`
+- `src/session/mod.rs` — `SessionTracker`, `SessionState`, `EnrichedEntry`, `SessionSnapshot`
+- `src/session/conference.rs` — `ConferenceMembership`, conference join/leave detection
+- `src/session/loopback.rs` — mod_loopback A/B leg pairing
 - `src/lib.rs` — public API re-exports
 
 ## FreeSWITCH Log Format

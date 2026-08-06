@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use freeswitch_log_parser::{for_each_peer_uuid_with, LogStream, SessionTracker, TrackedChain};
 
@@ -12,9 +12,10 @@ fn extra_peer_var(name: &str) -> bool {
 }
 
 /// Discovery pass: stream the logs once, collect the UUIDs of every session the
-/// seed filter matches plus their bridged/transferred peer legs. The parser's
-/// own `other_leg_uuid` tracking (originate success, bridge origination_uuid,
-/// `Other-Leg-Unique-ID`) supplies peers the variable scan can't see.
+/// seed filter matches plus their bridged/transferred peer legs and conference
+/// mates. The parser's own `other_leg_uuid` tracking (originate success, bridge
+/// origination_uuid, `Other-Leg-Unique-ID`) supplies peers the variable scan
+/// can't see.
 pub fn discover(
     segments: Vec<(String, Box<dyn Iterator<Item = String>>)>,
     filter: &FilterConfig,
@@ -22,10 +23,31 @@ pub fn discover(
     let (chain, _) = TrackedChain::new(segments);
     let stream = LogStream::new(chain);
     let mut uuids = HashSet::new();
+    // A conference mate may join long after the seed's own entries, and the
+    // tracker drops an instance once it empties, so membership is accumulated
+    // over the whole pass and unioned at the end rather than queried inline.
+    let mut members: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut wanted_instances: HashSet<String> = HashSet::new();
     let mut tracker = SessionTracker::new(stream);
     for enriched in tracker.by_ref() {
+        let instance = enriched
+            .session
+            .as_ref()
+            .and_then(|s| s.conference.as_ref())
+            .map(|c| c.instance.clone());
+        if let Some(instance) = &instance {
+            if !enriched.entry.uuid.is_empty() {
+                members
+                    .entry(instance.clone())
+                    .or_default()
+                    .insert(enriched.entry.uuid.clone());
+            }
+        }
         if !filter.matches(&enriched.entry) {
             continue;
+        }
+        if let Some(instance) = instance {
+            wanted_instances.insert(instance);
         }
         if !enriched.entry.uuid.is_empty() {
             uuids.insert(enriched.entry.uuid.clone());
@@ -39,6 +61,18 @@ pub fn discover(
             .and_then(|s| s.other_leg_uuid.clone())
         {
             uuids.insert(peer);
+        }
+    }
+    // A mate's own peer leg belongs to the conference's call graph as much as
+    // the mate does — a loopback joins the conference on its A leg while the
+    // work happens on the B leg, which never executes `conference` itself.
+    let sessions = tracker.sessions();
+    for instance in &wanted_instances {
+        for mate in members.get(instance).into_iter().flatten() {
+            if let Some(peer) = sessions.get(mate).and_then(|s| s.other_leg_uuid.clone()) {
+                uuids.insert(peer);
+            }
+            uuids.insert(mate.clone());
         }
     }
     uuids
@@ -132,6 +166,42 @@ mod tests {
         assert!(found.contains(A_LEG), "the seed itself");
         assert!(found.contains(B_LEG), "origination_uuid in the dial string");
         assert!(found.contains(PEER), "peer the tracker linked");
+    }
+
+    #[test]
+    fn conference_mates_and_their_peer_legs_are_pulled_in() {
+        const MATE: &str = "cccccccc-1111-2222-3333-444444444444";
+        const MATE_PEER: &str = "dddddddd-1111-2222-3333-444444444444";
+        let found = discover_from(
+            vec![
+                format!("{A_LEG} EXECUTE [depth=0] pulseaudio/0000000000 conference(835)"),
+                format!("{MATE} EXECUTE [depth=0] loopback/tty-a conference(835)"),
+                full_line(MATE, "New Channel loopback/tty-a [ignored]"),
+                full_line(MATE_PEER, "New Channel loopback/tty-b [ignored]"),
+                format!("{PEER} EXECUTE [depth=0] sofia/internal/1002 conference(844)"),
+            ],
+            A_LEG,
+        );
+        assert!(found.contains(MATE), "same conference instance");
+        assert!(found.contains(MATE_PEER), "the mate's loopback partner");
+        assert!(!found.contains(PEER), "a different conference");
+    }
+
+    #[test]
+    fn a_reused_conference_name_does_not_merge_instances() {
+        const LATER: &str = "cccccccc-1111-2222-3333-444444444444";
+        let found = discover_from(
+            vec![
+                format!("{A_LEG} EXECUTE [depth=0] pulseaudio/0000000000 conference(835)"),
+                full_line(A_LEG, "Channel leaving conference, cause: NORMAL_CLEARING"),
+                format!("{LATER} EXECUTE [depth=0] sofia/internal/1002 conference(835)"),
+            ],
+            A_LEG,
+        );
+        assert!(
+            !found.contains(LATER),
+            "a later conference of the same name"
+        );
     }
 
     #[test]

@@ -521,6 +521,71 @@ fn originate_success_channel_fallback_links_pbx_fixture() {
 }
 
 #[test]
+fn conference_and_loopback_link_ra221_fixture() {
+    // ra221/freeswitch.log.30.xz holds two conferences that reuse neither name
+    // but run minutes apart: 835 is joined by a pulseaudio leg, a softphone, a
+    // loopback A leg and a later gateway leg; 844 is a separate call entirely.
+    // The loopback B leg never executes `conference` — it is reachable only
+    // through the A/B name pairing.
+    let path = Path::new(FIXTURES_DIR)
+        .join("ra221")
+        .join("freeswitch.log.30.xz");
+    if !path.exists() {
+        eprintln!("skipping: {} not present", path.display());
+        return;
+    }
+    const PULSEAUDIO: &str = "35cd5158-b48e-44ce-b91d-5bd724cfbf34";
+    const SOFTPHONE: &str = "1dd18372-af8f-416b-80f3-3339fcb3f371";
+    const LOOPBACK_A: &str = "4827c0b0-e96c-4b7d-84ed-a6870b3112f2";
+    const LOOPBACK_B: &str = "c70376e5-cada-4ee2-9c2d-b7fa69eee115";
+    const GATEWAY: &str = "31a53234-a72c-42e9-9ab1-a6080cfc7b58";
+    const OTHER_CONFERENCE: &str = "cb94c4aa-3455-4d1c-aca7-7df0d67e912b";
+
+    let stream = LogStream::new(lines_from_file(&path));
+    let mut tracker = SessionTracker::new(stream);
+    let mut instances: HashMap<String, String> = HashMap::new();
+    for enriched in tracker.by_ref() {
+        if let Some(conf) = enriched
+            .session
+            .as_ref()
+            .and_then(|s| s.conference.as_ref())
+        {
+            instances.insert(enriched.entry.uuid.clone(), conf.instance.clone());
+        }
+    }
+
+    let instance = instances
+        .get(PULSEAUDIO)
+        .expect("pulseaudio leg joined a conference");
+    for uuid in [SOFTPHONE, LOOPBACK_A, GATEWAY] {
+        assert_eq!(
+            instances.get(uuid),
+            Some(instance),
+            "{uuid} shares the conference instance"
+        );
+    }
+    assert_ne!(
+        instances.get(OTHER_CONFERENCE),
+        Some(instance),
+        "a conference minutes later is a separate instance"
+    );
+
+    let b_leg = tracker
+        .sessions()
+        .get(LOOPBACK_B)
+        .expect("loopback b-leg session present");
+    assert_eq!(
+        b_leg.other_leg_uuid.as_deref(),
+        Some(LOOPBACK_A),
+        "loopback b-leg paired to the a-leg that joined the conference"
+    );
+    assert!(
+        b_leg.conference.is_none(),
+        "the b-leg never executes conference()"
+    );
+}
+
+#[test]
 fn warning_report() {
     if skip_if_no_fixtures() {
         return;

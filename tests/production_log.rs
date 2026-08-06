@@ -5,8 +5,8 @@ use std::path::Path;
 use std::collections::HashMap;
 
 use freeswitch_log_parser::{
-    classify_message, parse_line, read_log_lines, truncate_at_char_boundary, Block, LineKind,
-    LogEntry, LogStream, MessageKind, SessionTracker, UnclassifiedTracking,
+    classify_message, parse_line, read_log_lines, truncate_at_char_boundary, Block, CodecMedia,
+    LineKind, LogEntry, LogStream, MessageKind, SessionTracker, UnclassifiedTracking,
 };
 use xz2::read::XzDecoder;
 
@@ -582,6 +582,77 @@ fn conference_and_loopback_link_ra221_fixture() {
     assert!(
         b_leg.conference.is_none(),
         "the b-leg never executes conference()"
+    );
+}
+
+#[test]
+fn codec_outcome_tracked_on_ra221_fixture() {
+    // 83b3cbfd negotiates opus twice over PCMU/G722 offers, then the engine
+    // reports the read implementation and the original read codec.
+    let path = Path::new(FIXTURES_DIR)
+        .join("ra221")
+        .join("freeswitch.log.30.xz");
+    if !path.exists() {
+        eprintln!("skipping: {} not present", path.display());
+        return;
+    }
+    const LEG: &str = "83b3cbfd-98ca-4532-89ed-eb31acb1de50";
+
+    let stream = LogStream::new(lines_from_file(&path));
+    let mut tracker = SessionTracker::new(stream);
+    for _ in tracker.by_ref() {}
+
+    let media = &tracker.sessions().get(LEG).expect("leg present").media;
+    let negotiated = media.audio.negotiated.as_ref().expect("audio negotiated");
+    assert_eq!(negotiated.name, "opus");
+    assert_eq!(negotiated.clock_rate, Some(16000));
+    assert!(
+        media.audio.offered.len() < 20,
+        "offered set is deduped, not one entry per comparison: {}",
+        media.audio.offered.len()
+    );
+    assert_eq!(
+        media.read_codec.as_ref().expect("read codec").name,
+        "opus",
+        "Original read codec set to opus:116"
+    );
+    assert_eq!(
+        media
+            .active_audio
+            .as_ref()
+            .expect("active audio")
+            .clock_rate,
+        Some(16000)
+    );
+    assert!(
+        media.video.negotiated.is_none(),
+        "this fixture has no video negotiation"
+    );
+}
+
+#[test]
+fn video_negotiation_classified_on_pbx_fixture() {
+    let path = Path::new(FIXTURES_DIR)
+        .join("pbx")
+        .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
+    if !path.exists() {
+        eprintln!("skipping: {} not present", path.display());
+        return;
+    }
+    let video = LogStream::new(lines_from_file(&path))
+        .filter(|e| {
+            matches!(
+                &e.block,
+                Some(Block::CodecNegotiation {
+                    media: CodecMedia::Video,
+                    ..
+                })
+            )
+        })
+        .count();
+    assert!(
+        video > 0,
+        "Video Codec Compare runs must form their own blocks"
     );
 }
 

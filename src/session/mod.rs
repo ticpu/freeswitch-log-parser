@@ -1,5 +1,6 @@
 pub mod conference;
 mod loopback;
+pub mod media;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -10,6 +11,7 @@ use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
 use conference::{ConferenceEvent, ConferenceMembership, ConferenceRegistry};
+use media::SessionMedia;
 
 type SessionHook = Box<dyn Fn(&LogEntry, &mut SessionState) + Send>;
 
@@ -52,6 +54,8 @@ pub struct SessionState {
     pub other_leg_uuid: Option<String>,
     /// Conference this session is currently a member of; `None` once it leaves.
     pub conference: Option<ConferenceMembership>,
+    /// Codecs negotiated on this leg, by media type and direction.
+    pub media: SessionMedia,
     /// Pending bridge target channel from `EXECUTE bridge()`, consumed when B-leg `New Channel` matches.
     pub(crate) pending_bridge_target: Option<String>,
     /// All variables learned so far, with the `variable_` prefix stripped from names.
@@ -137,6 +141,7 @@ pub struct SessionSnapshot {
     pub answered_at: Option<String>,
     pub other_leg_uuid: Option<String>,
     pub conference: Option<ConferenceMembership>,
+    pub media: SessionMedia,
 }
 
 impl SessionState {
@@ -157,6 +162,7 @@ impl SessionState {
             answered_at: self.answered_at.clone(),
             other_leg_uuid: self.other_leg_uuid.clone(),
             conference: self.conference.clone(),
+            media: self.media.clone(),
         }
     }
 
@@ -229,6 +235,7 @@ impl SessionState {
         }
 
         self.apply_processing(&entry.message);
+        self.media.update_from_entry(entry);
 
         for attached in &entry.attached {
             let parsed = parse_line(attached);
@@ -2209,6 +2216,62 @@ mod tests {
         );
         let rejoined = tracker.sessions()[UUID2].conference.clone().unwrap();
         assert_eq!(rejoined.instance, UUID2);
+    }
+
+    #[test]
+    fn media_keeps_the_outcome_and_the_deduped_offer_set() {
+        let tracker = track(vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [opus:102:16000:20:0:1]/[G722:9:16000:20:64000:1]",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [opus:102:16000:20:0:1]/[opus:116:16000:20:0:1]",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [opus:116:16000:20:0:1] ++++ is saved as a match",
+            ),
+            full_line(UUID1, TS2, "Video Codec Compare [H264:109]/[H263:34]"),
+            full_line(
+                UUID1,
+                TS2,
+                "Video Codec Compare [H264:109] +++ is saved as a match",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "Set Codec sofia/internal/1000 opus/16000 20 ms 320 samples 0 bits 1 channels",
+            ),
+            full_line(
+                UUID1,
+                TS2,
+                "sofia/internal/1000 Original read codec set to opus:116",
+            ),
+        ]);
+        let media = &tracker.sessions()[UUID1].media;
+
+        assert_eq!(
+            media.audio.offered.len(),
+            1,
+            "the same remote offer compared twice is one entry: {:?}",
+            media.audio.offered
+        );
+        assert_eq!(media.audio.negotiated.as_ref().unwrap().name, "opus");
+        assert_eq!(media.audio.negotiated.as_ref().unwrap().payload_type, 116);
+
+        assert_eq!(media.video.negotiated.as_ref().unwrap().name, "H264");
+        assert!(
+            media.audio.negotiated != media.video.negotiated,
+            "audio and video outcomes are tracked apart"
+        );
+
+        assert_eq!(media.read_codec.as_ref().unwrap().payload_type, 116);
+        assert_eq!(media.active_audio.as_ref().unwrap().clock_rate, Some(16000));
     }
 
     #[test]

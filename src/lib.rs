@@ -80,8 +80,9 @@ pub use peer::{
     PEER_UUID_VARS,
 };
 pub use session::{
-    conference::ConferenceMembership, parse_bridge_args, BridgeInfo, EnrichedEntry,
-    SessionSnapshot, SessionState, SessionTracker,
+    conference::ConferenceMembership,
+    media::{MediaCodecs, SessionMedia},
+    parse_bridge_args, BridgeInfo, EnrichedEntry, SessionSnapshot, SessionState, SessionTracker,
 };
 pub use stamp::{log_rotation_stamp, normalize_entry_timestamp};
 pub use stream::{

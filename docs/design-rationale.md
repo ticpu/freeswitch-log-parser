@@ -70,11 +70,11 @@ This is deliberate:
 
 ## Extensible relationship detection
 
-`SessionTracker` links bridged call legs via `other_leg_uuid`. Five built-in
-patterns cover vanilla FreeSWITCH: `Other-Leg-Unique-ID` field, `bridge()`
-with `origination_uuid`, `Originate Resulted in Success` with `Peer UUID:`,
-channel-name fallback for older FS builds, and new-channel matching against
-pending bridge targets.
+`SessionTracker` links peer call legs via `other_leg_uuid`. The built-in
+patterns cover what vanilla FreeSWITCH logs on its own: the channel fields and
+variables that name a peer, the originate result line, the endpoints whose leg
+naming implies the pairing, and a channel-name fallback for builds whose
+originate line omits the peer UUID.
 
 Consumers have application-specific patterns the library can't anticipate:
 Lua `uuid_bridge` API results (`set(api_result=+OK <uuid>)`), custom SIP
@@ -89,6 +89,17 @@ so hook-seeded state (a channel name, a pending bridge target) is visible to
 the built-in patterns of the same entry. This keeps the library focused on
 vanilla FreeSWITCH while remaining useful to deployments with custom
 bridging infrastructure.
+
+## Conference identity is per instance, not per name
+
+A conference name is reused as soon as the previous conference of that name is
+torn down, so membership keyed on the name alone merges calls that never shared
+a room. The tracker mints an instance identity instead — the UUID of the first
+channel to join while the name has no live members — and drops it when the last
+member leaves, so the next join on that name opens a new one. FreeSWITCH's own
+conference UUID is carried alongside rather than used as the key: it reaches the
+log only through a channel dump, and the identity has to hold for logs where
+none is ever taken.
 
 ## Downstream re-derivations belong on the public surface
 

@@ -1,4 +1,5 @@
 pub mod conference;
+mod loopback;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -719,6 +720,30 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         conference::refresh(membership, variables);
     }
 
+    /// The A leg of the loopback whose B leg just appeared. Shares the
+    /// originate fallback's ambiguity guard: concurrent loopbacks to the same
+    /// destination produce identical names, and linking the wrong pair is worse
+    /// than linking none.
+    fn loopback_a_leg(&self, b_channel: &str, b_uuid: &str) -> Option<String> {
+        let a_channel = loopback::a_leg_name(b_channel)?;
+        let candidates: Vec<&String> = self
+            .by_channel_name
+            .get(&a_channel)?
+            .iter()
+            .filter(|u| *u != b_uuid)
+            .filter(|u| {
+                self.sessions
+                    .get(*u)
+                    .map(|s| !is_terminal_channel_state(s.channel_state.as_deref()))
+                    .unwrap_or(false)
+            })
+            .collect();
+        match candidates.as_slice() {
+            [a_uuid] => Some((*a_uuid).clone()),
+            _ => None,
+        }
+    }
+
     /// Cross-session leg linking. Called after `update_from_entry` so per-session
     /// state (bridge target, channel name) is already populated.
     fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
@@ -805,6 +830,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                     .get(&b_uuid)
                     .cloned()
                     .or_else(|| self.by_pending_target.get(&channel_name).cloned())
+                    .or_else(|| self.loopback_a_leg(&channel_name, &b_uuid))
                     .filter(|a| a != &b_uuid);
 
                 if let Some(a_uuid) = a_uuid_found {
@@ -2183,6 +2209,35 @@ mod tests {
         );
         let rejoined = tracker.sessions()[UUID2].conference.clone().unwrap();
         assert_eq!(rejoined.instance, UUID2);
+    }
+
+    #[test]
+    fn loopback_b_leg_links_to_its_a_leg() {
+        let tracker = track(vec![
+            full_line(UUID1, TS1, "New Channel loopback/tty-a [ignored]"),
+            full_line(UUID2, TS1, "New Channel loopback/tty-b [ignored]"),
+        ]);
+        assert_eq!(
+            tracker.sessions()[UUID1].other_leg_uuid.as_deref(),
+            Some(UUID2)
+        );
+        assert_eq!(
+            tracker.sessions()[UUID2].other_leg_uuid.as_deref(),
+            Some(UUID1)
+        );
+    }
+
+    #[test]
+    fn concurrent_loopbacks_to_one_destination_do_not_link() {
+        let tracker = track(vec![
+            full_line(UUID1, TS1, "New Channel loopback/tty-a [ignored]"),
+            full_line(UUID2, TS1, "New Channel loopback/tty-a [ignored]"),
+            full_line(UUID3, TS1, "New Channel loopback/tty-b [ignored]"),
+        ]);
+        assert!(
+            tracker.sessions()[UUID3].other_leg_uuid.is_none(),
+            "two live A legs share the name; picking one would be a guess"
+        );
     }
 
     #[test]

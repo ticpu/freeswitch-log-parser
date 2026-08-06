@@ -28,12 +28,18 @@ pub const PEER_UUID_VARS: &[ChannelVariable] = &[
     ChannelVariable::TransferHistory,
 ];
 
-/// Whether `name` is one of [`PEER_UUID_VARS`]. Accepts the bare variable name;
-/// strip any `variable_` prefix first.
+/// Peer-bearing variables `freeswitch-types` does not model yet, matched by
+/// name. Still vanilla FreeSWITCH, so they belong here rather than behind the
+/// `extra_var` predicate consumers use for their own variables.
+pub const PEER_UUID_VAR_NAMES: &[&str] = &["other_loopback_leg_uuid"];
+
+/// Whether `name` is one of [`PEER_UUID_VARS`] or [`PEER_UUID_VAR_NAMES`].
+/// Accepts the bare variable name; strip any `variable_` prefix first.
 pub fn is_peer_uuid_var(name: &str) -> bool {
-    ChannelVariable::from_str(name)
-        .map(|v| PEER_UUID_VARS.contains(&v))
-        .unwrap_or(false)
+    PEER_UUID_VAR_NAMES.contains(&name)
+        || ChannelVariable::from_str(name)
+            .map(|v| PEER_UUID_VARS.contains(&v))
+            .unwrap_or(false)
 }
 
 /// Call `f` with every peer-leg UUID `entry` mentions.

@@ -7,6 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use freeswitch_types::variables::ConferenceVariable;
+
 use crate::message::MessageKind;
 use crate::stream::LogEntry;
 
@@ -156,7 +158,9 @@ fn parse_target(arguments: &str) -> Option<ConferenceTarget> {
 /// or dumped channel can carry it with no EXECUTE trace anywhere in the log.
 pub(crate) fn target_from_variables(vars: &HashMap<String, String>) -> Option<ConferenceTarget> {
     Some(ConferenceTarget {
-        name: vars.get("conference_name")?.clone(),
+        name: vars
+            .get(ConferenceVariable::ConferenceName.as_str())?
+            .clone(),
         profile: None,
     })
 }
@@ -165,12 +169,12 @@ pub(crate) fn target_from_variables(vars: &HashMap<String, String>) -> Option<Co
 /// in place when the variable is absent.
 pub(crate) fn refresh(membership: &mut ConferenceMembership, vars: &HashMap<String, String>) {
     if let Some(member_id) = vars
-        .get("conference_member_id")
+        .get(ConferenceVariable::ConferenceMemberId.as_str())
         .and_then(|v| v.parse().ok())
     {
         membership.member_id = Some(member_id);
     }
-    if let Some(uuid) = vars.get("conference_uuid") {
+    if let Some(uuid) = vars.get(ConferenceVariable::ConferenceUuid.as_str()) {
         membership.conference_uuid = Some(uuid.clone());
     }
 }

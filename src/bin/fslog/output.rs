@@ -363,6 +363,12 @@ impl EntryPrinter {
         if let Some(name) = &session.channel_name {
             parts.push(format!("ch={name}"));
         }
+        if let Some(conf) = &session.conference {
+            parts.push(format!("conf={}", conf.name));
+            if let Some(id) = conf.member_id {
+                parts.push(format!("member={id}"));
+            }
+        }
         if !parts.is_empty() {
             writeln!(w, "{dim}         session {}{reset}", parts.join(" "))?;
         }

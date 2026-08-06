@@ -38,7 +38,9 @@ check it *before* evaluating the request's mechanics.
 - `src/message.rs` — `classify_message()` pure function, `MessageKind`, `SdpDirection`
 - `src/stream.rs` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`
 - `src/session/mod.rs` — `SessionTracker`, `SessionState`, `EnrichedEntry`, `SessionSnapshot`
+- `src/codec.rs` — `CodecOffer`/`CodecMedia`, the bracketed token in codec-negotiation traces
 - `src/session/conference.rs` — `ConferenceMembership`, conference join/leave detection
+- `src/session/media.rs` — `SessionMedia`, negotiated/offered codecs per media type
 - `src/session/loopback.rs` — mod_loopback A/B leg pairing
 - `src/lib.rs` — public API re-exports
 
@@ -206,6 +208,7 @@ Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in 
 - `dialplan_context`, `dialplan_from`, `dialplan_to` — from dialplan processing messages
 - `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines
 - `conference` — name and instance from `conference()` / a transfer to an inline `conference:` extension; member id and conference UUID only when a dump supplies them
+- `media` — matched codec and deduped remote offer set per media type, plus the engine's read implementation. FreeSWITCH logs no write codec at DEBUG, so none is modelled
 
 No application-specific logic — consumers do business-specific lookups.
 
@@ -237,6 +240,7 @@ Never copy production log lines verbatim into source.
 - `cargo check --message-format=short` → `cargo clippy --fix --allow-dirty --message-format=short` → `cargo fmt --all` → `cargo test --release -- --quiet`
 - Always run tests with `--release` — debug builds are too slow on xz-compressed production fixture tests
 - Build the binary with `cargo build --release --features tui` — the `tui` feature enables the monitor subcommand (includes ratatui, serde, serde_yml)
+- `sdp` is a library feature (off by default, enabled by `cli`) gating `Block::sdp_codecs()`; run `cargo test --release --all-features` as well, or its tests never build
 - **Cargo.lock is never committed** — this is a library crate, Cargo.lock stays in .gitignore
 - `fslog monitor --dump` prints the call table to stdout (no TUI), useful for testing and scripting
 
@@ -249,6 +253,7 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`
+- `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests
 - NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers)
 - New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

@@ -33,8 +33,17 @@ canonical `sip_call_id ↔ channel_uuid` correlation primitive — sofia
 emits it for every inbound and outbound call regardless of dialplan.
 Every entry carries both a typed `Block` and raw `attached` lines.
 
+Codec negotiation blocks are typed per media type: audio and video traces
+carry different fields and never share a block, and near-match verdicts are
+recorded rather than treated as parse failures. With the `sdp` feature,
+`Block::sdp_codecs()` parses an SDP body on demand through
+`freeswitch-types` — the only place text and DTMF payloads appear, since the
+negotiation trace never mentions them. It is off by default so a Layer 2
+consumer keeps the crate's minimal dependency tree; `fslog` enables it.
+
 **Layer 3** maintains per-UUID session state (dialplan context, channel
-state, learned variables, call direction, caller/destination numbers)
+state, learned variables, call direction, caller/destination numbers,
+negotiated codecs per media type)
 and propagates it across entries. Also links bridged a-leg ↔ b-leg
 sessions via `other_leg_uuid` — from the explicit `Peer UUID:` suffix
 when present, by matching a live b-leg `channel_name` when FreeSWITCH
@@ -208,6 +217,7 @@ Filtering:
 - `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …); repeat for OR matching
 - `--fgrep <PATTERN>` — case-insensitive fixed-string match
 - `--grep <REGEX>` — regex match
+- `--codec <NAME>` — codec named in a negotiation or SDP block, case-insensitive; repeat for OR matching
 - `--match-blocks` — also match `--fgrep`/`--grep`/`PATTERN` inside attached block lines (SDP, CHANNEL_DATA, codec negotiation), not just the message
 - `--related` — expand matching sessions to their bridged/transferred peer legs (originate, `bridge()`, `uuid_bridge`, `Other-Leg-Unique-ID`, peer-UUID channel variables, mod_loopback A/B legs) and to everyone in the same conference
 
@@ -286,6 +296,9 @@ fslog search --from 2026-03-08 'receiving invite' -C 2
 
 # Find calls by an SDP attribute that only appears in the media block
 fslog search --from 2026-03-08 --grep 'm=audio' --match-blocks --blocks
+
+# Every leg that negotiated or was offered opus, with the codec detail
+fslog search --from 2026-03-08 --codec opus --blocks
 
 # Errors and worse from one session, expanding structured blocks
 fslog search --from 2026-03-08 -u 9bee8676 -l err --blocks

@@ -101,6 +101,16 @@ conference UUID is carried alongside rather than used as the key: it reaches the
 log only through a channel dump, and the identity has to hold for logs where
 none is ever taken.
 
+## Typed views of a block body are parsed on demand
+
+A block keeps its raw lines and offers the typed reading as a method, rather than
+holding a parsed field alongside them. Storing the parse would make a public
+enum's shape depend on whichever cargo feature supplied the parser, and would pay
+for every body whether or not the consumer looks — SDP bodies are among the
+largest things in the log and most consumers never open them. It would also give
+the block two representations that can disagree, when the raw lines are the ones
+the transparency principle promises stay authoritative.
+
 ## Downstream re-derivations belong on the public surface
 
 Helpers a consumer can only write by re-deriving parser knowledge — which channel

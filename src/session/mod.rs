@@ -1,3 +1,5 @@
+pub mod conference;
+
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
@@ -6,6 +8,7 @@ use freeswitch_types::{BridgeDialString, CallDirection, DialString};
 use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
+use conference::{ConferenceEvent, ConferenceMembership, ConferenceRegistry};
 
 type SessionHook = Box<dyn Fn(&LogEntry, &mut SessionState) + Send>;
 
@@ -46,6 +49,8 @@ pub struct SessionState {
     /// Other leg's UUID; `None` until bridged. Set from `Originate Resulted in Success` on A-leg,
     /// and from `New Channel` on B-leg (back-pointing to A-leg via originate context).
     pub other_leg_uuid: Option<String>,
+    /// Conference this session is currently a member of; `None` once it leaves.
+    pub conference: Option<ConferenceMembership>,
     /// Pending bridge target channel from `EXECUTE bridge()`, consumed when B-leg `New Channel` matches.
     pub(crate) pending_bridge_target: Option<String>,
     /// All variables learned so far, with the `variable_` prefix stripped from names.
@@ -59,16 +64,41 @@ struct IndexedFieldChanges {
     channel_name: Option<(Option<String>, Option<String>)>,
     pending_bridge_target: Option<(Option<String>, Option<String>)>,
     other_leg_uuid: Option<(Option<String>, Option<String>)>,
+    conference: Option<(Option<ConferenceMembership>, Option<ConferenceMembership>)>,
+}
+
+/// Indexed fields as they stood before the pre-hook, held for the post-hook diff.
+#[derive(Default)]
+struct IndexedFields {
+    channel_name: Option<String>,
+    pending_bridge_target: Option<String>,
+    other_leg_uuid: Option<String>,
+    conference: Option<ConferenceMembership>,
+}
+
+impl IndexedFields {
+    fn of(state: &SessionState) -> Self {
+        IndexedFields {
+            channel_name: state.channel_name.clone(),
+            pending_bridge_target: state.pending_bridge_target.clone(),
+            other_leg_uuid: state.other_leg_uuid.clone(),
+            conference: state.conference.clone(),
+        }
+    }
 }
 
 impl IndexedFieldChanges {
-    fn diff(
-        old_channel_name: Option<String>,
-        old_pending_bridge_target: Option<String>,
-        old_other_leg_uuid: Option<String>,
-        state: &SessionState,
-    ) -> Self {
+    fn diff(old: IndexedFields, state: &SessionState) -> Self {
+        let IndexedFields {
+            channel_name: old_channel_name,
+            pending_bridge_target: old_pending_bridge_target,
+            other_leg_uuid: old_other_leg_uuid,
+            conference: old_conference,
+        } = old;
         let mut changes = IndexedFieldChanges::default();
+        if state.conference != old_conference {
+            changes.conference = Some((old_conference, state.conference.clone()));
+        }
         if state.channel_name != old_channel_name {
             changes.channel_name = Some((old_channel_name, state.channel_name.clone()));
         }
@@ -105,6 +135,7 @@ pub struct SessionSnapshot {
     pub hangup_cause: Option<String>,
     pub answered_at: Option<String>,
     pub other_leg_uuid: Option<String>,
+    pub conference: Option<ConferenceMembership>,
 }
 
 impl SessionState {
@@ -124,6 +155,7 @@ impl SessionState {
             hangup_cause: self.hangup_cause.clone(),
             answered_at: self.answered_at.clone(),
             other_leg_uuid: self.other_leg_uuid.clone(),
+            conference: self.conference.clone(),
         }
     }
 
@@ -438,6 +470,7 @@ pub struct SessionTracker<I> {
     by_channel_name: HashMap<String, HashSet<String>>,
     by_pending_target: HashMap<String, String>,
     by_other_leg: HashMap<String, String>,
+    conferences: ConferenceRegistry,
     pre_hook: Option<SessionHook>,
     post_hook: Option<SessionHook>,
 }
@@ -451,6 +484,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             by_channel_name: HashMap::new(),
             by_pending_target: HashMap::new(),
             by_other_leg: HashMap::new(),
+            conferences: ConferenceRegistry::default(),
             pre_hook: None,
             post_hook: None,
         }
@@ -508,6 +542,12 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         &self.sessions
     }
 
+    /// UUIDs currently in the conference instance named by
+    /// [`ConferenceMembership::instance`]. Empty once the last member leaves.
+    pub fn conference_members<'a>(&'a self, instance: &'a str) -> impl Iterator<Item = &'a str> {
+        self.conferences.members(instance)
+    }
+
     /// Remove and return a session's accumulated state. Call this when a call ends
     /// (e.g. `CS_DESTROY` or hangup) to free memory.
     pub fn remove_session(&mut self, uuid: &str) -> Option<SessionState> {
@@ -525,6 +565,9 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         }
         if let Some(other) = &state.other_leg_uuid {
             self.by_other_leg.remove(other);
+        }
+        if let Some(conf) = &state.conference {
+            self.conferences.leave(&conf.name, uuid);
         }
         Some(state)
     }
@@ -575,6 +618,19 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                 }
             }
         }
+        if let Some((old, new)) = &changes.conference {
+            let same_instance =
+                matches!((old, new), (Some(o), Some(n)) if o.instance == n.instance);
+            if !same_instance {
+                if let Some(old_conf) = old {
+                    self.conferences.leave(&old_conf.name, uuid);
+                }
+                if let Some(new_conf) = new {
+                    self.conferences
+                        .join(&new_conf.name, &new_conf.instance, uuid);
+                }
+            }
+        }
     }
 
     /// Record `uuid`'s `other_leg_uuid` transition in `by_other_leg`,
@@ -588,6 +644,79 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         }
         self.by_other_leg
             .insert(new_leg.to_string(), uuid.to_string());
+    }
+
+    /// Conference membership. Called after `update_from_entry` so the channel
+    /// variables this reads are already populated. Only `state.conference` is
+    /// written here; the registry is updated from the post-hook diff, so a
+    /// hook-set membership is registered the same way this one is.
+    fn update_conference(&mut self, uuid: &str, entry: &LogEntry) {
+        let target = match conference::detect(entry) {
+            Some(ConferenceEvent::Leave) => {
+                if let Some(state) = self.sessions.get_mut(uuid) {
+                    state.conference = None;
+                }
+                return;
+            }
+            Some(ConferenceEvent::Join(target)) => Some(target),
+            None => None,
+        };
+
+        let Some(state) = self.sessions.get(uuid) else {
+            return;
+        };
+        let Some(target) = target.or_else(|| conference::target_from_variables(&state.variables))
+        else {
+            if let Some(state) = self.sessions.get_mut(uuid) {
+                let SessionState {
+                    conference,
+                    variables,
+                    ..
+                } = state;
+                if let Some(membership) = conference {
+                    conference::refresh(membership, variables);
+                }
+            }
+            return;
+        };
+
+        // Staying in the same conference keeps the instance already recorded;
+        // otherwise adopt the live instance for that name, or open one keyed on
+        // this session because it is the first member.
+        let instance = match state.conference.as_ref() {
+            Some(current) if current.name == target.name => current.instance.clone(),
+            _ => self
+                .conferences
+                .instance_for(&target.name)
+                .map(str::to_string)
+                .unwrap_or_else(|| uuid.to_string()),
+        };
+
+        let Some(state) = self.sessions.get_mut(uuid) else {
+            return;
+        };
+        let SessionState {
+            conference,
+            variables,
+            ..
+        } = state;
+        let joining_elsewhere = conference.as_ref().is_none_or(|c| c.name != target.name);
+        if joining_elsewhere {
+            *conference = Some(ConferenceMembership {
+                name: target.name,
+                profile: target.profile.clone(),
+                instance,
+                member_id: None,
+                conference_uuid: None,
+            });
+        }
+        let Some(membership) = conference.as_mut() else {
+            return;
+        };
+        if target.profile.is_some() {
+            membership.profile = target.profile;
+        }
+        conference::refresh(membership, variables);
     }
 
     /// Cross-session leg linking. Called after `update_from_entry` so per-session
@@ -724,9 +853,7 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         // Snapshot indexed fields before the pre-hook and diff after the
         // post-hook so hook-set fields maintain the cross-session indexes
         // exactly like built-in extraction.
-        let old_channel_name = state.channel_name.clone();
-        let old_pending_bridge_target = state.pending_bridge_target.clone();
-        let old_other_leg_uuid = state.other_leg_uuid.clone();
+        let old = IndexedFields::of(state);
 
         if let Some(hook) = &self.pre_hook {
             hook(&entry, state);
@@ -734,6 +861,7 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
 
         state.update_from_entry(&entry);
 
+        self.update_conference(&uuid, &entry);
         self.link_legs(&uuid, &entry);
 
         // `entry().or_default()` rather than an unwrapped lookup: the session was
@@ -745,12 +873,7 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         }
 
         let state = self.sessions.entry(uuid.clone()).or_default();
-        let changes = IndexedFieldChanges::diff(
-            old_channel_name,
-            old_pending_bridge_target,
-            old_other_leg_uuid,
-            state,
-        );
+        let changes = IndexedFieldChanges::diff(old, state);
         let snapshot = state.snapshot();
         self.apply_index_changes(&uuid, &changes);
 
@@ -1980,6 +2103,107 @@ mod tests {
             session.caller_id_name.as_deref(),
             Some("Test Caller Name"),
             "caller_id_name extracted from CHANNEL_DATA"
+        );
+    }
+
+    fn track(lines: Vec<String>) -> SessionTracker<std::vec::IntoIter<String>> {
+        let mut tracker = SessionTracker::new(LogStream::new(lines.into_iter()));
+        for _ in tracker.by_ref() {}
+        tracker
+    }
+
+    #[test]
+    fn conference_execute_shares_one_instance() {
+        let tracker = track(vec![
+            format!("{UUID1} EXECUTE [depth=0] loopback/tty-a conference(835)"),
+            format!("{UUID2} EXECUTE [depth=0] sofia/internal/1000 conference(835)"),
+            format!("{UUID3} EXECUTE [depth=0] sofia/internal/1001 conference(844)"),
+        ]);
+
+        let first = tracker.sessions()[UUID1].conference.clone().unwrap();
+        let second = tracker.sessions()[UUID2].conference.clone().unwrap();
+        let other = tracker.sessions()[UUID3].conference.clone().unwrap();
+
+        assert_eq!(first.name, "835");
+        assert_eq!(first.instance, UUID1, "first joiner names the instance");
+        assert_eq!(second.instance, UUID1);
+        assert_eq!(other.name, "844");
+        assert_ne!(other.instance, first.instance);
+
+        let mut members: Vec<&str> = tracker.conference_members(&first.instance).collect();
+        members.sort_unstable();
+        assert_eq!(members, [UUID1, UUID2]);
+    }
+
+    #[test]
+    fn conference_transfer_line_joins() {
+        let tracker = track(vec![full_line(
+            UUID1,
+            TS1,
+            "Transfer loopback/tty-a to inline[conference:835@default]",
+        )]);
+        let membership = tracker.sessions()[UUID1].conference.clone().unwrap();
+        assert_eq!(membership.name, "835");
+        assert_eq!(
+            membership.profile, None,
+            "the transfer context is not a conference profile"
+        );
+    }
+
+    #[test]
+    fn conference_variables_fill_member_id() {
+        let tracker = track(vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            format!("{UUID1} variable_conference_name: [835]"),
+            format!("{UUID1} variable_conference_member_id: [3]"),
+            format!("{UUID1} variable_conference_uuid: [{UUID2}]"),
+            full_line(UUID1, TS2, "later"),
+        ]);
+        let membership = tracker.sessions()[UUID1].conference.clone().unwrap();
+        assert_eq!(membership.name, "835");
+        assert_eq!(membership.member_id, Some(3));
+        assert_eq!(membership.conference_uuid.as_deref(), Some(UUID2));
+    }
+
+    #[test]
+    fn reused_name_after_the_last_leave_is_a_new_instance() {
+        let tracker = track(vec![
+            format!("{UUID1} EXECUTE [depth=0] loopback/tty-a conference(835)"),
+            full_line(
+                UUID1,
+                TS1,
+                "Channel leaving conference, cause: NORMAL_CLEARING",
+            ),
+            format!("{UUID2} EXECUTE [depth=0] sofia/internal/1000 conference(835)"),
+        ]);
+
+        assert!(
+            tracker.sessions()[UUID1].conference.is_none(),
+            "leaving clears the membership"
+        );
+        let rejoined = tracker.sessions()[UUID2].conference.clone().unwrap();
+        assert_eq!(rejoined.instance, UUID2);
+    }
+
+    #[test]
+    fn a_member_still_present_holds_the_instance_open() {
+        let tracker = track(vec![
+            format!("{UUID1} EXECUTE [depth=0] loopback/tty-a conference(835)"),
+            format!("{UUID2} EXECUTE [depth=0] sofia/internal/1000 conference(835)"),
+            full_line(
+                UUID1,
+                TS1,
+                "Channel leaving conference, cause: NORMAL_CLEARING",
+            ),
+            format!("{UUID3} EXECUTE [depth=0] sofia/internal/1001 conference(835)"),
+        ]);
+        assert_eq!(
+            tracker.sessions()[UUID3]
+                .conference
+                .as_ref()
+                .unwrap()
+                .instance,
+            UUID1
         );
     }
 }

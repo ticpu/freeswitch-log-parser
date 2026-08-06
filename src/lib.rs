@@ -75,7 +75,8 @@ pub use line::{parse_line, LineKind, RawLine};
 pub use message::{classify_message, DtmfSource, MessageKind, SdpDirection, SipInviteDirection};
 pub use peer::{for_each_peer_uuid, for_each_peer_uuid_with, is_peer_uuid_var, PEER_UUID_VARS};
 pub use session::{
-    parse_bridge_args, BridgeInfo, EnrichedEntry, SessionSnapshot, SessionState, SessionTracker,
+    conference::ConferenceMembership, parse_bridge_args, BridgeInfo, EnrichedEntry,
+    SessionSnapshot, SessionState, SessionTracker,
 };
 pub use stamp::{log_rotation_stamp, normalize_entry_timestamp};
 pub use stream::{

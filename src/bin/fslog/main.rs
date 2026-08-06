@@ -104,6 +104,10 @@ struct FilterArgs {
     #[arg(long, value_name = "PATTERN")]
     grep: Option<String>,
 
+    /// Codec name in a negotiation or SDP block (repeatable, OR logic)
+    #[arg(long, value_name = "NAME")]
+    codec: Vec<String>,
+
     /// Also match --fgrep/--grep/PATTERN inside attached block lines (SDP, CHANNEL_DATA)
     #[arg(long)]
     match_blocks: bool,
@@ -310,6 +314,7 @@ fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) ->
         category: filter.category.clone(),
         fgrep: filter.fgrep.clone(),
         grep,
+        codec: filter.codec.clone(),
         from_ts: from.map(normalize_date_from),
         until_ts: until.map(normalize_date_until),
     })

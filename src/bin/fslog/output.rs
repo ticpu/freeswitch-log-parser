@@ -293,6 +293,41 @@ impl EntryPrinter {
         Ok(())
     }
 
+    #[cfg(feature = "sdp")]
+    fn sdp_summary_line(block: &Block) -> Option<String> {
+        use freeswitch_types::sdp::SdpCodecEntry;
+
+        let codecs = block.sdp_codecs()?.ok()?;
+        let mut parts: Vec<String> = codecs
+            .iter()
+            .map(|e| match e {
+                SdpCodecEntry::Rtp(c) => {
+                    let mut s = format!("{}/{}", c.name(), c.clock_rate());
+                    if let Some(ch) = c.channels() {
+                        if ch > 1 {
+                            s.push_str(&format!("/{ch}"));
+                        }
+                    }
+                    s
+                }
+                _ => "T.38".to_string(),
+            })
+            .collect();
+        for rate in codecs.telephone_event_rates() {
+            parts.push(format!("telephone-event/{rate}"));
+        }
+        if codecs.has_comfort_noise() {
+            parts.push("CN".to_string());
+        }
+        for u in codecs.unmapped() {
+            parts.push(format!("pt{}?", u.payload_type));
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        Some(parts.join(", "))
+    }
+
     fn print_block(&self, w: &mut dyn Write, block: &Block, use_color: bool) -> io::Result<()> {
         let bc = if use_color { DIM_GREEN } else { "" };
         let sc = if use_color { BRIGHT_GREEN } else { "" };
@@ -313,6 +348,10 @@ impl EntryPrinter {
                     "{sc}         sdp    {direction} ({} lines){reset}",
                     body.len()
                 )?;
+                #[cfg(feature = "sdp")]
+                if let Some(summary) = Self::sdp_summary_line(block) {
+                    writeln!(w, "{sc}         sdp    {summary}{reset}")?;
+                }
                 for line in body {
                     writeln!(w, "{sc}         sdp    {line}{reset}")?;
                 }
@@ -452,6 +491,7 @@ pub struct FilterParams {
     pub category: Vec<String>,
     pub fgrep: Option<String>,
     pub grep: Option<regex::Regex>,
+    pub codec: Vec<String>,
     pub from_ts: Option<String>,
     pub until_ts: Option<String>,
 }
@@ -469,6 +509,9 @@ pub struct FilterConfig {
     pub category: Vec<String>,
     fgrep_ac: Option<AhoCorasick>,
     pub grep: Option<regex::Regex>,
+    /// Codec names, lowercased; an entry matches if its negotiation or SDP
+    /// block names any of them.
+    pub codec: Vec<String>,
     pub from_ts: Option<String>,
     pub until_ts: Option<String>,
 }
@@ -483,6 +526,7 @@ impl FilterConfig {
             category: p.category,
             fgrep_ac: build_matcher(p.fgrep.as_slice())?,
             grep: p.grep,
+            codec: p.codec.iter().map(|c| c.to_lowercase()).collect(),
             from_ts: p.from_ts,
             until_ts: p.until_ts,
         })
@@ -507,6 +551,37 @@ impl FilterConfig {
             match_blocks: true,
             category: Vec::new(),
             ..self.clone()
+        }
+    }
+
+    /// Whether the entry's media blocks name one of the wanted codecs.
+    fn codec_matches(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        let wanted = |name: &str| {
+            let name = name.to_lowercase();
+            self.codec.iter().any(|c| name.contains(c.as_str()))
+        };
+        match &entry.block {
+            Some(Block::CodecNegotiation {
+                comparisons,
+                matched,
+                near_matched,
+                ..
+            }) => {
+                comparisons
+                    .iter()
+                    .any(|(o, l)| wanted(&o.name) || wanted(&l.name))
+                    || matched.iter().chain(near_matched).any(|c| wanted(&c.name))
+            }
+            #[cfg(feature = "sdp")]
+            Some(block @ Block::Sdp { .. }) => match block.sdp_codecs() {
+                Some(Ok(codecs)) => codecs.iter().any(|e| match e {
+                    freeswitch_types::sdp::SdpCodecEntry::Rtp(c) => wanted(c.name()),
+                    _ => false,
+                }),
+                // A body that will not parse cannot claim a codec either way.
+                _ => false,
+            },
+            _ => false,
         }
     }
 
@@ -552,6 +627,10 @@ impl FilterConfig {
             if !hit {
                 return false;
             }
+        }
+
+        if !self.codec.is_empty() && !self.codec_matches(entry) {
+            return false;
         }
 
         if (self.from_ts.is_some() || self.until_ts.is_some()) && !entry.timestamp.is_empty() {
@@ -876,5 +955,52 @@ pub mod tests {
         assert!(d.match_blocks);
         // seed found in message body survives discovery despite category mismatch
         assert!(d.matches(&entry("0000", "found seed here", &[])));
+    }
+
+    fn codec_entry(names: &[&str], matched: &[&str]) -> LogEntry {
+        let offer = |name: &str| {
+            freeswitch_log_parser::CodecOffer::parse(
+                freeswitch_log_parser::CodecMedia::Audio,
+                &format!("{name}:0:8000:20:64000:1"),
+            )
+            .expect("token parses")
+        };
+        let mut e = entry("u", "Audio Codec Compare", &[]);
+        e.block = Some(Block::CodecNegotiation {
+            media: freeswitch_log_parser::CodecMedia::Audio,
+            comparisons: names.iter().map(|n| (offer(n), offer("PCMU"))).collect(),
+            matched: matched.iter().map(|n| offer(n)).collect(),
+            near_matched: Vec::new(),
+        });
+        e
+    }
+
+    #[test]
+    fn codec_filter_matches_offers_and_matches() {
+        let f = filter(FilterParams {
+            codec: vec!["opus".into()],
+            ..Default::default()
+        });
+        assert!(f.matches(&codec_entry(&["opus"], &[])), "a remote offer");
+        assert!(f.matches(&codec_entry(&["G722"], &["opus"])), "the winner");
+        assert!(!f.matches(&codec_entry(&["G722"], &["G722"])));
+    }
+
+    #[test]
+    fn codec_filter_is_case_insensitive() {
+        let f = filter(FilterParams {
+            codec: vec!["OPUS".into()],
+            ..Default::default()
+        });
+        assert!(f.matches(&codec_entry(&["opus"], &[])));
+    }
+
+    #[test]
+    fn codec_filter_ignores_entries_without_media_blocks() {
+        let f = filter(FilterParams {
+            codec: vec!["opus".into()],
+            ..Default::default()
+        });
+        assert!(!f.matches(&entry("u", "opus appears only in the text", &[])));
     }
 }

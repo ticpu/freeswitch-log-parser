@@ -8,6 +8,7 @@
 
 use std::str::FromStr;
 
+use freeswitch_types::variables::LoopbackVariable;
 use freeswitch_types::ChannelVariable;
 
 use crate::message::MessageKind;
@@ -28,17 +29,24 @@ pub const PEER_UUID_VARS: &[ChannelVariable] = &[
     ChannelVariable::TransferHistory,
 ];
 
-/// Peer-bearing variables `freeswitch-types` does not model yet, matched by
-/// name. Still vanilla FreeSWITCH, so they belong here rather than behind the
-/// `extra_var` predicate consumers use for their own variables.
-pub const PEER_UUID_VAR_NAMES: &[&str] = &["other_loopback_leg_uuid"];
+/// mod_loopback variables whose value is another leg's UUID. Separate from
+/// [`PEER_UUID_VARS`] only because `freeswitch-types` gives them their own enum.
+pub const LOOPBACK_PEER_UUID_VARS: &[LoopbackVariable] = &[
+    LoopbackVariable::LoopbackFromUuid,
+    LoopbackVariable::OtherLoopbackFromUuid,
+    LoopbackVariable::OtherLoopbackLegUuid,
+    LoopbackVariable::OtherLegTrueId,
+    LoopbackVariable::LoopbackBowoutOtherUuid,
+];
 
-/// Whether `name` is one of [`PEER_UUID_VARS`] or [`PEER_UUID_VAR_NAMES`].
+/// Whether `name` is one of [`PEER_UUID_VARS`] or [`LOOPBACK_PEER_UUID_VARS`].
 /// Accepts the bare variable name; strip any `variable_` prefix first.
 pub fn is_peer_uuid_var(name: &str) -> bool {
-    PEER_UUID_VAR_NAMES.contains(&name)
-        || ChannelVariable::from_str(name)
-            .map(|v| PEER_UUID_VARS.contains(&v))
+    ChannelVariable::from_str(name)
+        .map(|v| PEER_UUID_VARS.contains(&v))
+        .unwrap_or(false)
+        || LoopbackVariable::from_str(name)
+            .map(|v| LOOPBACK_PEER_UUID_VARS.contains(&v))
             .unwrap_or(false)
 }
 
@@ -161,6 +169,16 @@ mod tests {
     fn harvests_uppercase_hex() {
         let upper = "AAAABBBB-2222-3333-4444-5555CCCCDDDD";
         assert_eq!(collect(&var("bridge_uuid", upper)), vec![upper]);
+    }
+
+    #[test]
+    fn harvests_loopback_peer_var() {
+        assert_eq!(collect(&var("other_loopback_leg_uuid", PEER)), vec![PEER]);
+    }
+
+    #[test]
+    fn ignores_non_peer_loopback_var() {
+        assert!(collect(&var("loopback_initial_codec", PEER)).is_empty());
     }
 
     #[test]

@@ -16,7 +16,8 @@ exclude = ["packaging/", "Makefile", ".gitleaks.toml", "tests/fixtures/", "tests
 name = "freeswitch_log_parser"
 
 [dependencies]
-freeswitch-types = { version = "1.4", default-features = false, features = ["esl"] }
+# Three components only because Cargo needs the full prerelease to opt in.
+freeswitch-types = { version = "1.5.0-beta.2", default-features = false, features = ["esl"] }
 aho-corasick = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4", optional = true }

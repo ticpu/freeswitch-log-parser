@@ -7,6 +7,7 @@ mod files;
 #[cfg(feature = "tui")]
 mod monitor;
 mod output;
+mod pager;
 mod prescan;
 mod related;
 
@@ -15,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use log::warn;
 
 use freeswitch_log_parser::{
     AttachedLines, LineKind, LogEntry, LogLevel, LogStream, MessageKind, ParseStats,
@@ -29,6 +29,7 @@ use files::{
     normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader, resolve_log_path,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig, FilterParams};
+use pager::{is_broken_pipe, PagedWriter};
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ColorWhen {
@@ -48,9 +49,9 @@ struct Cli {
     #[arg(long, default_value = "auto", value_enum)]
     color: ColorWhen,
 
-    /// Disable auto-pager
-    #[arg(long)]
-    no_pager: bool,
+    /// Pipe output through a pager (`$FSLOG_PAGER`, default `less -RFX`)
+    #[arg(long, visible_alias = "less")]
+    pager: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -261,12 +262,14 @@ struct TailArgs {
     file: Option<String>,
 }
 
-fn resolve_color(when: ColorWhen, use_pager: bool) -> ColorMode {
+/// Paging does not change this: the process keeps the terminal on its own
+/// stdout, only the pager's stdin is a pipe.
+fn resolve_color(when: ColorWhen) -> ColorMode {
     match when {
         ColorWhen::Always => ColorMode::Always,
         ColorWhen::Never => ColorMode::Never,
         ColorWhen::Auto => {
-            if use_pager || io::stdout().is_terminal() {
+            if io::stdout().is_terminal() {
                 ColorMode::Always
             } else {
                 ColorMode::Never
@@ -316,39 +319,14 @@ fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) ->
     })
 }
 
-fn setup_pager(cli: &Cli) -> Option<process::Child> {
-    if cli.no_pager || !io::stdout().is_terminal() {
-        return None;
-    }
-    if matches!(cli.command, Command::Completions { .. } | Command::Tail(_)) {
-        return None;
-    }
-    let pager_cmd = std::env::var("FSLOG_PAGER").unwrap_or_else(|_| "less".to_string());
-    let mut parts = pager_cmd.split_whitespace();
-    let program = parts.next()?;
-    let args: Vec<&str> = parts.collect();
-    let default_args;
-    let final_args = if args.is_empty() && program == "less" {
-        default_args = ["-RFX"];
-        &default_args[..]
-    } else {
-        &args[..]
-    };
-    match process::Command::new(program)
-        .args(final_args)
-        .stdin(process::Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => Some(child),
-        Err(e) => {
-            warn!("failed to spawn pager {program}: {e}; output goes to stdout");
-            None
-        }
-    }
+/// `tail` follows forever and `completions` writes a shell script — neither is
+/// something to hold in a pager.
+fn wants_pager(cli: &Cli) -> bool {
+    cli.pager && !matches!(cli.command, Command::Completions { .. } | Command::Tail(_))
 }
 
-fn run_with_output(cli: Cli, use_pager: bool, out: &mut dyn Write) -> io::Result<()> {
-    let color = resolve_color(cli.color, use_pager);
+fn run_with_output(cli: Cli, out: &mut dyn Write) -> io::Result<()> {
+    let color = resolve_color(cli.color);
     match cli.command {
         Command::List => cmd_list(&cli.dir, out),
         Command::Search(ref args) => cmd_search(&cli.dir, args, color, out),
@@ -624,13 +602,19 @@ fn run_output(
     let (stats, session_count) = if fargs.session {
         let mut tracker = SessionTracker::new(stream);
         for enriched in tracker.by_ref() {
-            emitter.on_entry(out, &enriched.entry, enriched.session.as_ref())?;
+            match emitter.on_entry(out, &enriched.entry, enriched.session.as_ref()) {
+                Err(e) if is_broken_pipe(&e) => break,
+                other => other?,
+            }
         }
         (tracker.stats().clone(), tracker.sessions().len())
     } else {
         let mut stream = stream;
         for entry in stream.by_ref() {
-            emitter.on_entry(out, &entry, None)?;
+            match emitter.on_entry(out, &entry, None) {
+                Err(e) if is_broken_pipe(&e) => break,
+                other => other?,
+            }
         }
         (stream.stats().clone(), 0)
     };
@@ -700,8 +684,13 @@ fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) 
             continue;
         }
         if !args.filter.stats {
-            printer.print_entry(out, &enriched.entry, enriched.session.as_ref(), None)?;
-            out.flush()?;
+            let written = printer
+                .print_entry(out, &enriched.entry, enriched.session.as_ref(), None)
+                .and_then(|()| out.flush());
+            match written {
+                Err(e) if is_broken_pipe(&e) => break,
+                other => other?,
+            }
         }
     }
 
@@ -722,28 +711,13 @@ fn main() {
         return;
     }
 
-    let mut pager = setup_pager(&cli);
-    let use_pager = pager.is_some();
+    let mut out = PagedWriter::new(wants_pager(&cli));
+    let result = run_with_output(cli, &mut out);
+    let finished = out.finish();
 
-    let result = if let Some(ref mut child) = pager {
-        let mut stdin = child.stdin.take().expect("pager stdin");
-        let result = run_with_output(cli, use_pager, &mut stdin);
-        drop(stdin);
-        if let Err(e) = child.wait() {
-            warn!("waiting for the pager failed: {e}");
-        }
-        result
-    } else {
-        let stdout = io::stdout();
-        let mut lock = stdout.lock();
-        run_with_output(cli, use_pager, &mut lock)
-    };
-
-    if let Err(e) = result {
-        if e.kind() != io::ErrorKind::BrokenPipe {
-            eprintln!("fslog: {e}");
-            process::exit(1);
-        }
+    if let Err(e) = result.and(finished) {
+        eprintln!("fslog: {e}");
+        process::exit(1);
     }
 }
 

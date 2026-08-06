@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::mpsc;
@@ -976,8 +976,15 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
 
     let state = process_log(dir, &path, context_filter)?;
 
+    // `println!` panics when the reader closes early; `fslog monitor --dump |
+    // head` is exactly that.
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     for r in &state.calls {
-        println!("{}", row_cells(r, &state.latest_timestamp).join("\t"));
+        match writeln!(out, "{}", row_cells(r, &state.latest_timestamp).join("\t")) {
+            Err(e) if crate::pager::is_broken_pipe(&e) => return Ok(()),
+            other => other?,
+        }
     }
 
     Ok(())

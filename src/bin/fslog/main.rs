@@ -84,6 +84,11 @@ enum Command {
 #[derive(clap::Args)]
 struct FilterArgs {
     /// UUID substring filter (case-insensitive, repeatable, OR logic)
+    ///
+    /// Matches the channel-UUID column only — the session that produced the
+    /// line, not every line naming it. A peer leg's bridge line, an
+    /// Other-Leg-Unique-ID field or a system line mentioning the UUID belongs
+    /// to another session and is not shown; `--related` follows those legs.
     #[arg(short, long, value_name = "UUID")]
     uuid: Vec<String>,
 
@@ -96,10 +101,20 @@ struct FilterArgs {
     category: Vec<String>,
 
     /// Fixed string substring search (case-insensitive)
+    ///
+    /// Searches the same field --grep does; see its --help for the scope.
     #[arg(long, value_name = "PATTERN")]
     fgrep: Option<String>,
 
     /// Regex pattern search
+    ///
+    /// Matches the message text only. The parser splits a log line into
+    /// `uuid | timestamp | [LEVEL] | source.c:line | message`, and this
+    /// searches the last field — not the channel-UUID column, and not the
+    /// attached block lines (dialplan regexes, CHANNEL_DATA dumps, SDP) unless
+    /// --match-blocks is given. That is deliberate: a term found in a dialplan
+    /// regex is the configuration mentioning it, not the call. Entries a
+    /// narrower scope kept out are counted and reported on stderr at end of run.
     #[arg(long, value_name = "PATTERN")]
     grep: Option<String>,
 
@@ -108,6 +123,8 @@ struct FilterArgs {
     codec: Vec<String>,
 
     /// Also match --fgrep/--grep/PATTERN inside attached block lines (SDP, CHANNEL_DATA)
+    ///
+    /// Widens the pattern scope; see --grep's --help for what it is by default.
     #[arg(long)]
     match_blocks: bool,
 
@@ -260,6 +277,8 @@ struct SearchArgs {
     filter: FilterArgs,
 
     /// Fixed-string pattern (case-insensitive); shorthand for --fgrep
+    ///
+    /// Searches the same field --grep does; see its --help for the scope.
     #[arg(value_name = "PATTERN")]
     pattern: Option<String>,
 

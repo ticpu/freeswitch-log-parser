@@ -213,14 +213,27 @@ fslog search [OPTIONS] [PATTERN]
 
 Filtering:
 
-- `-u, --uuid <UUID>` — session UUID substring; repeat for OR matching
+- `-u, --uuid <UUID>` — session UUID substring, matched against the channel-UUID column; repeat for OR matching
 - `-l, --level <LEVEL>` — minimum severity (`debug`…`console`)
 - `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …); repeat for OR matching
-- `--fgrep <PATTERN>` — case-insensitive fixed-string match
-- `--grep <REGEX>` — regex match
+- `--fgrep <PATTERN>` — case-insensitive fixed-string match on the message
+- `--grep <REGEX>` — regex match on the message
 - `--codec <NAME>` — codec named in a negotiation or SDP block, case-insensitive; repeat for OR matching
 - `--match-blocks` — also match `--fgrep`/`--grep`/`PATTERN` inside attached block lines (SDP, CHANNEL_DATA, codec negotiation), not just the message
 - `--related` — expand matching sessions to their bridged/transferred peer legs (originate, `bridge()`, `uuid_bridge`, `Other-Leg-Unique-ID`, peer-UUID channel variables, mod_loopback A/B legs) and to everyone in the same conference
+
+Pattern search reads the message field; `-u` reads the channel-UUID column.
+Neither reaches the other's, so `--grep <uuid>` shows only the lines that *name*
+the session and `-u <uuid>` only the lines it *produced*. Entries kept out by
+that boundary alone are counted and reported on stderr at end of run, with the
+flag — and where the pattern names a UUID, the command — that widens to them:
+
+```
+$ fslog read --grep 393d8167-062d-4652-b86e-c4e0acf488ff
+17:03:56.190807  notice 393d8167-…88ff [channel-lifecycle] New Channel sofia/…
+note: 49 more entries carry this pattern in the channel-UUID column, which --grep does not search
+hint: rerun with -u 393d8167-062d-4652-b86e-c4e0acf488ff
+```
 
 Context (grep-style), with `--` dividers between non-contiguous groups:
 

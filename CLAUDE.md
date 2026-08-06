@@ -205,6 +205,7 @@ Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in 
 - `channel_name`, `channel_state` — from CHANNEL_DATA blocks
 - `dialplan_context`, `dialplan_from`, `dialplan_to` — from dialplan processing messages
 - `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines
+- `conference` — name and instance from `conference()` / a transfer to an inline `conference:` extension; member id and conference UUID only when a dump supplies them
 
 No application-specific logic — consumers do business-specific lookups.
 

@@ -37,8 +37,11 @@ Every entry carries both a typed `Block` and raw `attached` lines.
 state, learned variables, call direction, caller/destination numbers)
 and propagates it across entries. Also links bridged a-leg ↔ b-leg
 sessions via `other_leg_uuid` — from the explicit `Peer UUID:` suffix
-when present, or by matching a live b-leg `channel_name` when
-FreeSWITCH omits it. Yields `EnrichedEntry` with a `SessionSnapshot`
+when present, by matching a live b-leg `channel_name` when FreeSWITCH
+omits it, or by mod_loopback's A/B leg naming. Conference membership is
+tracked per conference instance, so a name reused by a later conference
+does not merge the two; `SessionTracker::conference_members` lists an
+instance's UUIDs. Yields `EnrichedEntry` with a `SessionSnapshot`
 alongside the raw `LogEntry`.
 
 Each layer wraps the previous and can be used independently.
@@ -182,8 +185,13 @@ is enabled.
 | `fslog completions <SHELL>` | Emit a shell completion script |
 
 Global flags: `--dir <PATH>` (or `FSLOG_DIR`, default
-`/var/log/freeswitch`), `--color auto|always|never`, `--no-pager`,
-`--version`.
+`/var/log/freeswitch`), `--color auto|always|never`, `--pager` (alias
+`--less`), `--version`.
+
+Output goes straight to stdout unless `--pager` is given, and the pager is
+started only once there is something to show, so an empty search never leaves
+`less` holding the terminal. `FSLOG_PAGER` overrides the command (default
+`less -RFX`); `tail` and `completions` never page.
 
 ### `search`
 
@@ -201,7 +209,7 @@ Filtering:
 - `--fgrep <PATTERN>` — case-insensitive fixed-string match
 - `--grep <REGEX>` — regex match
 - `--match-blocks` — also match `--fgrep`/`--grep`/`PATTERN` inside attached block lines (SDP, CHANNEL_DATA, codec negotiation), not just the message
-- `--related` — expand matching sessions to their bridged/transferred peer legs (originate, `bridge()`, `uuid_bridge`, `Other-Leg-Unique-ID`, peer-UUID channel variables)
+- `--related` — expand matching sessions to their bridged/transferred peer legs (originate, `bridge()`, `uuid_bridge`, `Other-Leg-Unique-ID`, peer-UUID channel variables, mod_loopback A/B legs) and to everyone in the same conference
 
 Context (grep-style), with `--` dividers between non-contiguous groups:
 
@@ -210,7 +218,7 @@ Context (grep-style), with `--` dividers between non-contiguous groups:
 Output and selection:
 
 - `--blocks` — expand structured content inline (see below)
-- `--session` — annotate each entry with tracked state (context, channel state, channel name)
+- `--session` — annotate each entry with tracked state (context, channel state, channel name, conference and member id)
 - `--stats` / `--unclassified` — summary and unclassified-line report
 - `-n, --line-numbers` — show physical line numbers
 - `--from <DATE>` / `--until <DATE>` — bound discovery (progressive: `2026-03`, `2026-03-08`, `2026-03-08T15:48`)

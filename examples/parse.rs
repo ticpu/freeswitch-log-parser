@@ -54,13 +54,16 @@ fn main() {
                     println!("          block: sdp ({}, {} lines)", direction, body.len());
                 }
                 freeswitch_log_parser::Block::CodecNegotiation {
+                    media,
                     comparisons,
-                    selected,
+                    matched,
+                    near_matched,
                 } => {
                     println!(
-                        "          block: codec-negotiation ({} cmp, {} sel)",
+                        "          block: codec-negotiation {media} ({} cmp, {} matched, {} near)",
                         comparisons.len(),
-                        selected.len(),
+                        matched.len(),
+                        near_matched.len(),
                     );
                 }
                 _ => {

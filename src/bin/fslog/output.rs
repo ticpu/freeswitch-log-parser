@@ -318,21 +318,27 @@ impl EntryPrinter {
                 }
             }
             Block::CodecNegotiation {
+                media,
                 comparisons,
-                selected,
+                matched,
+                near_matched,
             } => {
                 let cc = if use_color { DIM_YELLOW } else { "" };
                 writeln!(
                     w,
-                    "{cc}         codec  {} comparisons, {} selected{reset}",
+                    "{cc}         codec  {media}: {} comparisons, {} matched, {} near{reset}",
                     comparisons.len(),
-                    selected.len()
+                    matched.len(),
+                    near_matched.len(),
                 )?;
                 for (offered, local) in comparisons {
-                    writeln!(w, "{cc}         codec  {offered} vs {local}{reset}")?;
+                    writeln!(w, "{cc}         codec  {offered}  vs  {local}{reset}")?;
                 }
-                for s in selected {
-                    writeln!(w, "{cc}         codec  MATCH {s}{reset}")?;
+                for c in matched {
+                    writeln!(w, "{cc}         codec  MATCH {c}{reset}")?;
+                }
+                for c in near_matched {
+                    writeln!(w, "{cc}         codec  NEAR  {c}{reset}")?;
                 }
             }
             _ => {

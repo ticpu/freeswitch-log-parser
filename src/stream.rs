@@ -1,4 +1,5 @@
 use crate::attached::AttachedLines;
+use crate::codec::{CodecMedia, CodecOffer};
 use crate::decode::truncate_at_char_boundary;
 use crate::level::LogLevel;
 use crate::line::{
@@ -25,10 +26,15 @@ pub enum Block {
         direction: SdpDirection,
         body: Vec<String>,
     },
-    /// Codec negotiation sequence — offered/local comparisons and selected matches.
+    /// Codec negotiation sequence for one media type. A run only ever covers a
+    /// single [`CodecMedia`]; audio and video traces never share a block.
     CodecNegotiation {
-        comparisons: Vec<(String, String)>,
-        selected: Vec<String>,
+        media: CodecMedia,
+        /// `(remote offer, local implementation)` for each pair compared.
+        comparisons: Vec<(CodecOffer, CodecOffer)>,
+        matched: Vec<CodecOffer>,
+        /// Codecs kept as fallbacks because only their ptime differed.
+        near_matched: Vec<CodecOffer>,
     },
 }
 
@@ -158,8 +164,10 @@ enum StreamState {
         body: Vec<String>,
     },
     InCodecNegotiation {
-        comparisons: Vec<(String, String)>,
-        selected: Vec<String>,
+        media: CodecMedia,
+        comparisons: Vec<(CodecOffer, CodecOffer)>,
+        matched: Vec<CodecOffer>,
+        near_matched: Vec<CodecOffer>,
     },
 }
 
@@ -266,12 +274,16 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 (Some(Block::Sdp { direction, body }), warnings)
             }
             StreamState::InCodecNegotiation {
+                media,
                 comparisons,
-                selected,
+                matched,
+                near_matched,
             } => (
                 Some(Block::CodecNegotiation {
+                    media,
                     comparisons,
-                    selected,
+                    matched,
+                    near_matched,
                 }),
                 warnings,
             ),
@@ -299,39 +311,77 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 direction: direction.clone(),
                 body: Vec::new(),
             },
-            MessageKind::CodecNegotiation => StreamState::InCodecNegotiation {
+            MessageKind::CodecNegotiation { media } => StreamState::InCodecNegotiation {
+                media: *media,
                 comparisons: Vec::new(),
-                selected: Vec::new(),
+                matched: Vec::new(),
+                near_matched: Vec::new(),
             },
             _ => StreamState::Idle,
         };
     }
 
-    fn accumulate_codec_entry(&mut self, msg: &str) {
+    /// Returns a warning when the line is not one of the known trace shapes.
+    /// The caller owns attaching it, because the entry a block's opening line
+    /// belongs to is not built yet when this runs.
+    #[must_use]
+    fn accumulate_codec_entry(&mut self, msg: &str) -> Option<String> {
         let mut warning = None;
         if let StreamState::InCodecNegotiation {
+            media,
             comparisons,
-            selected,
+            matched,
+            near_matched,
         } = &mut self.state
         {
-            let rest = msg.strip_prefix("Audio Codec Compare ").unwrap_or(msg);
-            if rest.contains("is saved as a match") {
-                let codec = rest.find(']').map(|end| &rest[1..end]).unwrap_or(rest);
-                selected.push(codec.to_string());
-            } else if let Some(slash) = rest.find("]/[") {
+            let media = *media;
+            let parse = |token: &str| {
+                CodecOffer::parse(media, token).map_err(|e| {
+                    format!(
+                        "unrecognized codec negotiation line ({e}): {}",
+                        truncate_at_char_boundary(msg, 80)
+                    )
+                })
+            };
+
+            // `Audio Codec Compare [a:…]/[b:…]` vs the single-token verdicts
+            // `[a:…] ++++ is saved as a match` / `is saved as a near-match` /
+            // `was not saved as a near-match. Too many. Ignoring.`
+            let rest = msg
+                .strip_prefix("Audio Codec Compare ")
+                .or_else(|| msg.strip_prefix("Video Codec Compare "))
+                .unwrap_or(msg);
+
+            let result = if let Some(slash) = rest.find("]/[") {
                 let offered = &rest[1..slash];
-                let local = &rest[slash + 3..rest.len().saturating_sub(1)];
-                comparisons.push((offered.to_string(), local.to_string()));
+                let local = rest[slash + 3..].trim_end_matches(']');
+                parse(offered).and_then(|o| parse(local).map(|l| comparisons.push((o, l))))
+            } else if let Some(end) = rest.find(']') {
+                let token = &rest[1..end];
+                let verdict = &rest[end + 1..];
+                if verdict.contains("was not saved") {
+                    // Reported only so the count is not silently short; the
+                    // codec was dropped for exceeding MAX_MATCHES.
+                    parse(token).map(|_| ())
+                } else if verdict.contains("near-match") {
+                    parse(token).map(|c| near_matched.push(c))
+                } else if verdict.contains("is saved as a match") {
+                    parse(token).map(|c| matched.push(c))
+                } else {
+                    Err(format!(
+                        "unrecognized codec negotiation line: {}",
+                        truncate_at_char_boundary(msg, 80)
+                    ))
+                }
             } else {
-                warning = Some(format!(
+                Err(format!(
                     "unrecognized codec negotiation line: {}",
                     truncate_at_char_boundary(msg, 80)
-                ));
-            }
+                ))
+            };
+            warning = result.err();
         }
-        if let (Some(w), Some(ref mut pending)) = (warning, &mut self.pending) {
-            pending.warnings.push(w);
-        }
+        warning
     }
 
     fn accumulate_continuation(&mut self, msg: &str, line: &str) {
@@ -602,15 +652,22 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     let uuid = parsed.uuid.unwrap_or("").to_string();
                     let message_kind = classify_message(parsed.message);
 
-                    // Merge consecutive codec negotiation entries with same UUID
-                    if message_kind == MessageKind::CodecNegotiation {
-                        if let (Some(ref pending), StreamState::InCodecNegotiation { .. }) =
-                            (&self.pending, &self.state)
+                    // Merge consecutive codec negotiation entries with the same
+                    // UUID *and* media type — a video run following an audio one
+                    // describes a different negotiation and gets its own block.
+                    if let MessageKind::CodecNegotiation { media } = message_kind {
+                        if let (
+                            Some(ref pending),
+                            StreamState::InCodecNegotiation {
+                                media: open_media, ..
+                            },
+                        ) = (&self.pending, &self.state)
                         {
-                            if uuid == pending.uuid {
-                                self.accumulate_codec_entry(parsed.message);
+                            if uuid == pending.uuid && media == *open_media {
+                                let warning = self.accumulate_codec_entry(parsed.message);
                                 if let Some(ref mut p) = self.pending {
                                     p.attached.push(&line);
+                                    p.warnings.extend(warning);
                                 }
                                 continue;
                             }
@@ -632,9 +689,15 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     }
 
                     self.start_block_for_message(&message_kind);
-                    if message_kind == MessageKind::CodecNegotiation {
-                        self.accumulate_codec_entry(parsed.message);
-                    }
+                    // The entry this line opens does not exist yet, so its
+                    // warning is carried across rather than pushed onto the
+                    // pending entry the way a merged line's is.
+                    let opening_warning =
+                        if matches!(message_kind, MessageKind::CodecNegotiation { .. }) {
+                            self.accumulate_codec_entry(parsed.message)
+                        } else {
+                            None
+                        };
 
                     let mut entry = self.new_entry(
                         uuid,
@@ -646,6 +709,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     entry.level = parsed.level;
                     entry.idle_pct = parsed.idle_pct.map(|s| s.to_string());
                     entry.source = parsed.source.map(|s| s.to_string());
+                    entry.warnings.extend(opening_warning);
                     self.pending = Some(entry);
 
                     if yielded.is_some() {
@@ -1758,6 +1822,106 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("unexpected codec negotiation")),
             "expected codec warning, got: {:?}",
+            entries[0].warnings
+        );
+    }
+
+    fn codec_block(entry: &LogEntry) -> (&CodecMedia, &Vec<CodecOffer>, &Vec<CodecOffer>) {
+        match &entry.block {
+            Some(Block::CodecNegotiation {
+                media,
+                matched,
+                near_matched,
+                ..
+            }) => (media, matched, near_matched),
+            other => panic!("expected a codec block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_negotiation_has_its_own_arity() {
+        let lines = vec![
+            full_line(UUID1, TS1, "Video Codec Compare [H263:34]/[H264:97]"),
+            full_line(
+                UUID1,
+                TS1,
+                "Video Codec Compare [H263:34] +++ is saved as a match",
+            ),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        let (media, matched, _) = codec_block(&entries[0]);
+        assert_eq!(*media, CodecMedia::Video);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].name, "H263");
+        assert_eq!(matched[0].payload_type, 34);
+        assert_eq!(matched[0].clock_rate, None);
+        assert!(entries[0].warnings.is_empty(), "{:?}", entries[0].warnings);
+    }
+
+    #[test]
+    fn audio_and_video_runs_do_not_merge() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1]/[PCMU:0:8000:20:64000:1]",
+            ),
+            full_line(UUID1, TS1, "Video Codec Compare [H263:34]/[H264:97]"),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert_eq!(entries.len(), 3, "same UUID, different media, two blocks");
+        assert_eq!(*codec_block(&entries[0]).0, CodecMedia::Audio);
+        assert_eq!(*codec_block(&entries[1]).0, CodecMedia::Video);
+    }
+
+    #[test]
+    fn near_match_verdicts_are_data_not_warnings() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [opus:116:48000:20:0:1]/[opus:116:48000:20:0:1]",
+            ),
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [opus:116:48000:20:0:1] is saved as a near-match",
+            ),
+            // switch_core_media.c:5575 — seven fields, and the codec is dropped.
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:8000:20:64000:1] was not saved as a near-match. Too many. Ignoring.",
+            ),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        let (_, matched, near_matched) = codec_block(&entries[0]);
+        assert!(matched.is_empty());
+        assert_eq!(near_matched.len(), 1, "the dropped one is not kept");
+        assert_eq!(near_matched[0].name, "opus");
+        assert!(entries[0].warnings.is_empty(), "{:?}", entries[0].warnings);
+    }
+
+    #[test]
+    fn a_malformed_codec_token_still_warns() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [PCMU:0:8000:20:64000:1]/[nope]",
+            ),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert!(
+            entries[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("unrecognized codec negotiation")),
+            "got: {:?}",
             entries[0].warnings
         );
     }

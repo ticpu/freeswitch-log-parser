@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::codec::CodecMedia;
+
 /// Which end of a call an SDP body belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdpDirection {
@@ -81,7 +83,7 @@ pub enum MessageKind {
     /// Channel state transition (`State Change`, `Callstate Change`, `SOFIA` state).
     StateChange { detail: String },
     /// `Audio Codec Compare` lines during codec negotiation.
-    CodecNegotiation,
+    CodecNegotiation { media: CodecMedia },
     /// RTP, RTCP, recording, and other media-related messages.
     Media { detail: String },
     /// Channel lifecycle events — new/close/hangup, bridge, ring, REFER, CANCEL, BYE.
@@ -154,7 +156,7 @@ impl MessageKind {
             MessageKind::Variable { .. } => "variable",
             MessageKind::SdpMarker { .. } => "sdp-marker",
             MessageKind::StateChange { .. } => "state-change",
-            MessageKind::CodecNegotiation => "codec-negotiation",
+            MessageKind::CodecNegotiation { .. } => "codec-negotiation",
             MessageKind::Media { .. } => "media",
             MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
             MessageKind::SipInvite { .. } => "sip-invite",
@@ -177,7 +179,9 @@ impl fmt::Display for MessageKind {
             MessageKind::Variable { name, .. } => write!(f, "var({})", name),
             MessageKind::SdpMarker { direction } => write!(f, "sdp({})", direction),
             MessageKind::StateChange { .. } => f.pad("state-change"),
-            MessageKind::CodecNegotiation => f.pad("codec-negotiation"),
+            MessageKind::CodecNegotiation { media } => {
+                f.pad(&format!("codec-negotiation({media})"))
+            }
             MessageKind::Media { .. } => f.pad("media"),
             MessageKind::ChannelLifecycle { .. } => f.pad("channel-lifecycle"),
             MessageKind::SipInvite { .. } => f.pad("sip-invite"),
@@ -420,7 +424,15 @@ pub fn classify_message(msg: &str) -> MessageKind {
     }
 
     if msg.starts_with("Audio Codec Compare ") {
-        return MessageKind::CodecNegotiation;
+        return MessageKind::CodecNegotiation {
+            media: CodecMedia::Audio,
+        };
+    }
+
+    if msg.starts_with("Video Codec Compare ") {
+        return MessageKind::CodecNegotiation {
+            media: CodecMedia::Video,
+        };
     }
 
     if msg.starts_with("CoreSession::setVariable(") {

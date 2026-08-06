@@ -585,69 +585,90 @@ impl FilterConfig {
         }
     }
 
-    pub fn matches(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
-        if let Some(min) = self.min_level {
-            if let Some(level) = entry.level {
-                if level < min {
-                    return false;
-                }
-            }
+    fn level_ok(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        match (self.min_level, entry.level) {
+            (Some(min), Some(level)) => level >= min,
+            _ => true,
         }
+    }
 
-        if let Some(ref ac) = self.uuid_ac {
-            let hit = ac.is_match(entry.uuid.as_bytes())
-                || (!self.uuid_strict
-                    && (ac.is_match(entry.message.as_bytes())
-                        || entry.attached.iter().any(|l| ac.is_match(l.as_bytes()))));
-            if !hit {
-                return false;
-            }
-        }
-
-        if !self.category.is_empty()
-            && !self
+    fn category_ok(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        self.category.is_empty()
+            || self
                 .category
                 .iter()
                 .any(|c| entry.message_kind.label() == c.as_str())
-        {
-            return false;
-        }
+    }
 
+    fn codec_ok(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        self.codec.is_empty() || self.codec_matches(entry)
+    }
+
+    fn window_ok(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        if (self.from_ts.is_none() && self.until_ts.is_none()) || entry.timestamp.is_empty() {
+            return true;
+        }
+        let entry_ts = normalize_entry_timestamp(&entry.timestamp);
+        if let Some(ref from) = self.from_ts {
+            if entry_ts.as_str() < from.as_str() {
+                return false;
+            }
+        }
+        if let Some(ref until) = self.until_ts {
+            if entry_ts.as_str() > until.as_str() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `body` widens the UUID needles past `entry.uuid` into the message and
+    /// attached lines — the scope `--related`'s discovery pass runs at.
+    fn uuid_ok_scoped(&self, entry: &freeswitch_log_parser::LogEntry, body: bool) -> bool {
+        match self.uuid_ac {
+            None => true,
+            Some(ref ac) => {
+                ac.is_match(entry.uuid.as_bytes())
+                    || (body
+                        && (ac.is_match(entry.message.as_bytes())
+                            || entry.attached.iter().any(|l| ac.is_match(l.as_bytes()))))
+            }
+        }
+    }
+
+    /// `--fgrep` and `--grep` are conjuncts, so the scope is parameterised once
+    /// for both: widening that only one of them reaches admits nothing.
+    fn pattern_ok_scoped(&self, entry: &freeswitch_log_parser::LogEntry, blocks: bool) -> bool {
         if let Some(ref ac) = self.fgrep_ac {
             let hit = ac.is_match(entry.message.as_bytes())
-                || (self.match_blocks && entry.attached.iter().any(|l| ac.is_match(l.as_bytes())));
+                || (blocks && entry.attached.iter().any(|l| ac.is_match(l.as_bytes())));
             if !hit {
                 return false;
             }
         }
-
         if let Some(ref re) = self.grep {
             let hit = re.is_match(&entry.message)
-                || (self.match_blocks && entry.attached.iter().any(|l| re.is_match(l)));
+                || (blocks && entry.attached.iter().any(|l| re.is_match(l)));
             if !hit {
                 return false;
             }
         }
-
-        if !self.codec.is_empty() && !self.codec_matches(entry) {
-            return false;
-        }
-
-        if (self.from_ts.is_some() || self.until_ts.is_some()) && !entry.timestamp.is_empty() {
-            let entry_ts = normalize_entry_timestamp(&entry.timestamp);
-            if let Some(ref from) = self.from_ts {
-                if entry_ts.as_str() < from.as_str() {
-                    return false;
-                }
-            }
-            if let Some(ref until) = self.until_ts {
-                if entry_ts.as_str() > until.as_str() {
-                    return false;
-                }
-            }
-        }
-
         true
+    }
+
+    /// Everything but the two scoped predicates: what a wider *scope* cannot
+    /// bring back.
+    fn others_ok(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        self.level_ok(entry)
+            && self.category_ok(entry)
+            && self.codec_ok(entry)
+            && self.window_ok(entry)
+    }
+
+    pub fn matches(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        self.others_ok(entry)
+            && self.uuid_ok_scoped(entry, !self.uuid_strict)
+            && self.pattern_ok_scoped(entry, self.match_blocks)
     }
 }
 

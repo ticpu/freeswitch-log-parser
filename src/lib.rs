@@ -51,6 +51,7 @@
 
 mod attached;
 mod chain;
+mod codec;
 mod decode;
 mod level;
 mod line;
@@ -63,6 +64,7 @@ mod uuid;
 
 pub use attached::{AttachedLines, AttachedLinesIter};
 pub use chain::{SegmentTracker, TrackedChain};
+pub use codec::{CodecMedia, CodecOffer, CodecParseError};
 pub use decode::{
     classify_utf8, decode_log_line, read_log_lines, truncate_at_char_boundary, DecodedLine,
     Utf8Decode,

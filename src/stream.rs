@@ -38,6 +38,34 @@ pub enum Block {
     },
 }
 
+#[cfg(feature = "sdp")]
+impl Block {
+    /// Codecs described by an SDP body.
+    ///
+    /// `None` when there is no body to read — another block type, or an SDP
+    /// marker that carried none. Sofia logs several (`Duplicate SDP`,
+    /// `Processing updated SDP`) purely as announcements, and an empty body is
+    /// absence rather than a malformed session.
+    ///
+    /// Parsed on each call rather than stored — see `docs/design-rationale.md`.
+    /// Only a session-level failure is an `Err`: a malformed `a=rtpmap` or a
+    /// broken media section degrades into
+    /// [`SdpCodecs::warnings`](freeswitch_types::sdp::SdpCodecs::warnings).
+    pub fn sdp_codecs(
+        &self,
+    ) -> Option<Result<freeswitch_types::sdp::SdpCodecs, freeswitch_types::sdp::SdpCodecError>>
+    {
+        let Block::Sdp { body, .. } = self else {
+            return None;
+        };
+        let text = body.join("\n");
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(freeswitch_types::sdp::SdpCodecs::parse(&text))
+    }
+}
+
 /// Controls how much detail is recorded for lines that couldn't be fully classified.
 ///
 /// Higher fidelity levels allocate more memory. The default is `CountOnly`.
@@ -1836,6 +1864,58 @@ mod tests {
             }) => (media, matched, near_matched),
             other => panic!("expected a codec block, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "sdp")]
+    #[test]
+    fn sdp_body_parses_into_typed_codecs() {
+        // Shaped like sofia.c:7634's output, RFC 5737/3849 addresses. The body
+        // keeps the CRLF that reaches the log, which the parser must tolerate.
+        let lines = vec![
+            full_line(UUID1, TS1, "Remote SDP:"),
+            format!("{UUID1} v=0\r"),
+            format!("{UUID1} o=FreeSWITCH 1 1 IN IP4 192.0.2.10\r"),
+            format!("{UUID1} s=FreeSWITCH\r"),
+            format!("{UUID1} c=IN IP4 192.0.2.10\r"),
+            format!("{UUID1} t=0 0\r"),
+            format!("{UUID1} m=audio 9938 RTP/AVP 102 101\r"),
+            format!("{UUID1} a=rtpmap:102 opus/48000/2\r"),
+            format!("{UUID1} a=rtpmap:101 telephone-event/48000\r"),
+            format!("{UUID1} a=ptime:20\r"),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        let codecs = entries[0]
+            .block
+            .as_ref()
+            .expect("sdp block")
+            .sdp_codecs()
+            .expect("an sdp block yields Some")
+            .expect("body parses");
+
+        let audio: Vec<&str> = codecs.audio().map(|c| c.name()).collect();
+        assert_eq!(audio, ["opus"], "telephone-event is surfaced separately");
+        assert_eq!(codecs.telephone_event_rates(), [48000]);
+        let opus = codecs.audio().next().unwrap();
+        assert_eq!(opus.payload_type(), 102);
+        assert_eq!(opus.clock_rate(), 48000);
+        assert_eq!(opus.channels(), Some(2));
+        assert_eq!(opus.ptime(), Some(20));
+    }
+
+    #[cfg(feature = "sdp")]
+    #[test]
+    fn only_sdp_blocks_yield_codecs() {
+        let lines = vec![
+            full_line(
+                UUID1,
+                TS1,
+                "Audio Codec Compare [opus:116:16000:20:0:1]/[opus:116:16000:20:0:1]",
+            ),
+            full_line(UUID2, TS2, "Next"),
+        ];
+        let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+        assert!(entries[0].block.as_ref().unwrap().sdp_codecs().is_none());
     }
 
     #[test]

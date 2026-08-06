@@ -656,6 +656,59 @@ fn video_negotiation_classified_on_pbx_fixture() {
     );
 }
 
+#[cfg(feature = "sdp")]
+#[test]
+fn sdp_bodies_parse_across_the_corpus() {
+    if skip_if_no_fixtures() {
+        return;
+    }
+    let mut parsed = 0u64;
+    let mut failures = Vec::new();
+    for (corpus, files) in &fixture_corpora() {
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy();
+            for entry in LogStream::new(lines_from_file(file)) {
+                let Some(block) = &entry.block else { continue };
+                // A body describes codecs only if it reached an m= line with a
+                // live port: mod_logfile's buffer cuts bodies short, and a
+                // port-0 section is media being declined, not codecs.
+                let has_media = matches!(
+                    block,
+                    Block::Sdp { body, .. } if body.iter().any(|l| {
+                        l.strip_prefix("m=")
+                            .and_then(|m| m.split_whitespace().nth(1))
+                            .is_some_and(|port| port != "0")
+                    })
+                );
+                match block.sdp_codecs() {
+                    None => {}
+                    Some(Ok(codecs)) => {
+                        parsed += 1;
+                        // A body cut before its a=rtpmap lines leaves dynamic
+                        // payloads unmapped, which is still a description.
+                        let described = !codecs.is_empty()
+                            || !codecs.telephone_event_rates().is_empty()
+                            || !codecs.unmapped().is_empty()
+                            || codecs.has_comfort_noise();
+                        if has_media && !described {
+                            failures.push(format!(
+                                "{corpus}/{name}: L{} has an m= line but parsed to nothing",
+                                entry.line_number
+                            ));
+                        }
+                    }
+                    Some(Err(e)) => {
+                        failures.push(format!("{corpus}/{name}: L{} {e}", entry.line_number))
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("parsed {parsed} SDP bodies");
+    assert!(parsed > 0, "corpus should contain SDP blocks");
+    assert_no_violations(failures, "SDP bodies that did not parse");
+}
+
 #[test]
 fn warning_report() {
     if skip_if_no_fixtures() {

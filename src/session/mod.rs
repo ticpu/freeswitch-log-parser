@@ -5,6 +5,7 @@ pub mod media;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
+use freeswitch_types::variables::VariableName;
 use freeswitch_types::{BridgeDialString, CallDirection, DialString};
 
 use crate::line::parse_line;
@@ -145,6 +146,15 @@ pub struct SessionSnapshot {
 }
 
 impl SessionState {
+    /// Value of a typed channel variable, or `None` if this session never saw it.
+    ///
+    /// Accepts any of `freeswitch-types`' variable-name enums, and spares the
+    /// caller from knowing that [`variables`](Self::variables) keys are stored
+    /// with the `variable_` prefix stripped.
+    pub fn variable<V: VariableName>(&self, var: V) -> Option<&str> {
+        self.variables.get(var.as_str()).map(String::as_str)
+    }
+
     fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             channel_name: self.channel_name.clone(),
@@ -919,6 +929,9 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
 
 #[cfg(test)]
 mod tests {
+    use freeswitch_types::variables::SofiaVariable;
+    use freeswitch_types::ChannelVariable;
+
     use super::*;
 
     const UUID1: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -1422,6 +1435,23 @@ mod tests {
             state.variables.get("direction").map(|s| s.as_str()),
             Some("inbound")
         );
+    }
+
+    #[test]
+    fn typed_variable_accessor() {
+        let lines = vec![
+            full_line(UUID1, TS1, "CHANNEL_DATA:"),
+            "variable_sip_call_id: [test123@192.0.2.1]".to_string(),
+        ];
+        let stream = LogStream::new(lines.into_iter());
+        let mut tracker = SessionTracker::new(stream);
+        let _: Vec<_> = tracker.by_ref().collect();
+        let state = tracker.sessions().get(UUID1).unwrap();
+        assert_eq!(
+            state.variable(SofiaVariable::SipCallId),
+            Some("test123@192.0.2.1")
+        );
+        assert_eq!(state.variable(ChannelVariable::Direction), None);
     }
 
     #[test]

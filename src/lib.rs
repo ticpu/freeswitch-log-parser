@@ -70,7 +70,8 @@ pub use decode::{
     Utf8Decode,
 };
 pub use freeswitch_types::{
-    variables::SofiaVariable, CallDirection, CallState, ChannelState, ChannelVariable,
+    variables::{ConferenceVariable, SofiaVariable, VariableName},
+    CallDirection, CallState, ChannelState, ChannelVariable,
 };
 pub use level::{LogLevel, ParseLevelError};
 pub use line::{parse_line, LineKind, RawLine};

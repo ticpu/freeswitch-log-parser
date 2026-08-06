@@ -496,9 +496,31 @@ pub struct FilterParams {
     pub until_ts: Option<String>,
 }
 
+/// The wider scope that would have admitted an entry the filter rejected on a
+/// scope boundary alone. Ordered as the buckets are tried, and exclusive: an
+/// entry lands in at most one, so the counts sum to what the wider run shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hidden {
+    /// The pattern is in the channel-UUID column, which pattern search skips.
+    PatternInUuid,
+    /// The pattern is in an attached block line, reachable with `--match-blocks`.
+    PatternInBlocks,
+    /// A `-u` needle is in the message or an attached line, not the UUID column.
+    UuidInBody,
+}
+
+pub enum Verdict {
+    Match,
+    Hidden(Hidden),
+    Reject,
+}
+
 #[derive(Clone, Default)]
 pub struct FilterConfig {
     uuid_ac: Option<AhoCorasick>,
+    /// The `-u` needles behind `uuid_ac`, kept so a suggested command can be
+    /// checked against what is already in effect.
+    uuid_needles: Vec<String>,
     /// Restrict UUID matching to `entry.uuid` (output pass) vs. also scanning
     /// message and attached lines (discovery pass).
     pub uuid_strict: bool,
@@ -508,7 +530,13 @@ pub struct FilterConfig {
     /// Message-kind labels; an entry matches if it carries any of them.
     pub category: Vec<String>,
     fgrep_ac: Option<AhoCorasick>,
+    fgrep_needle: Option<String>,
     pub grep: Option<regex::Regex>,
+    /// `grep` recompiled case-insensitively. The UUID-column probe advertises
+    /// `-u`, which is case-insensitive, so probing with the case-sensitive regex
+    /// would report zero for an uppercase-hex pattern against a lowercase log —
+    /// the case most in need of the count.
+    grep_ci: Option<regex::Regex>,
     /// Codec names, lowercased; an entry matches if its negotiation or SDP
     /// block names any of them.
     pub codec: Vec<String>,
@@ -516,15 +544,27 @@ pub struct FilterConfig {
     pub until_ts: Option<String>,
 }
 
+/// Recompile a pattern with the case-insensitivity `-u` matching has, keeping
+/// any inline flags the operator wrote.
+fn case_insensitive(re: &regex::Regex) -> io::Result<regex::Regex> {
+    regex::RegexBuilder::new(re.as_str())
+        .case_insensitive(true)
+        .build()
+        .map_err(|e| io::Error::other(format!("cannot build a case-insensitive probe: {e}")))
+}
+
 impl FilterConfig {
     pub fn new(p: FilterParams) -> io::Result<Self> {
         Ok(FilterConfig {
             uuid_ac: build_matcher(&p.uuid)?,
+            uuid_needles: p.uuid,
             uuid_strict: p.uuid_strict,
             match_blocks: p.match_blocks,
             min_level: p.min_level,
             category: p.category,
             fgrep_ac: build_matcher(p.fgrep.as_slice())?,
+            fgrep_needle: p.fgrep,
+            grep_ci: p.grep.as_ref().map(case_insensitive).transpose()?,
             grep: p.grep,
             codec: p.codec.iter().map(|c| c.to_lowercase()).collect(),
             from_ts: p.from_ts,
@@ -534,12 +574,36 @@ impl FilterConfig {
 
     pub fn set_uuids(&mut self, needles: &[String]) -> io::Result<()> {
         self.uuid_ac = build_matcher(needles)?;
+        self.uuid_needles = needles.to_vec();
         Ok(())
     }
 
     pub fn set_fgrep(&mut self, needle: &str) -> io::Result<()> {
         self.fgrep_ac = build_matcher(std::slice::from_ref(&needle.to_string()))?;
+        self.fgrep_needle = Some(needle.to_string());
         Ok(())
+    }
+
+    pub fn uuid_needle_count(&self) -> usize {
+        self.uuid_needles.len()
+    }
+
+    /// A UUID named anywhere in the pattern, so a `PatternInUuid` report can name
+    /// the command instead of only the flag — `--grep 'Hangup on <uuid>'` is the
+    /// case that matters. `None` when the pattern names none, or when that UUID
+    /// is already a `-u` needle and the suggestion would change nothing.
+    pub fn suggested_uuid(&self) -> Option<&str> {
+        let sources = self
+            .fgrep_needle
+            .as_deref()
+            .into_iter()
+            .chain(self.grep.as_ref().map(|re| re.as_str()));
+        let uuid = sources.flat_map(find_uuids).map(|(_, u)| u).next()?;
+        let known = self
+            .uuid_needles
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(uuid));
+        (!known).then_some(uuid)
     }
 
     /// A copy suited to peer-UUID discovery: category cleared (the seed term may
@@ -665,10 +729,60 @@ impl FilterConfig {
             && self.window_ok(entry)
     }
 
+    /// Whether the pattern sits in the channel-UUID column, asked with the
+    /// semantics of the `-u` this would advertise rather than the pattern's own.
+    fn pattern_in_uuid_column(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        if let Some(ref ac) = self.fgrep_ac {
+            if !ac.is_match(entry.uuid.as_bytes()) {
+                return false;
+            }
+        }
+        match self.grep_ci {
+            Some(ref re) => re.is_match(&entry.uuid),
+            None => true,
+        }
+    }
+
     pub fn matches(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
         self.others_ok(entry)
             && self.uuid_ok_scoped(entry, !self.uuid_strict)
             && self.pattern_ok_scoped(entry, self.match_blocks)
+    }
+
+    /// Classify an entry in one pass, so a rejection that turned only on a scope
+    /// boundary can be counted under the flag that widens to it. Only entries
+    /// every other predicate accepted are bucketed: a `--level` or date-window
+    /// rejection is not something a wider scope would reveal, and pointing at a
+    /// flag that cannot admit the entry is the silence this exists to end.
+    ///
+    /// An entry failing both scoped predicates is left unbucketed — no single
+    /// flag brings it back — which is also what keeps the buckets exclusive.
+    pub fn verdict(&self, entry: &freeswitch_log_parser::LogEntry) -> Verdict {
+        if !self.others_ok(entry) {
+            return Verdict::Reject;
+        }
+        let uuid_ok = self.uuid_ok_scoped(entry, !self.uuid_strict);
+        let pattern_ok = self.pattern_ok_scoped(entry, self.match_blocks);
+        match (uuid_ok, pattern_ok) {
+            (true, true) => Verdict::Match,
+            (true, false) => {
+                if self.pattern_in_uuid_column(entry) {
+                    Verdict::Hidden(Hidden::PatternInUuid)
+                } else if !self.match_blocks && self.pattern_ok_scoped(entry, true) {
+                    Verdict::Hidden(Hidden::PatternInBlocks)
+                } else {
+                    Verdict::Reject
+                }
+            }
+            (false, true) => {
+                if self.uuid_strict && self.uuid_ok_scoped(entry, true) {
+                    Verdict::Hidden(Hidden::UuidInBody)
+                } else {
+                    Verdict::Reject
+                }
+            }
+            (false, false) => Verdict::Reject,
+        }
     }
 }
 
@@ -1023,5 +1137,126 @@ pub mod tests {
             ..Default::default()
         });
         assert!(!f.matches(&entry("u", "opus appears only in the text", &[])));
+    }
+
+    const CALL: &str = "aaaaaaaa-1111-1111-1111-111111111111";
+
+    fn hidden(f: &FilterConfig, e: &LogEntry) -> Option<Hidden> {
+        match f.verdict(e) {
+            Verdict::Hidden(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    fn grep(pattern: &str) -> Option<regex::Regex> {
+        Some(regex::Regex::new(pattern).expect("test pattern compiles"))
+    }
+
+    #[test]
+    fn a_pattern_in_the_uuid_column_is_counted() {
+        let f = filter(FilterParams {
+            grep: grep(CALL),
+            ..Default::default()
+        });
+        assert_eq!(
+            hidden(&f, &entry(CALL, "Activating RTCP", &[])),
+            Some(Hidden::PatternInUuid)
+        );
+    }
+
+    #[test]
+    fn the_uuid_column_probe_ignores_case() {
+        let f = filter(FilterParams {
+            grep: grep(&CALL.to_uppercase()),
+            ..Default::default()
+        });
+        assert_eq!(
+            hidden(&f, &entry(CALL, "Activating RTCP", &[])),
+            Some(Hidden::PatternInUuid)
+        );
+    }
+
+    #[test]
+    fn a_pattern_in_an_attached_line_is_counted_until_match_blocks() {
+        let mut f = filter(FilterParams {
+            fgrep: Some("m=audio".into()),
+            ..Default::default()
+        });
+        let e = entry("u", "Remote SDP:", &["v=0", "m=audio 5004 RTP/AVP 0"]);
+        assert_eq!(hidden(&f, &e), Some(Hidden::PatternInBlocks));
+        f.match_blocks = true;
+        assert_eq!(hidden(&f, &e), None, "the flag is already in effect");
+    }
+
+    #[test]
+    fn the_uuid_column_wins_over_the_attached_bucket() {
+        let f = filter(FilterParams {
+            fgrep: Some(CALL.into()),
+            ..Default::default()
+        });
+        // An attached line naming the channel's own UUID is the common shape;
+        // overlapping buckets would count it twice.
+        let e = entry(CALL, "CHANNEL_DATA:", &[&format!("Unique-ID: [{CALL}]")]);
+        assert_eq!(hidden(&f, &e), Some(Hidden::PatternInUuid));
+    }
+
+    #[test]
+    fn a_rejection_on_another_predicate_advertises_nothing() {
+        let f = filter(FilterParams {
+            grep: grep(CALL),
+            min_level: Some(LogLevel::Err),
+            ..Default::default()
+        });
+        let mut e = entry(CALL, "Activating RTCP", &[]);
+        e.level = Some(LogLevel::Debug);
+        assert_eq!(hidden(&f, &e), None);
+    }
+
+    #[test]
+    fn conjunct_patterns_widen_together_or_not_at_all() {
+        let f = filter(FilterParams {
+            fgrep: Some("hangup".into()),
+            grep: grep(CALL),
+            ..Default::default()
+        });
+        // Only --grep reaches the UUID column, so no single scope admits this.
+        assert_eq!(hidden(&f, &entry(CALL, "Activating RTCP", &[])), None);
+    }
+
+    #[test]
+    fn a_uuid_named_in_the_body_is_counted() {
+        let f = filter(FilterParams {
+            uuid: vec![CALL.into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            hidden(&f, &entry("bbbb", &format!("Bridging to {CALL}"), &[])),
+            Some(Hidden::UuidInBody)
+        );
+        assert_eq!(hidden(&f, &entry("bbbb", "unrelated", &[])), None);
+    }
+
+    #[test]
+    fn a_uuid_inside_a_pattern_names_the_command() {
+        let f = filter(FilterParams {
+            grep: grep(&format!("Hangup on {CALL}")),
+            ..Default::default()
+        });
+        assert_eq!(f.suggested_uuid(), Some(CALL));
+    }
+
+    #[test]
+    fn no_command_for_a_uuid_already_being_filtered_on() {
+        let f = filter(FilterParams {
+            uuid: vec![CALL.to_uppercase()],
+            fgrep: Some(CALL.into()),
+            ..Default::default()
+        });
+        assert_eq!(f.suggested_uuid(), None);
+        let plain = filter(FilterParams {
+            fgrep: Some("receiving invite".into()),
+            ..Default::default()
+        });
+        assert_eq!(plain.suggested_uuid(), None, "no uuid in the pattern");
     }
 }

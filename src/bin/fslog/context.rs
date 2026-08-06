@@ -3,8 +3,27 @@ use std::io::{self, Write};
 
 use freeswitch_log_parser::{LogEntry, MessageKind, SegmentTracker, SessionSnapshot};
 
-use crate::output::{EntryPrinter, FilterConfig};
+use crate::output::{EntryPrinter, FilterConfig, Hidden, Verdict};
 use crate::separator_entry;
+
+/// Entries the filter rejected on a scope boundary alone, by the scope that
+/// would have admitted them.
+#[derive(Default)]
+pub struct HiddenCounts {
+    pub pattern_in_uuid: u64,
+    pub pattern_in_blocks: u64,
+    pub uuid_in_body: u64,
+}
+
+impl HiddenCounts {
+    fn tally(&mut self, h: Hidden) {
+        match h {
+            Hidden::PatternInUuid => self.pattern_in_uuid += 1,
+            Hidden::PatternInBlocks => self.pattern_in_blocks += 1,
+            Hidden::UuidInBody => self.uuid_in_body += 1,
+        }
+    }
+}
 
 struct Buffered {
     bytes: Vec<u8>,
@@ -32,6 +51,8 @@ pub struct Emitter<'a> {
     pub count: u64,
     /// Entries that passed the filter, which is what "found nothing" means.
     pub matched: u64,
+    /// What a narrowed scope kept out, reported at end of run.
+    pub hidden: HiddenCounts,
 }
 
 impl<'a> Emitter<'a> {
@@ -58,6 +79,7 @@ impl<'a> Emitter<'a> {
             last_date: String::new(),
             count: 0,
             matched: 0,
+            hidden: HiddenCounts::default(),
         }
     }
 
@@ -72,11 +94,17 @@ impl<'a> Emitter<'a> {
         session: Option<&SessionSnapshot>,
     ) -> io::Result<()> {
         self.count += 1;
-        if !self.filter.matches(entry) {
-            if self.has_context() {
-                self.feed_nonmatch(out, entry, session)?;
+        match self.filter.verdict(entry) {
+            Verdict::Match => {}
+            verdict => {
+                if let Verdict::Hidden(h) = verdict {
+                    self.hidden.tally(h);
+                }
+                if self.has_context() {
+                    self.feed_nonmatch(out, entry, session)?;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
         self.matched += 1;
         if self.stats_only {
@@ -247,6 +275,62 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(!out.contains("--"));
+    }
+
+    const CALL: &str = "aaaaaaaa-1111-1111-1111-111111111111";
+
+    /// One session's output: a message naming its own UUID, a CHANNEL_DATA dump
+    /// whose attached line names it, and two lines that carry it in the UUID
+    /// column alone.
+    fn session_log() -> Vec<String> {
+        [
+            format!("{CALL} 2026-05-17 09:48:33.534240 99.99% [NOTICE] switch_channel.c:1118 New Channel sofia/internal/caller@example.test [{CALL}]"),
+            format!("{CALL} 2026-05-17 09:48:33.554242 99.99% [INFO] mod_dptools.c:1885 CHANNEL_DATA:"),
+            format!("{CALL} Unique-ID: [{CALL}]"),
+            format!("{CALL} 2026-05-17 09:48:34.000000 99.99% [NOTICE] switch_rtp.c:100 Audio Codec Compare PCMU"),
+            format!("{CALL} 2026-05-17 09:50:55.014000 99.99% [NOTICE] switch_core_session.c:1234 State Change CS_EXECUTE -> CS_DESTROY"),
+        ]
+        .to_vec()
+    }
+
+    /// Entries emitted and entries bucketed, at context 0 — with `-A`/`-B`/`-C`
+    /// the output also carries non-matching entries and `matched` stops meaning
+    /// "what the filter accepted".
+    fn tally(filter: &FilterConfig) -> (u64, HiddenCounts) {
+        let printer = EntryPrinter {
+            color: ColorMode::Never,
+            show_blocks: false,
+            show_session: false,
+            show_filename: false,
+            show_line_numbers: false,
+        };
+        let (_chain, tracker) = TrackedChain::new(Vec::new());
+        let mut emitter = Emitter::new(&printer, filter, &tracker, false, 0, 0);
+        let mut out: Vec<u8> = Vec::new();
+        for e in freeswitch_log_parser::LogStream::new(session_log().into_iter()) {
+            emitter.on_entry(&mut out, &e, None).unwrap();
+        }
+        (emitter.matched, emitter.hidden)
+    }
+
+    /// Every line here belongs to the session, which is what makes the sum
+    /// exact: a system line naming the UUID has no UUID column, so the pattern
+    /// shows it and `-u` never can.
+    #[test]
+    fn a_sessions_own_lines_are_fully_accounted_for() {
+        let (shown, hidden) = tally(&crate::output::tests::filter(FilterParams {
+            grep: Some(regex::Regex::new(CALL).expect("test pattern compiles")),
+            ..Default::default()
+        }));
+        assert_eq!(shown, 1, "only the New Channel message names it");
+        assert_eq!(hidden.pattern_in_uuid, 3);
+        assert_eq!(hidden.pattern_in_blocks, 0);
+
+        let (by_uuid, _) = tally(&crate::output::tests::filter(FilterParams {
+            uuid: vec![CALL.into()],
+            ..Default::default()
+        }));
+        assert_eq!(shown + hidden.pattern_in_uuid, by_uuid);
     }
 
     #[test]

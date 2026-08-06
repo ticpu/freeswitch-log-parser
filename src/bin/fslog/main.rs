@@ -22,8 +22,7 @@ use freeswitch_log_parser::{
     SessionTracker, TrackedChain, UnclassifiedTracking,
 };
 
-use context::Emitter;
-
+use context::{Emitter, HiddenCounts};
 use files::{
     discover_log_files, filter_files_by_date, format_size, lazy_log_reader, lossy_line_iter,
     normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader, resolve_log_path,
@@ -168,6 +167,55 @@ fn print_epilogue(
         printer.print_unclassified(&mut io::stderr(), stats)?;
     }
     Ok(())
+}
+
+/// Name the pattern flag in effect, so the note points at the one the operator
+/// typed rather than a generic "pattern".
+fn pattern_flag(fargs: &FilterArgs, positional: bool) -> &'static str {
+    match (fargs.fgrep.is_some() || positional, fargs.grep.is_some()) {
+        (true, true) => "--fgrep/--grep",
+        (true, false) if positional => "PATTERN",
+        (true, false) => "--fgrep",
+        _ => "--grep",
+    }
+}
+
+/// Report what a narrowed scope kept out of the output. Pattern search reads the
+/// message only and `-u` the UUID column only, both deliberately; the silence is
+/// what misleads, since hiding nothing and hiding hundreds print identically.
+fn print_hidden(filter: &FilterConfig, flag: &str, related: bool, hidden: &HiddenCounts) {
+    if hidden.pattern_in_uuid > 0 {
+        eprintln!(
+            "note: {} more entries carry this pattern in the channel-UUID column, which {flag} does not search",
+            hidden.pattern_in_uuid
+        );
+        if let Some(uuid) = filter.suggested_uuid() {
+            eprintln!("hint: rerun with -u {uuid}");
+        }
+    }
+
+    if hidden.pattern_in_blocks > 0 {
+        eprintln!(
+            "note: {} more entries carry this pattern in attached block lines, which {flag} does not search",
+            hidden.pattern_in_blocks
+        );
+        eprintln!("hint: rerun with --match-blocks");
+    }
+
+    if hidden.uuid_in_body > 0 {
+        let subject = if filter.uuid_needle_count() == 1 {
+            "this UUID"
+        } else {
+            "a filtered UUID"
+        };
+        eprintln!(
+            "note: {} more entries name {subject} in a message or block line, which -u does not search",
+            hidden.uuid_in_body
+        );
+        if !related {
+            eprintln!("hint: --related expands to the legs those entries name");
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -573,7 +621,7 @@ fn cmd_search(
         rendered = files;
     }
 
-    let (stats, session_count, count, matched) = run_output(
+    let run = run_output(
         out,
         build_segments(&rendered),
         &filter,
@@ -583,10 +631,30 @@ fn cmd_search(
         args.after(),
     )?;
 
-    if matched == 0 {
+    if run.matched == 0 {
         report_empty()?;
     }
-    print_epilogue(&printer, &args.filter, &stats, count, session_count)
+    print_hidden(
+        &filter,
+        pattern_flag(&args.filter, args.pattern.is_some()),
+        args.related,
+        &run.hidden,
+    );
+    print_epilogue(
+        &printer,
+        &args.filter,
+        &run.stats,
+        run.count,
+        run.session_count,
+    )
+}
+
+struct RunSummary {
+    stats: ParseStats,
+    session_count: usize,
+    count: u64,
+    matched: u64,
+    hidden: HiddenCounts,
 }
 
 /// Drive the parse over `segments`, emitting matches through `Emitter`. The
@@ -599,7 +667,7 @@ fn run_output(
     fargs: &FilterArgs,
     before: usize,
     after: usize,
-) -> io::Result<(ParseStats, usize, u64, u64)> {
+) -> io::Result<RunSummary> {
     let (chain, seg_tracker) = TrackedChain::new(segments);
     let stream = LogStream::new(chain).unclassified_tracking(fargs.tracking());
     let mut emitter = Emitter::new(printer, filter, &seg_tracker, fargs.stats, before, after);
@@ -624,7 +692,13 @@ fn run_output(
         (stream.stats().clone(), 0)
     };
 
-    Ok((stats, session_count, emitter.count, emitter.matched))
+    Ok(RunSummary {
+        stats,
+        session_count,
+        count: emitter.count,
+        matched: emitter.matched,
+        hidden: emitter.hidden,
+    })
 }
 
 fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
@@ -661,7 +735,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
     };
 
     let printer = args.filter.printer(color);
-    let (stats, session_count, count, _) = run_output(
+    let run = run_output(
         out,
         vec![(name, lines)],
         &filter,
@@ -671,7 +745,19 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
         0,
     )?;
 
-    print_epilogue(&printer, &args.filter, &stats, count, session_count)
+    print_hidden(
+        &filter,
+        pattern_flag(&args.filter, false),
+        false,
+        &run.hidden,
+    );
+    print_epilogue(
+        &printer,
+        &args.filter,
+        &run.stats,
+        run.count,
+        run.session_count,
+    )
 }
 
 fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {

@@ -10,7 +10,7 @@ use freeswitch_types::{BridgeDialString, CallDirection, DialString};
 
 use crate::fields::processing_parts;
 use crate::line::parse_line;
-use crate::message::{classify_message, MessageKind};
+use crate::message::{classify_message, new_channel_name, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
 use conference::{ConferenceEvent, ConferenceMembership, ConferenceRegistry};
 use media::SessionMedia;
@@ -349,9 +349,7 @@ fn parse_processing_line(msg: &str) -> Option<DialplanContext> {
 }
 
 fn parse_new_channel(detail: &str) -> Option<String> {
-    let rest = detail.strip_prefix("New Channel ")?;
-    let bracket = rest.rfind(" [")?;
-    Some(rest[..bracket].to_string())
+    new_channel_name(detail).map(str::to_string)
 }
 
 fn parse_state_change(detail: &str) -> Option<String> {

@@ -550,6 +550,27 @@ pub fn classify_message(msg: &str) -> MessageKind {
     MessageKind::General
 }
 
+/// The channel token of a `(channel) State ...` line, parentheses excluded.
+pub(crate) fn paren_channel(msg: &str) -> Option<&str> {
+    let inner = msg.strip_prefix('(')?;
+    let close = inner.find(')')?;
+    Some(&inner[..close]).filter(|c| !c.is_empty())
+}
+
+/// The channel token of a `Hangup <channel> [state] [cause]` line.
+pub(crate) fn hangup_channel(msg: &str) -> Option<&str> {
+    let rest = msg.strip_prefix("Hangup ")?;
+    let bracket = rest.find(" [")?;
+    Some(&rest[..bracket]).filter(|c| !c.is_empty())
+}
+
+/// The channel token of a `New Channel <channel> [uuid]` line.
+pub(crate) fn new_channel_name(msg: &str) -> Option<&str> {
+    let rest = msg.strip_prefix("New Channel ")?;
+    let bracket = rest.rfind(" [")?;
+    Some(&rest[..bracket]).filter(|c| !c.is_empty())
+}
+
 pub(crate) fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
     if !msg.starts_with("sofia/") && !msg.starts_with("loopback/") {
         return None;
@@ -784,8 +805,10 @@ fn parse_dialplan_processing(msg: &str) -> MessageKind {
     }
 }
 
-/// The subslices a `SET`/`EXPORT` line decomposes into.
+/// The subslices a `SET`/`EXPORT` line decomposes into. `channel` is `None` for
+/// `EXPORT`, which names no channel.
 pub(crate) struct SetExportParts<'a> {
+    pub(crate) channel: Option<&'a str>,
     pub(crate) name: &'a str,
     pub(crate) value: &'a str,
 }
@@ -805,7 +828,16 @@ pub(crate) fn set_export_parts(msg: &str) -> Option<SetExportParts<'_>> {
         .unwrap_or(msg.len());
     let value = &msg[val_start..val_end];
 
-    Some(SetExportParts { name, value })
+    let channel = msg.strip_prefix("SET ").and_then(|rest| {
+        let end = rest.find(' ').unwrap_or(rest.len());
+        Some(&rest[..end]).filter(|c| !c.is_empty() && !c.starts_with('['))
+    });
+
+    Some(SetExportParts {
+        channel,
+        name,
+        value,
+    })
 }
 
 fn parse_set_or_export(msg: &str) -> Option<MessageKind> {

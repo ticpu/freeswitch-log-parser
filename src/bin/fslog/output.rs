@@ -293,11 +293,14 @@ impl EntryPrinter {
         Ok(())
     }
 
+    /// The codec list, then the streams held or carrying no payload type.
     #[cfg(feature = "sdp")]
-    fn sdp_summary_line(block: &Block) -> Option<String> {
+    fn sdp_summary_lines(block: &Block) -> Vec<String> {
         use freeswitch_types::sdp::SdpCodecEntry;
 
-        let codecs = block.sdp_codecs()?.ok()?;
+        let Some(Ok(codecs)) = block.sdp_codecs() else {
+            return Vec::new();
+        };
         let mut parts: Vec<String> = codecs
             .entries()
             .map(|e| match e {
@@ -319,10 +322,31 @@ impl EntryPrinter {
         for u in codecs.unmapped() {
             parts.push(format!("pt{}?", u.payload_type));
         }
-        if parts.is_empty() {
-            return None;
+
+        // A port-0 section keeps its codecs but reaches no codec string, so it is
+        // absent from the list above; naming it is how a held stream stays visible.
+        let quiet: Vec<String> = codecs
+            .sections()
+            .iter()
+            .filter_map(|s| {
+                if s.port() == 0 {
+                    Some(format!("held m={} port 0", s.media_type()))
+                } else if s.entries().is_empty() && s.unmapped().is_empty() {
+                    Some(format!("skipped m={}/{}", s.media_type(), s.proto()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut lines = Vec::new();
+        if !parts.is_empty() {
+            lines.push(parts.join(", "));
         }
-        Some(parts.join(", "))
+        if !quiet.is_empty() {
+            lines.push(quiet.join(", "));
+        }
+        lines
     }
 
     fn print_block(&self, w: &mut dyn Write, block: &Block, use_color: bool) -> io::Result<()> {
@@ -346,7 +370,7 @@ impl EntryPrinter {
                     body.len()
                 )?;
                 #[cfg(feature = "sdp")]
-                if let Some(summary) = Self::sdp_summary_line(block) {
+                for summary in Self::sdp_summary_lines(block) {
                     writeln!(w, "{sc}         sdp    {summary}{reset}")?;
                 }
                 for line in body {
@@ -1125,6 +1149,45 @@ pub mod tests {
             ..Default::default()
         });
         assert!(f.matches(&codec_entry(&["opus"], &[])));
+    }
+
+    /// A live audio stream, a held video one, and a stream carrying no payload type.
+    #[cfg(feature = "sdp")]
+    fn sdp_entry() -> LogEntry {
+        let body = [
+            "v=0",
+            "o=- 1 1 IN IP4 192.0.2.10",
+            "s=-",
+            "c=IN IP4 192.0.2.10",
+            "t=0 0",
+            "m=audio 30000 RTP/AVP 0 101",
+            "a=rtpmap:0 PCMU/8000",
+            "a=rtpmap:101 telephone-event/8000",
+            "a=fmtp:101 0-16",
+            "m=video 0 RTP/AVP 99",
+            "a=rtpmap:99 H264/90000",
+            "m=application 5000 UDP/DTLS/SCTP webrtc-datachannel",
+        ];
+        let mut e = entry("u", "Remote SDP:", &[]);
+        e.block = Some(Block::Sdp {
+            direction: freeswitch_log_parser::SdpDirection::Remote,
+            body: body.iter().map(|l| l.to_string()).collect(),
+        });
+        e
+    }
+
+    #[cfg(feature = "sdp")]
+    #[test]
+    fn sdp_summary_names_the_streams_that_carry_no_codec() {
+        let out = render(&printer(ColorMode::Never, true), &sdp_entry());
+        assert!(
+            out.contains("PCMU/8000, 101 telephone-event/8000 0-16"),
+            "{out}"
+        );
+        assert!(
+            out.contains("held m=video port 0, skipped m=application/UDP/DTLS/SCTP"),
+            "{out}"
+        );
     }
 
     #[test]

@@ -279,7 +279,9 @@ under it starts with what differs:
 `--blocks` also expands:
 
 - **CHANNEL_DATA** — every field and variable, values in full
-- **SDP** — the body, tagged local or remote
+- **SDP** — the body, tagged local or remote, over a summary of the codecs and
+  DTMF/comfort-noise payloads it offers and of the streams it holds or the
+  parser reads no payload type from
 - **Codec negotiation** — offered-versus-local comparisons and what matched
 - **Dial strings** — `bridge()` and `att_xfer()` arguments broken into their
   global variables, failover groups and endpoints, with `ARRAY::` values

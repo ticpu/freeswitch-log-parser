@@ -64,6 +64,15 @@ predicate for names a deployment adds), `parse_bridge_args` reads a
 `bridge()` argument list, and `log_rotation_stamp`/`normalize_entry_timestamp`
 put a rotated filename and an entry timestamp into one comparable form.
 
+For rewriting log text — redacting a caller id, colorizing a channel
+name — `message_fields` and `LogEntry::fields` return the byte ranges the
+classifier located (`FieldKind::ChannelName`, `CallerIdNumber`, `CallId`,
+`IpAddr`, …), each carrying the `FieldLocation` that says whether it
+indexes the message or an attached line. `LogEntry::render_with` applies
+a replacement per span; overlaps and character boundaries come back as
+`RenderError` rather than a panic. `fslog --stats` reports which kinds a
+corpus yields.
+
 ## Performance
 
 Built to handle the worst `mod_logfile` produces — 2 KiB buffer

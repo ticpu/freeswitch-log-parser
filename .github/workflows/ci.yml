@@ -6,11 +6,17 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test:
+    permissions:
+      contents: read
+      gist: write
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7

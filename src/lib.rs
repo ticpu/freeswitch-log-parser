@@ -53,6 +53,7 @@ mod attached;
 mod chain;
 mod codec;
 mod decode;
+mod fields;
 mod level;
 mod line;
 mod message;

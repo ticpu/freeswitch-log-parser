@@ -8,6 +8,7 @@ use std::str::FromStr;
 use freeswitch_types::variables::VariableName;
 use freeswitch_types::{BridgeDialString, CallDirection, DialString};
 
+use crate::fields::processing_parts;
 use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
 use crate::stream::{Block, LogEntry, LogStream, ParseStats, UnclassifiedLine};
@@ -338,33 +339,12 @@ fn parse_dialplan_context(detail: &str) -> Option<DialplanContext> {
     })
 }
 
-/// Parse `Processing <name> <<number>>-><dest> in context <ctx>`. Field 1 (caller_id_name) is
-/// free-form and may contain spaces, `->`, `<`, so anchor on the fixed frame: the rightmost
-/// ` in context ` and the last `>->` (the `>` closing `<number>` immediately precedes `->`, and
-/// only the caller_id_number→destination boundary has that shape). Falls back to the last bare
-/// `->` for the bracketless `from->to` shape.
 fn parse_processing_line(msg: &str) -> Option<DialplanContext> {
-    let proc_idx = msg.find("Processing ")?;
-    let after_proc = &msg[proc_idx + "Processing ".len()..];
-
-    let ctx_idx = after_proc.rfind(" in context ")?;
-    let head = &after_proc[..ctx_idx];
-    let context = after_proc[ctx_idx + " in context ".len()..]
-        .split_whitespace()
-        .next()?;
-
-    let (from, to) = match head.rfind(">->") {
-        Some(i) => (&head[..i + 1], &head[i + ">->".len()..]),
-        None => {
-            let i = head.rfind("->")?;
-            (&head[..i], &head[i + "->".len()..])
-        }
-    };
-
+    let parts = processing_parts(msg)?;
     Some(DialplanContext {
-        from: from.to_string(),
-        to: to.to_string(),
-        context: context.to_string(),
+        from: msg[parts.head].to_string(),
+        to: msg[parts.dest].to_string(),
+        context: msg[parts.context].to_string(),
     })
 }
 

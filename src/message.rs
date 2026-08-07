@@ -201,7 +201,16 @@ impl fmt::Display for MessageKind {
     }
 }
 
-fn parse_execute(msg: &str) -> MessageKind {
+/// The subslices an `EXECUTE`/`Execute` line decomposes into. `channel` is
+/// empty for the lowercase shape, which carries none.
+pub(crate) struct ExecuteParts<'a> {
+    pub(crate) depth: u32,
+    pub(crate) channel: &'a str,
+    pub(crate) application: &'a str,
+    pub(crate) arguments: &'a str,
+}
+
+pub(crate) fn execute_parts(msg: &str) -> ExecuteParts<'_> {
     let rest = &msg["EXECUTE ".len()..];
 
     let depth = if rest.starts_with("[depth=") {
@@ -212,11 +221,11 @@ fn parse_execute(msg: &str) -> MessageKind {
             0
         }
     } else {
-        return MessageKind::Execute {
+        return ExecuteParts {
             depth: 0,
-            channel: String::new(),
-            application: String::new(),
-            arguments: rest.to_string(),
+            channel: "",
+            application: "",
+            arguments: rest,
         };
     };
 
@@ -250,32 +259,47 @@ fn parse_execute(msg: &str) -> MessageKind {
         None => (app_part, ""),
     };
 
-    MessageKind::Execute {
+    ExecuteParts {
         depth,
-        channel: channel.to_string(),
-        application: application.to_string(),
-        arguments: arguments.to_string(),
+        channel,
+        application,
+        arguments,
     }
 }
 
-fn parse_dialplan(msg: &str) -> MessageKind {
+fn parse_execute(msg: &str) -> MessageKind {
+    let parts = execute_parts(msg);
+    MessageKind::Execute {
+        depth: parts.depth,
+        channel: parts.channel.to_string(),
+        application: parts.application.to_string(),
+        arguments: parts.arguments.to_string(),
+    }
+}
+
+/// `(channel, detail)` of a `Dialplan:`/`Chatplan:` line.
+pub(crate) fn dialplan_parts(msg: &str) -> (&str, &str) {
     let prefix_len = if msg.starts_with("Chatplan: ") {
         "Chatplan: ".len()
     } else {
         "Dialplan: ".len()
     };
     let rest = &msg[prefix_len..];
-    let (channel, detail) = match rest.find(' ') {
+    match rest.find(' ') {
         Some(p) => (&rest[..p], &rest[p + 1..]),
         None => (rest, ""),
-    };
+    }
+}
+
+fn parse_dialplan(msg: &str) -> MessageKind {
+    let (channel, detail) = dialplan_parts(msg);
     MessageKind::Dialplan {
         channel: channel.to_string(),
         detail: detail.to_string(),
     }
 }
 
-fn parse_bracketed_value(s: &str, prefix_len: usize) -> Option<(&str, &str)> {
+pub(crate) fn parse_bracketed_value(s: &str, prefix_len: usize) -> Option<(&str, &str)> {
     let after_prefix = &s[prefix_len..];
     let colon = after_prefix.find(": ")?;
     let name = &after_prefix[..colon];
@@ -526,7 +550,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
     MessageKind::General
 }
 
-fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
+pub(crate) fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
     if !msg.starts_with("sofia/") && !msg.starts_with("loopback/") {
         return None;
     }
@@ -581,7 +605,7 @@ fn classify_channel_prefixed(channel_part: &str, rest: &str) -> MessageKind {
     }
 }
 
-fn sip_invite_direction(rest: &str) -> Option<SipInviteDirection> {
+pub(crate) fn sip_invite_direction(rest: &str) -> Option<SipInviteDirection> {
     if rest.starts_with("receiving invite") {
         Some(SipInviteDirection::Receiving)
     } else if rest.starts_with("sending invite") {
@@ -601,14 +625,18 @@ fn extract_sofia_profile(channel_part: &str) -> Option<String> {
     }
 }
 
-fn extract_call_id(rest: &str) -> Option<String> {
+pub(crate) fn call_id_token(rest: &str) -> Option<&str> {
     let after = rest.split_once("call-id: ")?.1;
     let token = after.split_whitespace().next()?;
     if token == "(null)" {
         None
     } else {
-        Some(token.to_string())
+        Some(token)
     }
+}
+
+fn extract_call_id(rest: &str) -> Option<String> {
+    call_id_token(rest).map(str::to_string)
 }
 
 fn detect_media(msg: &str) -> Option<MessageKind> {
@@ -756,28 +784,36 @@ fn parse_dialplan_processing(msg: &str) -> MessageKind {
     }
 }
 
-fn parse_set_or_export(msg: &str) -> Option<MessageKind> {
+/// The subslices a `SET`/`EXPORT` line decomposes into.
+pub(crate) struct SetExportParts<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) value: &'a str,
+}
+
+pub(crate) fn set_export_parts(msg: &str) -> Option<SetExportParts<'_>> {
     // SET channel [name]=[value]
     // EXPORT (export_vars) [name]=[value]
     // EXPORT (export_vars) (REMOTE ONLY) [name]=[value]
     // Find "]=[" which uniquely identifies the [name]=[value] boundary
-    let sep = msg.find("]=[");
-    if let Some(sep_pos) = sep {
-        let name_start = msg[..sep_pos].rfind('[')?;
-        let name = &msg[name_start + 1..sep_pos];
-        let val_start = sep_pos + 3; // skip "]=["
-        let val_end = msg[val_start..]
-            .find(']')
-            .map(|p| val_start + p)
-            .unwrap_or(msg.len());
-        let value = &msg[val_start..val_end];
-        return Some(MessageKind::Variable {
-            name: format!("variable_{name}"),
-            value: value.to_string(),
-        });
-    }
+    let sep_pos = msg.find("]=[")?;
+    let name_start = msg[..sep_pos].rfind('[')?;
+    let name = &msg[name_start + 1..sep_pos];
+    let val_start = sep_pos + 3; // skip "]=["
+    let val_end = msg[val_start..]
+        .find(']')
+        .map(|p| val_start + p)
+        .unwrap_or(msg.len());
+    let value = &msg[val_start..val_end];
 
-    None
+    Some(SetExportParts { name, value })
+}
+
+fn parse_set_or_export(msg: &str) -> Option<MessageKind> {
+    let parts = set_export_parts(msg)?;
+    Some(MessageKind::Variable {
+        name: format!("variable_{}", parts.name),
+        value: parts.value.to_string(),
+    })
 }
 
 #[cfg(test)]

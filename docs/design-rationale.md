@@ -126,6 +126,18 @@ Deployment-specific variable names stay out: the peer-variable walk takes a call
 predicate, so a site with its own correlation variables extends the allowlist without
 forking the walk.
 
+## Field spans emit only what classification already isolated
+
+The span API never scans free text for addresses, URIs, or numbers — a kind is
+emitted only at positions the classifier already isolates, so every span is as
+trustworthy as the classification itself. General pattern-matching stays in the
+consumer's backstop, labelled best-effort there; a scanner here would promote the
+weakest detection to the trusted surface. Which channel variables carry sensitive
+values is likewise not this crate's call — the variable vocabulary lives in
+`freeswitch-types`. Nested spans are deliberate (an address inside a channel name,
+an identifier that is itself a UUID), so the applier treats a contained replacement
+as absorbed by the outer one and only partial overlap as an error.
+
 ## Index maintenance by diffing, not setters
 
 Hooks receive `&mut SessionState` and set fields directly — but three of

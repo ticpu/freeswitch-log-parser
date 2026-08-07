@@ -36,6 +36,7 @@ check it *before* evaluating the request's mechanics.
 - `src/level.rs` — `LogLevel` enum with `FromStr`/`Display`/`Ord`
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
 - `src/message.rs` — `classify_message()` pure function, `MessageKind`, `SdpDirection`
+- `src/fields.rs` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
 - `src/stream.rs` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`
 - `src/session/mod.rs` — `SessionTracker`, `SessionState`, `EnrichedEntry`, `SessionSnapshot`
 - `src/codec.rs` — `CodecOffer`/`CodecMedia`, the bracketed token in codec-negotiation traces
@@ -254,7 +255,7 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`
 - `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests
-- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers)
+- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)
 - New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

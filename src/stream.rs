@@ -1895,7 +1895,14 @@ mod tests {
 
         let audio: Vec<&str> = codecs.audio().map(|c| c.name()).collect();
         assert_eq!(audio, ["opus"], "telephone-event is surfaced separately");
-        assert_eq!(codecs.telephone_event_rates(), [48000]);
+        let payloads: Vec<_> = codecs.non_codec_payloads().collect();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            payloads[0].kind,
+            freeswitch_types::sdp::NonCodecKind::TelephoneEvent
+        );
+        assert_eq!(payloads[0].payload_type, 101);
+        assert_eq!(payloads[0].clock_rate, 48000);
         let opus = codecs.audio().next().unwrap();
         assert_eq!(opus.payload_type(), 102);
         assert_eq!(opus.clock_rate(), 48000);

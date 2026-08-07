@@ -687,9 +687,8 @@ fn sdp_bodies_parse_across_the_corpus() {
                         // A body cut before its a=rtpmap lines leaves dynamic
                         // payloads unmapped, which is still a description.
                         let described = !codecs.is_empty()
-                            || !codecs.telephone_event_rates().is_empty()
-                            || !codecs.unmapped().is_empty()
-                            || codecs.has_comfort_noise();
+                            || codecs.non_codec_payloads().next().is_some()
+                            || codecs.unmapped().next().is_some();
                         if has_media && !described {
                             failures.push(format!(
                                 "{corpus}/{name}: L{} has an m= line but parsed to nothing",

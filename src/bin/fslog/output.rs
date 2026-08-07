@@ -299,7 +299,7 @@ impl EntryPrinter {
 
         let codecs = block.sdp_codecs()?.ok()?;
         let mut parts: Vec<String> = codecs
-            .iter()
+            .entries()
             .map(|e| match e {
                 SdpCodecEntry::Rtp(c) => {
                     let mut s = format!("{}/{}", c.name(), c.clock_rate());
@@ -313,11 +313,8 @@ impl EntryPrinter {
                 _ => "T.38".to_string(),
             })
             .collect();
-        for rate in codecs.telephone_event_rates() {
-            parts.push(format!("telephone-event/{rate}"));
-        }
-        if codecs.has_comfort_noise() {
-            parts.push("CN".to_string());
+        for payload in codecs.non_codec_payloads() {
+            parts.push(payload.to_string());
         }
         for u in codecs.unmapped() {
             parts.push(format!("pt{}?", u.payload_type));
@@ -638,7 +635,7 @@ impl FilterConfig {
             }
             #[cfg(feature = "sdp")]
             Some(block @ Block::Sdp { .. }) => match block.sdp_codecs() {
-                Some(Ok(codecs)) => codecs.iter().any(|e| match e {
+                Some(Ok(codecs)) => codecs.entries().any(|e| match e {
                     freeswitch_types::sdp::SdpCodecEntry::Rtp(c) => wanted(c.name()),
                     _ => false,
                 }),

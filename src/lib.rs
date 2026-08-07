@@ -70,7 +70,9 @@ pub use decode::{
     classify_utf8, decode_log_line, read_log_lines, truncate_at_char_boundary, DecodedLine,
     Utf8Decode,
 };
-pub use fields::{message_fields, Field, FieldKind, FieldLocation};
+pub use fields::{
+    apply_fields, message_fields, Field, FieldKind, FieldLocation, RenderError, RenderedEntry,
+};
 pub use freeswitch_types::{
     variables::{ConferenceVariable, SofiaVariable, VariableName},
     CallDirection, CallState, ChannelState, ChannelVariable,

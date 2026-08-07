@@ -93,6 +93,73 @@ pub struct Field {
     pub range: Range<usize>,
 }
 
+/// Why a rewrite could not be applied.
+///
+/// Every span handed to [`apply_fields`] is validated, replaced or not, so a
+/// malformed one fails the same way regardless of what the callback returns.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderError {
+    /// The range runs past the end of the text it was applied to.
+    OutOfBounds {
+        at: FieldLocation,
+        range: Range<usize>,
+        len: usize,
+    },
+    /// An endpoint falls inside a multi-byte character.
+    NotOnCharBoundary {
+        at: FieldLocation,
+        range: Range<usize>,
+    },
+    /// Two replaced spans overlap without one containing the other, so there is
+    /// no rewrite that honours both.
+    OverlappingSpans {
+        at: FieldLocation,
+        first: Range<usize>,
+        second: Range<usize>,
+    },
+}
+
+impl fmt::Display for RenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RenderError::OutOfBounds { at, range, len } => write!(
+                f,
+                "span {}..{} is past the end of {at} ({len} bytes)",
+                range.start, range.end
+            ),
+            RenderError::NotOnCharBoundary { at, range } => write!(
+                f,
+                "span {}..{} splits a character in {at}",
+                range.start, range.end
+            ),
+            RenderError::OverlappingSpans { at, first, second } => write!(
+                f,
+                "replaced spans {}..{} and {}..{} partially overlap in {at}",
+                first.start, first.end, second.start, second.end
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RenderError {}
+
+impl fmt::Display for FieldLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FieldLocation::Message => f.pad("the message"),
+            FieldLocation::Attached(i) => write!(f, "attached line {i}"),
+        }
+    }
+}
+
+/// An entry's text after a rewrite, one string per render unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedEntry {
+    pub message: String,
+    pub attached: Vec<String>,
+}
+
 /// The byte ranges a dialplan `Processing` line decomposes into.
 ///
 /// `name` and `number` are `None` for the bracketless `from->to` shape, where
@@ -307,6 +374,78 @@ fn raw_line_fields(line: &str, at: FieldLocation) -> Vec<Field> {
     out
 }
 
+/// Rewrite the spans of one text, returning the result.
+///
+/// `f` receives each field and the text it covers, and returns the replacement
+/// or `None` to leave it alone. Every field must index `text` — filter by
+/// [`Field::at`] before calling, since a range from another location means
+/// nothing here.
+///
+/// Nested spans are how the parser reports an address inside a channel name, so
+/// a replacement contained in another replacement is dropped: the outer rewrite
+/// already covers those bytes. Two replacements that overlap only partially have
+/// no such reading and are [`RenderError::OverlappingSpans`].
+///
+/// Bounds and character boundaries are checked for every field, so this never
+/// panics on a hand-built span.
+pub fn apply_fields<'a>(
+    text: &str,
+    fields: impl IntoIterator<Item = &'a Field>,
+    f: impl Fn(&Field, &str) -> Option<String>,
+) -> Result<String, RenderError> {
+    let mut replacements: Vec<(FieldLocation, Range<usize>, String)> = Vec::new();
+
+    for field in fields {
+        let range = field.range.clone();
+        if range.end > text.len() {
+            return Err(RenderError::OutOfBounds {
+                at: field.at,
+                range,
+                len: text.len(),
+            });
+        }
+        if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
+            return Err(RenderError::NotOnCharBoundary {
+                at: field.at,
+                range,
+            });
+        }
+        if let Some(new) = f(field, &text[range.clone()]) {
+            replacements.push((field.at, range, new));
+        }
+    }
+
+    replacements.sort_by(|(_, a, _), (_, b, _)| {
+        (a.start, std::cmp::Reverse(a.end)).cmp(&(b.start, std::cmp::Reverse(b.end)))
+    });
+
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut accepted: Option<Range<usize>> = None;
+
+    for (at, range, new) in replacements {
+        if let Some(prev) = &accepted {
+            if range.start < prev.end {
+                // Contained in a rewrite that already covers these bytes.
+                if range.end <= prev.end {
+                    continue;
+                }
+                return Err(RenderError::OverlappingSpans {
+                    at,
+                    first: prev.clone(),
+                    second: range,
+                });
+            }
+        }
+        out.push_str(&text[cursor..range.start]);
+        out.push_str(&new);
+        cursor = range.end;
+        accepted = Some(range);
+    }
+    out.push_str(&text[cursor..]);
+    Ok(out)
+}
+
 impl crate::stream::LogEntry {
     /// Locate every field this entry carries, across its message and each raw
     /// attached line.
@@ -325,6 +464,44 @@ impl crate::stream::LogEntry {
             out.extend(raw_line_fields(line, FieldLocation::Attached(i)));
         }
         out
+    }
+
+    /// Rewrite this entry's fields, returning one string per render unit.
+    ///
+    /// `f` is called with each field and the text it covers; `None` leaves it
+    /// as it was. The message and each attached line are rewritten separately
+    /// because they are separate texts — see [`apply_fields`] for how nested and
+    /// overlapping replacements resolve.
+    ///
+    /// [`uuid`](crate::LogEntry::uuid), [`timestamp`](crate::LogEntry::timestamp)
+    /// and the rest of the header are entry fields rather than message text, so
+    /// a consumer rendering them handles them itself.
+    pub fn render_with(
+        &self,
+        f: impl Fn(&Field, &str) -> Option<String>,
+    ) -> Result<RenderedEntry, RenderError> {
+        let fields = self.fields();
+
+        let message = apply_fields(
+            &self.message,
+            fields.iter().filter(|x| x.at == FieldLocation::Message),
+            &f,
+        )?;
+
+        let attached = self
+            .attached
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                apply_fields(
+                    line,
+                    fields.iter().filter(|x| x.at == FieldLocation::Attached(i)),
+                    &f,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(RenderedEntry { message, attached })
     }
 }
 
@@ -845,6 +1022,109 @@ mod tests {
             .expect("destination span");
         assert_eq!(f.at, FieldLocation::Attached(1));
         assert_eq!(text_at(&entry, &f), "1263");
+    }
+
+    fn field(kind: FieldKind, range: Range<usize>) -> Field {
+        Field {
+            kind,
+            at: FieldLocation::Message,
+            range,
+        }
+    }
+
+    #[test]
+    fn identity_callback_returns_the_input() {
+        let msg = "EXECUTE [depth=0] sofia/internal/1263@192.0.2.1 answer";
+        let out = apply_fields(msg, message_fields(msg).iter(), |_, _| None).expect("no error");
+        assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn outer_replacement_absorbs_the_one_inside_it() {
+        let msg = "EXECUTE [depth=0] sofia/internal/1263@192.0.2.1 answer";
+        let out = apply_fields(msg, message_fields(msg).iter(), |f, _| {
+            Some(format!("<{}>", f.kind))
+        })
+        .expect("nesting is not a conflict");
+        assert_eq!(out, "EXECUTE [depth=0] <channel-name> answer");
+    }
+
+    #[test]
+    fn inner_replacement_applies_when_the_outer_is_left_alone() {
+        let msg = "EXECUTE [depth=0] sofia/internal/1263@192.0.2.1 answer";
+        let out = apply_fields(msg, message_fields(msg).iter(), |f, _| {
+            (f.kind == FieldKind::IpAddr).then(|| "<ip>".to_string())
+        })
+        .expect("no error");
+        assert_eq!(out, "EXECUTE [depth=0] sofia/internal/1263@<ip> answer");
+    }
+
+    #[test]
+    fn partial_overlap_between_replacements_is_an_error() {
+        let text = "abcdefgh";
+        let fields = [
+            field(FieldKind::ChannelName, 0..5),
+            field(FieldKind::CallId, 3..8),
+        ];
+        let err = apply_fields(text, fields.iter(), |_, _| Some("x".to_string()))
+            .expect_err("partial overlap");
+        assert!(matches!(err, RenderError::OverlappingSpans { .. }));
+    }
+
+    #[test]
+    fn span_splitting_a_character_is_an_error_not_a_panic() {
+        let msg = "Processing Jérôme <15555550100>->1263 in context public";
+        // One byte into the é.
+        let fields = [field(FieldKind::CallerIdName, 11..13)];
+        let err =
+            apply_fields(msg, fields.iter(), |_, _| Some("x".to_string())).expect_err("boundary");
+        assert!(matches!(err, RenderError::NotOnCharBoundary { .. }));
+    }
+
+    #[test]
+    fn out_of_bounds_span_is_an_error() {
+        let err = apply_fields("short", [field(FieldKind::Uuid, 0..99)].iter(), |_, _| {
+            Some("x".to_string())
+        })
+        .expect_err("out of bounds");
+        assert!(matches!(err, RenderError::OutOfBounds { .. }));
+    }
+
+    #[test]
+    fn a_span_is_validated_even_when_it_is_not_replaced() {
+        let err = apply_fields("short", [field(FieldKind::Uuid, 0..99)].iter(), |_, _| None)
+            .expect_err("validated regardless of the callback");
+        assert!(matches!(err, RenderError::OutOfBounds { .. }));
+    }
+
+    #[test]
+    fn render_with_rewrites_message_and_attached_separately() {
+        let lines = vec![
+            format!("{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"),
+            format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
+        ];
+        let entry = entry_from(&lines);
+        let out = entry
+            .render_with(|f, _| (f.kind == FieldKind::CallerIdNumber).then(|| "<tel>".to_string()))
+            .expect("no error");
+        assert_eq!(out.message, entry.message);
+        assert_eq!(
+            out.attached[0],
+            format!("{UUID1} Caller-Caller-ID-Number: [<tel>]")
+        );
+    }
+
+    #[test]
+    fn render_with_replacing_every_field_keeps_the_uuid_prefix_addressable() {
+        let lines = vec![
+            format!("{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"),
+            format!("{UUID1} Channel-Name: [sofia/internal/1263@192.0.2.1]"),
+        ];
+        let entry = entry_from(&lines);
+        let out = entry
+            .render_with(|f, _| Some(format!("<{}>", f.kind)))
+            .expect("no error");
+        assert_eq!(out.attached[0], "<uuid> Channel-Name: [<channel-name>]");
     }
 
     #[test]

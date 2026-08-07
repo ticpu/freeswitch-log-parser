@@ -218,7 +218,7 @@ Filtering:
 - `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …); repeat for OR matching
 - `--fgrep <PATTERN>` — case-insensitive fixed-string match on the message
 - `--grep <REGEX>` — regex match on the message
-- `--codec <NAME>` — codec named in a negotiation or SDP block, case-insensitive; repeat for OR matching
+- `--codec <NAME>` — codec named in a negotiation or SDP block, including on a stream the SDP holds, case-insensitive; repeat for OR matching
 - `--match-blocks` — also match `--fgrep`/`--grep`/`PATTERN` inside attached block lines (SDP, CHANNEL_DATA, codec negotiation), not just the message
 - `--related` — expand matching sessions to their bridged/transferred peer legs (originate, `bridge()`, `uuid_bridge`, `Other-Leg-Unique-ID`, peer-UUID channel variables, mod_loopback A/B legs) and to everyone in the same conference
 

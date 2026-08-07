@@ -659,10 +659,18 @@ impl FilterConfig {
             }
             #[cfg(feature = "sdp")]
             Some(block @ Block::Sdp { .. }) => match block.sdp_codecs() {
-                Some(Ok(codecs)) => codecs.entries().any(|e| match e {
-                    freeswitch_types::sdp::SdpCodecEntry::Rtp(c) => wanted(c.name()),
-                    _ => false,
-                }),
+                // Every section, not the negotiable ones: an offer on a stream the
+                // peer then held is exactly what this flag is used to find.
+                Some(Ok(codecs)) => {
+                    codecs
+                        .sections()
+                        .iter()
+                        .flat_map(|s| s.entries())
+                        .any(|e| match e {
+                            freeswitch_types::sdp::SdpCodecEntry::Rtp(c) => wanted(c.name()),
+                            _ => false,
+                        })
+                }
                 // A body that will not parse cannot claim a codec either way.
                 _ => false,
             },
@@ -1188,6 +1196,16 @@ pub mod tests {
             out.contains("held m=video port 0, skipped m=application/UDP/DTLS/SCTP"),
             "{out}"
         );
+    }
+
+    #[cfg(feature = "sdp")]
+    #[test]
+    fn codec_filter_matches_an_offer_on_a_held_stream() {
+        let f = filter(FilterParams {
+            codec: vec!["h264".into()],
+            ..Default::default()
+        });
+        assert!(f.matches(&sdp_entry()));
     }
 
     #[test]

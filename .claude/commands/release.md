@@ -73,6 +73,15 @@ EOF
 git switch master
 ```
 
+   Run these as **separate** commands, never chained with `&&`. If a chained
+   command is rejected part-way — a hook, a denied permission — the untried
+   half is silently skipped, and the failure mode here is committing
+   `Cargo.lock` onto master because the `git checkout --detach` never ran.
+   After `git checkout --detach`, confirm with `git symbolic-ref -q HEAD`
+   (it must fail) before staging the lock. The `pre-commit` hook rejects a
+   staged `Cargo.lock` on a branch and `pre-push` rejects a branch tip that
+   tracks it, but neither replaces checking that the detach took.
+
 5. Push master, wait for CI green:
 
 ```sh

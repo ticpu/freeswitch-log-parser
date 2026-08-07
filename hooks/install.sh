@@ -19,7 +19,9 @@ fi
 
 mkdir -p "$GIT_HOOKS_DIR"
 
-echo "Installing pre-commit hook to $GIT_HOOKS_DIR..."
-ln -sf "$(realpath --relative-to="$GIT_HOOKS_DIR" "$SCRIPT_DIR/pre-commit")" "$GIT_HOOKS_DIR/pre-commit"
+for hook in pre-commit pre-push; do
+	echo "Installing $hook hook to $GIT_HOOKS_DIR..."
+	ln -sf "$(realpath --relative-to="$GIT_HOOKS_DIR" "$SCRIPT_DIR/$hook")" "$GIT_HOOKS_DIR/$hook"
+done
 
 echo "Done!"

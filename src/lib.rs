@@ -87,7 +87,7 @@ pub use session::{
 };
 pub use stamp::{log_rotation_stamp, normalize_entry_timestamp};
 pub use stream::{
-    Block, LogEntry, LogStream, ParseStats, UnclassifiedLine, UnclassifiedReason,
+    Block, LogEntry, LogStream, ParseStats, ParseWarning, UnclassifiedLine, UnclassifiedReason,
     UnclassifiedTracking,
 };
 pub use uuid::{find_uuids, is_uuid, FindUuids};

@@ -1,5 +1,5 @@
 use crate::attached::AttachedLines;
-use crate::codec::{CodecMedia, CodecOffer};
+use crate::codec::{CodecMedia, CodecOffer, CodecParseError};
 use crate::decode::truncate_at_char_boundary;
 use crate::level::LogLevel;
 use crate::line::{
@@ -7,6 +7,7 @@ use crate::line::{
 };
 use crate::message::{classify_message, MessageKind, SdpDirection};
 use std::collections::VecDeque;
+use std::fmt;
 
 /// Structured data extracted from a multi-line dump that follows a primary log entry.
 ///
@@ -63,6 +64,72 @@ impl Block {
             return None;
         }
         Some(freeswitch_types::sdp::SdpCodecs::parse(&text))
+    }
+}
+
+/// Longest line excerpt a warning carries. An offending line can be tens of
+/// kilobytes; the excerpt is for a human reading the warning, not for matching on.
+const WARNING_EXCERPT_LEN: usize = 80;
+
+/// A parsing anomaly, attached to the entry whose lines produced it.
+///
+/// The set is closed and every kind is named — see `docs/design-rationale.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseWarning {
+    /// A CHANNEL_DATA variable opened its `[` and the block ended before the `]`.
+    /// The value collected so far is still recorded.
+    UnclosedVariable { name: String },
+    /// A line inside a CHANNEL_DATA block matched neither the field nor the
+    /// variable shape, so it contributed nothing to the block.
+    UnparseableChannelData { line: String },
+    /// A codec negotiation line matched no known trace shape, or its bracketed
+    /// token would not parse. That codec is missing from the block.
+    UnrecognizedCodecLine {
+        line: String,
+        source: Option<CodecParseError>,
+    },
+    /// A continuation line arrived while a codec negotiation block was open.
+    /// The trace has no continuations, so the line belongs to nothing.
+    UnexpectedCodecContinuation { line: String },
+    /// The formatted line exceeded `mod_logfile`'s write buffer, so the record
+    /// was cut short and lost its trailing newline. `bytes` is the formatted
+    /// length, prefix included.
+    OversizeLine { bytes: usize },
+}
+
+impl ParseWarning {
+    /// Trim a line down to what a warning is willing to carry.
+    pub(crate) fn excerpt(msg: &str) -> String {
+        truncate_at_char_boundary(msg, WARNING_EXCERPT_LEN).to_string()
+    }
+}
+
+impl fmt::Display for ParseWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseWarning::UnclosedVariable { name } => {
+                write!(f, "unclosed multi-line variable: {name}")
+            }
+            ParseWarning::UnparseableChannelData { line } => {
+                write!(f, "unparseable CHANNEL_DATA line: {line}")
+            }
+            ParseWarning::UnrecognizedCodecLine {
+                line,
+                source: Some(e),
+            } => write!(f, "unrecognized codec negotiation line ({e}): {line}"),
+            ParseWarning::UnrecognizedCodecLine { line, source: None } => {
+                write!(f, "unrecognized codec negotiation line: {line}")
+            }
+            ParseWarning::UnexpectedCodecContinuation { line } => {
+                write!(f, "unexpected codec negotiation continuation: {line}")
+            }
+            ParseWarning::OversizeLine { bytes } => write!(
+                f,
+                "line exceeds mod_logfile {MOD_LOGFILE_BUF_SIZE}-byte buffer \
+                 ({bytes} bytes), data may be truncated"
+            ),
+        }
     }
 }
 
@@ -160,7 +227,7 @@ pub struct LogEntry {
     /// 1-based line number in the input stream.
     pub line_number: u64,
     /// Per-entry warnings about parsing anomalies.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<ParseWarning>,
 }
 
 fn parse_field_line(msg: &str) -> Option<(String, String)> {
@@ -224,7 +291,7 @@ pub struct LogStream<I> {
     tracking: UnclassifiedTracking,
     line_number: u64,
     split_pending: VecDeque<String>,
-    deferred_warning: Option<String>,
+    deferred_warning: Option<ParseWarning>,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -283,7 +350,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
     }
 
-    fn finalize_block(&mut self) -> (Option<Block>, Vec<String>) {
+    fn finalize_block(&mut self) -> (Option<Block>, Vec<ParseWarning>) {
         let mut warnings = Vec::new();
         match self.state.take_idle() {
             StreamState::Idle => (None, warnings),
@@ -293,7 +360,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 open_var,
             } => {
                 if let Some((name, value)) = open_var {
-                    warnings.push(format!("unclosed multi-line variable: {name}"));
+                    warnings.push(ParseWarning::UnclosedVariable { name: name.clone() });
                     variables.push((name, value));
                 }
                 (Some(Block::ChannelData { fields, variables }), warnings)
@@ -353,7 +420,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     /// The caller owns attaching it, because the entry a block's opening line
     /// belongs to is not built yet when this runs.
     #[must_use]
-    fn accumulate_codec_entry(&mut self, msg: &str) -> Option<String> {
+    fn accumulate_codec_entry(&mut self, msg: &str) -> Option<ParseWarning> {
         let mut warning = None;
         if let StreamState::InCodecNegotiation {
             media,
@@ -364,11 +431,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         {
             let media = *media;
             let parse = |token: &str| {
-                CodecOffer::parse(media, token).map_err(|e| {
-                    format!(
-                        "unrecognized codec negotiation line ({e}): {}",
-                        truncate_at_char_boundary(msg, 80)
-                    )
+                CodecOffer::parse(media, token).map_err(|e| ParseWarning::UnrecognizedCodecLine {
+                    line: ParseWarning::excerpt(msg),
+                    source: Some(e),
                 })
             };
 
@@ -396,16 +461,16 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 } else if verdict.contains("is saved as a match") {
                     parse(token).map(|c| matched.push(c))
                 } else {
-                    Err(format!(
-                        "unrecognized codec negotiation line: {}",
-                        truncate_at_char_boundary(msg, 80)
-                    ))
+                    Err(ParseWarning::UnrecognizedCodecLine {
+                        line: ParseWarning::excerpt(msg),
+                        source: None,
+                    })
                 }
             } else {
-                Err(format!(
-                    "unrecognized codec negotiation line: {}",
-                    truncate_at_char_boundary(msg, 80)
-                ))
+                Err(ParseWarning::UnrecognizedCodecLine {
+                    line: ParseWarning::excerpt(msg),
+                    source: None,
+                })
             };
             warning = result.err();
         }
@@ -445,10 +510,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                             if let Some((name, value)) = parse_field_line(msg) {
                                 fields.push((name, value));
                             } else {
-                                warning = Some(format!(
-                                    "unparseable CHANNEL_DATA line: {}",
-                                    truncate_at_char_boundary(msg, 80)
-                                ));
+                                warning = Some(ParseWarning::UnparseableChannelData {
+                                    line: ParseWarning::excerpt(msg),
+                                });
                             }
                         }
                     }
@@ -458,10 +522,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 body.push(msg.to_string());
             }
             StreamState::InCodecNegotiation { .. } => {
-                warning = Some(format!(
-                    "unexpected codec negotiation continuation: {}",
-                    truncate_at_char_boundary(msg, 80)
-                ));
+                warning = Some(ParseWarning::UnexpectedCodecContinuation {
+                    line: ParseWarning::excerpt(msg),
+                });
             }
             StreamState::Idle => {}
         }
@@ -538,10 +601,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     /// iteration. Recursive: split suffixes pass through this function again.
     fn detect_collision(&mut self, line: String) -> String {
         if line.len() > MAX_LINE_PAYLOAD {
-            let warning = format!(
-                "line exceeds mod_logfile 2048-byte buffer ({} bytes), data may be truncated",
-                line.len() + 38,
-            );
+            let warning = ParseWarning::OversizeLine {
+                bytes: line.len() + UUID_PREFIX_LEN + 1,
+            };
             if let Some(ref mut pending) = self.pending {
                 pending.warnings.push(warning);
             } else {
@@ -1807,7 +1869,7 @@ mod tests {
             entries[0]
                 .warnings
                 .iter()
-                .any(|w| w.contains("unclosed multi-line variable")),
+                .any(|w| matches!(w, ParseWarning::UnclosedVariable { .. })),
             "expected unclosed variable warning, got: {:?}",
             entries[0].warnings
         );
@@ -1826,7 +1888,7 @@ mod tests {
             entries[0]
                 .warnings
                 .iter()
-                .any(|w| w.contains("unparseable CHANNEL_DATA")),
+                .any(|w| matches!(w, ParseWarning::UnparseableChannelData { .. })),
             "expected unparseable warning, got: {:?}",
             entries[0].warnings
         );
@@ -1848,7 +1910,7 @@ mod tests {
             entries[0]
                 .warnings
                 .iter()
-                .any(|w| w.contains("unexpected codec negotiation")),
+                .any(|w| matches!(w, ParseWarning::UnexpectedCodecContinuation { .. })),
             "expected codec warning, got: {:?}",
             entries[0].warnings
         );
@@ -2007,7 +2069,7 @@ mod tests {
             entries[0]
                 .warnings
                 .iter()
-                .any(|w| w.contains("unrecognized codec negotiation")),
+                .any(|w| matches!(w, ParseWarning::UnrecognizedCodecLine { .. })),
             "got: {:?}",
             entries[0].warnings
         );
@@ -2080,7 +2142,7 @@ mod tests {
             entries[0]
                 .warnings
                 .iter()
-                .any(|w| w.contains("line exceeds mod_logfile 2048-byte buffer")),
+                .any(|w| matches!(w, ParseWarning::OversizeLine { .. })),
             "expected buffer overflow warning, got: {:?}",
             entries[0].warnings
         );
@@ -2088,7 +2150,7 @@ mod tests {
             entries[0]
                 .warnings
                 .iter()
-                .any(|w| w.contains("unclosed multi-line variable")),
+                .any(|w| matches!(w, ParseWarning::UnclosedVariable { .. })),
             "expected unclosed variable warning, got: {:?}",
             entries[0].warnings
         );
@@ -2292,13 +2354,22 @@ mod tests {
         ];
         let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
         assert_eq!(entries.len(), 1);
+        let line = entries[0]
+            .warnings
+            .iter()
+            .find_map(|w| match w {
+                ParseWarning::UnrecognizedCodecLine { line, .. } => Some(line),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected codec warning, got: {:?}", entries[0].warnings));
         assert!(
-            entries[0]
-                .warnings
-                .iter()
-                .any(|w| w.contains("unrecognized codec negotiation")),
-            "expected codec warning, got: {:?}",
-            entries[0].warnings
+            line.len() < WARNING_EXCERPT_LEN,
+            "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
+            line.len()
+        );
+        assert!(
+            !line.contains("tail beyond eighty bytes"),
+            "expected the tail to be truncated away, got: {line:?}"
         );
     }
 
@@ -2312,13 +2383,27 @@ mod tests {
         let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), bare];
         let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
         assert_eq!(entries.len(), 1);
+        let line = entries[0]
+            .warnings
+            .iter()
+            .find_map(|w| match w {
+                ParseWarning::UnparseableChannelData { line } => Some(line),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected unparseable warning, got: {:?}",
+                    entries[0].warnings
+                )
+            });
         assert!(
-            entries[0]
-                .warnings
-                .iter()
-                .any(|w| w.contains("unparseable CHANNEL_DATA")),
-            "expected unparseable warning, got: {:?}",
-            entries[0].warnings
+            line.len() < WARNING_EXCERPT_LEN,
+            "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
+            line.len()
+        );
+        assert!(
+            !line.contains("tail beyond eighty bytes"),
+            "expected the tail to be truncated away, got: {line:?}"
         );
     }
 
@@ -2336,13 +2421,27 @@ mod tests {
         ];
         let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
         assert_eq!(entries.len(), 1);
+        let line = entries[0]
+            .warnings
+            .iter()
+            .find_map(|w| match w {
+                ParseWarning::UnexpectedCodecContinuation { line } => Some(line),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected codec continuation warning, got: {:?}",
+                    entries[0].warnings
+                )
+            });
         assert!(
-            entries[0]
-                .warnings
-                .iter()
-                .any(|w| w.contains("unexpected codec negotiation")),
-            "expected codec continuation warning, got: {:?}",
-            entries[0].warnings
+            line.len() < WARNING_EXCERPT_LEN,
+            "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
+            line.len()
+        );
+        assert!(
+            !line.contains("tail beyond eighty bytes"),
+            "expected the tail to be truncated away, got: {line:?}"
         );
     }
 

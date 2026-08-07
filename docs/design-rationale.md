@@ -158,3 +158,13 @@ than `ParseStats`: the convenience `.map(|d| d.text)` path drops the verdict
 before `LogStream` sees it, and threading it through would either break the
 `Iterator<Item = String>` contract or fork a parallel constructor — the verdict
 belongs where the bytes are read.
+
+## Parse warnings are a closed set of named kinds
+
+Every anomaly the stream can attach to an entry is a distinct variant, and none
+carries a free-form message. A consumer decides per kind whether the entry is
+still trustworthy — a record the log buffer cut short and a codec token the
+parser could not read call for different handling — and the line excerpt a
+warning carries is deliberately truncated, so its text cannot be matched on to
+recover the kind. A catch-all variant would push that discrimination back into
+the text.

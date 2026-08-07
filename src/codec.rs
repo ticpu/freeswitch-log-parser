@@ -136,6 +136,82 @@ impl CodecOffer {
     }
 }
 
+/// One line of the negotiation trace, once its bracketed tokens are read.
+///
+/// `switch_core_media.c` logs a comparison for every remote/local pair it
+/// considers, then a verdict line per codec it keeps or drops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodecTrace {
+    Compared {
+        offered: CodecOffer,
+        local: CodecOffer,
+    },
+    Matched(CodecOffer),
+    NearMatched(CodecOffer),
+    /// Kept out of the block: the codec exceeded the engine's match limit.
+    /// Read anyway so a malformed token still warns rather than passing silently.
+    Dropped(CodecOffer),
+}
+
+/// Why a negotiation trace line could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodecTraceError {
+    /// The line matched no known trace shape.
+    UnknownShape,
+    /// A bracketed token would not parse.
+    BadToken(CodecParseError),
+}
+
+impl From<CodecTraceError> for Option<CodecParseError> {
+    fn from(e: CodecTraceError) -> Self {
+        match e {
+            CodecTraceError::UnknownShape => None,
+            CodecTraceError::BadToken(e) => Some(e),
+        }
+    }
+}
+
+impl CodecTrace {
+    /// Read a whole trace line, e.g. `Audio Codec Compare [opus:116:48000:20:0:1]/[opus:…]`
+    /// or `Audio Codec Compare [opus:…] ++++ is saved as a match`.
+    ///
+    /// The media type comes from the line's own prefix via
+    /// [`classify_message`](crate::classify_message), so it is passed in rather
+    /// than re-read here.
+    pub(crate) fn parse(media: CodecMedia, msg: &str) -> Result<Self, CodecTraceError> {
+        let rest = msg
+            .strip_prefix("Audio Codec Compare ")
+            .or_else(|| msg.strip_prefix("Video Codec Compare "))
+            .unwrap_or(msg);
+        // Every shape opens with the bracketed remote offer. Stripping the `[`
+        // rather than slicing past it keeps a multi-byte first character from
+        // splitting mid-codepoint.
+        let rest = rest
+            .strip_prefix('[')
+            .ok_or(CodecTraceError::UnknownShape)?;
+        let token = |t: &str| CodecOffer::parse(media, t).map_err(CodecTraceError::BadToken);
+
+        if let Some(slash) = rest.find("]/[") {
+            return Ok(CodecTrace::Compared {
+                offered: token(&rest[..slash])?,
+                local: token(rest[slash + 3..].trim_end_matches(']'))?,
+            });
+        }
+
+        let end = rest.find(']').ok_or(CodecTraceError::UnknownShape)?;
+        let (codec, verdict) = (&rest[..end], &rest[end + 1..]);
+        if verdict.contains("was not saved") {
+            Ok(CodecTrace::Dropped(token(codec)?))
+        } else if verdict.contains("near-match") {
+            Ok(CodecTrace::NearMatched(token(codec)?))
+        } else if verdict.contains("is saved as a match") {
+            Ok(CodecTrace::Matched(token(codec)?))
+        } else {
+            Err(CodecTraceError::UnknownShape)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

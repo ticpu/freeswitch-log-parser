@@ -1,9 +1,9 @@
 use crate::attached::AttachedLines;
-use crate::codec::{CodecMedia, CodecOffer, CodecParseError};
+use crate::codec::{CodecMedia, CodecOffer, CodecParseError, CodecTrace};
 use crate::decode::truncate_at_char_boundary;
 use crate::level::LogLevel;
 use crate::line::{
-    is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind, UUID_PREFIX_LEN,
+    is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind, RawLine, UUID_PREFIX_LEN,
 };
 use crate::message::{classify_message, MessageKind, SdpDirection};
 use std::collections::VecDeque;
@@ -245,20 +245,22 @@ fn parse_field_line(msg: &str) -> Option<(String, String)> {
     Some((name.to_string(), value.to_string()))
 }
 
-enum StreamState {
+/// A [`Block`] under construction. One variant per `Block` variant, plus the
+/// idle state for an entry that opens no block.
+enum BlockBuilder {
     Idle,
-    InChannelData {
+    ChannelData {
         fields: Vec<(String, String)>,
         variables: Vec<(String, String)>,
         // Name and accumulated value of a variable whose `[` has not been closed
         // yet. One field, so a half-open variable cannot be represented.
         open_var: Option<(String, String)>,
     },
-    InSdp {
+    Sdp {
         direction: SdpDirection,
         body: Vec<String>,
     },
-    InCodecNegotiation {
+    Codec {
         media: CodecMedia,
         comparisons: Vec<(CodecOffer, CodecOffer)>,
         matched: Vec<CodecOffer>,
@@ -266,10 +268,152 @@ enum StreamState {
     },
 }
 
-impl StreamState {
-    fn take_idle(&mut self) -> StreamState {
-        std::mem::replace(self, StreamState::Idle)
+impl BlockBuilder {
+    /// Open the builder a message calls for, or `Idle` if it opens no block.
+    fn open(message_kind: &MessageKind) -> Self {
+        match message_kind {
+            MessageKind::ChannelData => BlockBuilder::ChannelData {
+                fields: Vec::new(),
+                variables: Vec::new(),
+                open_var: None,
+            },
+            MessageKind::SdpMarker { direction } => BlockBuilder::Sdp {
+                direction: direction.clone(),
+                body: Vec::new(),
+            },
+            MessageKind::CodecNegotiation { media } => BlockBuilder::Codec {
+                media: *media,
+                comparisons: Vec::new(),
+                matched: Vec::new(),
+                near_matched: Vec::new(),
+            },
+            _ => BlockBuilder::Idle,
+        }
     }
+
+    /// Media type of an open codec run, used to decide whether the next codec
+    /// line continues this block or starts its own.
+    fn codec_media(&self) -> Option<CodecMedia> {
+        match self {
+            BlockBuilder::Codec { media, .. } => Some(*media),
+            _ => None,
+        }
+    }
+
+    /// Absorb a continuation line — one that carries no header of its own.
+    fn push_continuation(&mut self, msg: &str) -> Option<ParseWarning> {
+        match self {
+            BlockBuilder::ChannelData {
+                fields,
+                variables,
+                open_var,
+            } => {
+                if let Some((_, val)) = open_var {
+                    val.push('\n');
+                    val.push_str(msg);
+                    if msg.ends_with(']') {
+                        if let Some((name, val)) = open_var.take() {
+                            variables.push((name, val.trim_end_matches(']').to_string()));
+                        }
+                    }
+                    return None;
+                }
+                match classify_message(msg) {
+                    MessageKind::ChannelField { name, value } => fields.push((name, value)),
+                    MessageKind::Variable { name, value } => {
+                        if !msg.ends_with(']') && msg.contains(": [") {
+                            *open_var = Some((name, value));
+                        } else {
+                            variables.push((name, value));
+                        }
+                    }
+                    _ => match parse_field_line(msg) {
+                        Some((name, value)) => fields.push((name, value)),
+                        None => {
+                            return Some(ParseWarning::UnparseableChannelData {
+                                line: ParseWarning::excerpt(msg),
+                            })
+                        }
+                    },
+                }
+                None
+            }
+            BlockBuilder::Sdp { body, .. } => {
+                body.push(msg.to_string());
+                None
+            }
+            BlockBuilder::Codec { .. } => Some(ParseWarning::UnexpectedCodecContinuation {
+                line: ParseWarning::excerpt(msg),
+            }),
+            BlockBuilder::Idle => None,
+        }
+    }
+
+    /// Absorb one line of a codec negotiation run. Unlike the other blocks
+    /// these arrive as primary lines, so this is a separate entry point.
+    fn push_codec_trace(&mut self, msg: &str) -> Option<ParseWarning> {
+        let BlockBuilder::Codec {
+            media,
+            comparisons,
+            matched,
+            near_matched,
+        } = self
+        else {
+            return None;
+        };
+        match CodecTrace::parse(*media, msg) {
+            Ok(CodecTrace::Compared { offered, local }) => comparisons.push((offered, local)),
+            Ok(CodecTrace::Matched(c)) => matched.push(c),
+            Ok(CodecTrace::NearMatched(c)) => near_matched.push(c),
+            Ok(CodecTrace::Dropped(_)) => {}
+            Err(e) => {
+                return Some(ParseWarning::UnrecognizedCodecLine {
+                    line: ParseWarning::excerpt(msg),
+                    source: e.into(),
+                })
+            }
+        }
+        None
+    }
+
+    /// Close the builder, yielding the block and any warning its closing raised.
+    fn finish(&mut self) -> (Option<Block>, Vec<ParseWarning>) {
+        let mut warnings = Vec::new();
+        let block = match std::mem::replace(self, BlockBuilder::Idle) {
+            BlockBuilder::Idle => None,
+            BlockBuilder::ChannelData {
+                fields,
+                mut variables,
+                open_var,
+            } => {
+                if let Some((name, value)) = open_var {
+                    warnings.push(ParseWarning::UnclosedVariable { name: name.clone() });
+                    variables.push((name, value));
+                }
+                Some(Block::ChannelData { fields, variables })
+            }
+            BlockBuilder::Sdp { direction, body } => Some(Block::Sdp { direction, body }),
+            BlockBuilder::Codec {
+                media,
+                comparisons,
+                matched,
+                near_matched,
+            } => Some(Block::CodecNegotiation {
+                media,
+                comparisons,
+                matched,
+                near_matched,
+            }),
+        };
+        (block, warnings)
+    }
+}
+
+/// The entry being assembled, together with the block it owns. Pairing them
+/// is what keeps a block from outliving or preceding its entry.
+struct Pending {
+    entry: LogEntry,
+    block: BlockBuilder,
 }
 
 /// Layer 2 structural state machine — groups continuation lines, classifies
@@ -285,8 +429,7 @@ pub struct LogStream<I> {
     lines: I,
     last_uuid: String,
     last_timestamp: String,
-    pending: Option<LogEntry>,
-    state: StreamState,
+    pending: Option<Pending>,
     stats: ParseStats,
     tracking: UnclassifiedTracking,
     line_number: u64,
@@ -302,7 +445,6 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             last_uuid: String::new(),
             last_timestamp: String::new(),
             pending: None,
-            state: StreamState::Idle,
             stats: ParseStats::default(),
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
@@ -350,218 +492,108 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
     }
 
-    fn finalize_block(&mut self) -> (Option<Block>, Vec<ParseWarning>) {
-        let mut warnings = Vec::new();
-        match self.state.take_idle() {
-            StreamState::Idle => (None, warnings),
-            StreamState::InChannelData {
-                fields,
-                mut variables,
-                open_var,
-            } => {
-                if let Some((name, value)) = open_var {
-                    warnings.push(ParseWarning::UnclosedVariable { name: name.clone() });
-                    variables.push((name, value));
-                }
-                (Some(Block::ChannelData { fields, variables }), warnings)
-            }
-            StreamState::InSdp { direction, body } => {
-                (Some(Block::Sdp { direction, body }), warnings)
-            }
-            StreamState::InCodecNegotiation {
-                media,
-                comparisons,
-                matched,
-                near_matched,
-            } => (
-                Some(Block::CodecNegotiation {
-                    media,
-                    comparisons,
-                    matched,
-                    near_matched,
-                }),
-                warnings,
-            ),
+    /// Close the pending entry's block into it and hand the entry over.
+    fn take_pending(&mut self) -> Option<LogEntry> {
+        let mut pending = self.pending.take()?;
+        let (block, warnings) = pending.block.finish();
+        pending.entry.block = block;
+        pending.entry.warnings.extend(warnings);
+        self.stats.lines_in_entries += 1 + pending.entry.attached.len() as u64;
+        Some(pending.entry)
+    }
+
+    /// Attach a warning to the pending entry, or hold it for the entry the
+    /// current line is about to open.
+    fn warn(&mut self, warning: ParseWarning) {
+        match self.pending {
+            Some(ref mut pending) => pending.entry.warnings.push(warning),
+            None => self.deferred_warning = Some(warning),
         }
     }
 
-    fn finalize_pending(&mut self) -> Option<LogEntry> {
-        let (block, warnings) = self.finalize_block();
-        if let Some(ref mut p) = self.pending {
-            p.block = block;
-            p.warnings.extend(warnings);
-            self.stats.lines_in_entries += 1 + p.attached.len() as u64;
-        }
-        self.pending.take()
-    }
-
-    fn start_block_for_message(&mut self, message_kind: &MessageKind) {
-        self.state = match message_kind {
-            MessageKind::ChannelData => StreamState::InChannelData {
-                fields: Vec::new(),
-                variables: Vec::new(),
-                open_var: None,
-            },
-            MessageKind::SdpMarker { direction } => StreamState::InSdp {
-                direction: direction.clone(),
-                body: Vec::new(),
-            },
-            MessageKind::CodecNegotiation { media } => StreamState::InCodecNegotiation {
-                media: *media,
-                comparisons: Vec::new(),
-                matched: Vec::new(),
-                near_matched: Vec::new(),
-            },
-            _ => StreamState::Idle,
+    /// Absorb a codec trace line into the run the pending entry already owns,
+    /// reporting whether it belonged there.
+    ///
+    /// Only a matching UUID *and* media type continues a run: a video run
+    /// following an audio one describes a different negotiation. The message is
+    /// classified last, so the common case — no codec run open — costs nothing.
+    fn merge_codec_run(&mut self, parsed: &RawLine<'_>, uuid: &str, line: &str) -> bool {
+        let Some(pending) = self.pending.as_mut() else {
+            return false;
         };
-    }
-
-    /// Returns a warning when the line is not one of the known trace shapes.
-    /// The caller owns attaching it, because the entry a block's opening line
-    /// belongs to is not built yet when this runs.
-    #[must_use]
-    fn accumulate_codec_entry(&mut self, msg: &str) -> Option<ParseWarning> {
-        let mut warning = None;
-        if let StreamState::InCodecNegotiation {
-            media,
-            comparisons,
-            matched,
-            near_matched,
-        } = &mut self.state
-        {
-            let media = *media;
-            let parse = |token: &str| {
-                CodecOffer::parse(media, token).map_err(|e| ParseWarning::UnrecognizedCodecLine {
-                    line: ParseWarning::excerpt(msg),
-                    source: Some(e),
-                })
-            };
-
-            // `Audio Codec Compare [a:…]/[b:…]` vs the single-token verdicts
-            // `[a:…] ++++ is saved as a match` / `is saved as a near-match` /
-            // `was not saved as a near-match. Too many. Ignoring.`
-            let rest = msg
-                .strip_prefix("Audio Codec Compare ")
-                .or_else(|| msg.strip_prefix("Video Codec Compare "))
-                .unwrap_or(msg);
-
-            let result = if let Some(slash) = rest.find("]/[") {
-                let offered = &rest[1..slash];
-                let local = rest[slash + 3..].trim_end_matches(']');
-                parse(offered).and_then(|o| parse(local).map(|l| comparisons.push((o, l))))
-            } else if let Some(end) = rest.find(']') {
-                let token = &rest[1..end];
-                let verdict = &rest[end + 1..];
-                if verdict.contains("was not saved") {
-                    // Reported only so the count is not silently short; the
-                    // codec was dropped for exceeding MAX_MATCHES.
-                    parse(token).map(|_| ())
-                } else if verdict.contains("near-match") {
-                    parse(token).map(|c| near_matched.push(c))
-                } else if verdict.contains("is saved as a match") {
-                    parse(token).map(|c| matched.push(c))
-                } else {
-                    Err(ParseWarning::UnrecognizedCodecLine {
-                        line: ParseWarning::excerpt(msg),
-                        source: None,
-                    })
-                }
-            } else {
-                Err(ParseWarning::UnrecognizedCodecLine {
-                    line: ParseWarning::excerpt(msg),
-                    source: None,
-                })
-            };
-            warning = result.err();
+        let Some(open_media) = pending.block.codec_media() else {
+            return false;
+        };
+        if pending.entry.uuid != uuid {
+            return false;
         }
-        warning
+        let MessageKind::CodecNegotiation { media } = classify_message(parsed.message) else {
+            return false;
+        };
+        if media != open_media {
+            return false;
+        }
+
+        let warning = pending.block.push_codec_trace(parsed.message);
+        pending.entry.warnings.extend(warning);
+        pending.entry.attached.push(line);
+        true
     }
 
+    /// Feed a continuation line to the pending entry — both its block and its
+    /// raw attached lines.
     fn accumulate_continuation(&mut self, msg: &str, line: &str) {
-        let msg_kind = classify_message(msg);
-        let mut warning = None;
-        match &mut self.state {
-            StreamState::InChannelData {
-                fields,
-                variables,
-                open_var,
-            } => {
-                if let Some((_, val)) = open_var {
-                    val.push('\n');
-                    val.push_str(msg);
-                    if msg.ends_with(']') {
-                        if let Some((name, val)) = open_var.take() {
-                            variables.push((name, val.trim_end_matches(']').to_string()));
-                        }
-                    }
-                } else {
-                    match &msg_kind {
-                        MessageKind::ChannelField { name, value } => {
-                            fields.push((name.clone(), value.clone()));
-                        }
-                        MessageKind::Variable { name, value } => {
-                            if !msg.ends_with(']') && msg.contains(": [") {
-                                *open_var = Some((name.clone(), value.clone()));
-                            } else {
-                                variables.push((name.clone(), value.clone()));
-                            }
-                        }
-                        _ => {
-                            if let Some((name, value)) = parse_field_line(msg) {
-                                fields.push((name, value));
-                            } else {
-                                warning = Some(ParseWarning::UnparseableChannelData {
-                                    line: ParseWarning::excerpt(msg),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            StreamState::InSdp { body, .. } => {
-                body.push(msg.to_string());
-            }
-            StreamState::InCodecNegotiation { .. } => {
-                warning = Some(ParseWarning::UnexpectedCodecContinuation {
-                    line: ParseWarning::excerpt(msg),
-                });
-            }
-            StreamState::Idle => {}
-        }
-        if let Some(ref mut pending) = self.pending {
-            if let Some(w) = warning {
-                pending.warnings.push(w);
-            }
-            pending.attached.push(line);
-        }
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        let warning = pending.block.push_continuation(msg);
+        pending.entry.warnings.extend(warning);
+        pending.entry.attached.push(line);
     }
 
-    fn new_entry(
-        &mut self,
-        uuid: String,
-        timestamp: String,
-        message: String,
-        kind: LineKind,
-        message_kind: MessageKind,
-    ) -> LogEntry {
-        let mut warnings = Vec::new();
-        if let Some(w) = self.deferred_warning.take() {
-            warnings.push(w);
+    /// Install a fresh pending entry for a line that starts one, opening
+    /// whatever block its message calls for.
+    ///
+    /// `uuid` and `timestamp` are passed in rather than read off `parsed`
+    /// because a continuation inherits them from context; everything else the
+    /// line carries is copied straight across, and is `None` for the
+    /// continuation kinds that carry no header.
+    fn open_entry(&mut self, parsed: &RawLine<'_>, uuid: String, timestamp: String) {
+        let message_kind = classify_message(parsed.message);
+
+        if !uuid.is_empty() {
+            self.last_uuid = uuid.clone();
         }
-        LogEntry {
+        if parsed.timestamp.is_some() {
+            self.last_timestamp = timestamp.clone();
+        }
+
+        let mut block = BlockBuilder::open(&message_kind);
+        // A codec run's opening line is itself a trace line, and the entry it
+        // belongs to does not exist until below — so its warning is collected
+        // here rather than routed through `warn`.
+        let opening_warning = block.push_codec_trace(parsed.message);
+
+        let entry = LogEntry {
             uuid,
             timestamp,
-            message,
-            kind,
+            message: parsed.message.to_string(),
+            kind: parsed.kind,
             message_kind,
-            level: None,
-            idle_pct: None,
-            source: None,
+            level: parsed.level,
+            idle_pct: parsed.idle_pct.map(|s| s.to_string()),
+            source: parsed.source.map(|s| s.to_string()),
             block: None,
             attached: AttachedLines::new(),
             line_number: self.line_number,
-            warnings,
-        }
+            warnings: self
+                .deferred_warning
+                .take()
+                .into_iter()
+                .chain(opening_warning)
+                .collect(),
+        };
+        self.pending = Some(Pending { entry, block });
     }
 }
 
@@ -601,14 +633,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     /// iteration. Recursive: split suffixes pass through this function again.
     fn detect_collision(&mut self, line: String) -> String {
         if line.len() > MAX_LINE_PAYLOAD {
-            let warning = ParseWarning::OversizeLine {
+            self.warn(ParseWarning::OversizeLine {
                 bytes: line.len() + UUID_PREFIX_LEN + 1,
-            };
-            if let Some(ref mut pending) = self.pending {
-                pending.warnings.push(warning);
-            } else {
-                self.deferred_warning = Some(warning);
-            }
+            });
         }
 
         // Skip past the line's own header to avoid matching itself.
@@ -717,11 +744,11 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 split
             } else {
                 let Some(line) = self.lines.next() else {
-                    return self.finalize_pending();
+                    return self.take_pending();
                 };
 
                 if line.starts_with('\x00') {
-                    let yielded = self.finalize_pending();
+                    let yielded = self.take_pending();
                     self.last_uuid.clear();
                     self.last_timestamp.clear();
                     if yielded.is_some() {
@@ -740,67 +767,20 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
             match parsed.kind {
                 LineKind::Full | LineKind::System | LineKind::Truncated => {
                     let uuid = parsed.uuid.unwrap_or("").to_string();
-                    let message_kind = classify_message(parsed.message);
 
                     // Merge consecutive codec negotiation entries with the same
                     // UUID *and* media type — a video run following an audio one
                     // describes a different negotiation and gets its own block.
-                    if let MessageKind::CodecNegotiation { media } = message_kind {
-                        if let (
-                            Some(ref pending),
-                            StreamState::InCodecNegotiation {
-                                media: open_media, ..
-                            },
-                        ) = (&self.pending, &self.state)
-                        {
-                            if uuid == pending.uuid && media == *open_media {
-                                let warning = self.accumulate_codec_entry(parsed.message);
-                                if let Some(ref mut p) = self.pending {
-                                    p.attached.push(&line);
-                                    p.warnings.extend(warning);
-                                }
-                                continue;
-                            }
-                        }
+                    if self.merge_codec_run(&parsed, &uuid, &line) {
+                        continue;
                     }
 
-                    let yielded = self.finalize_pending();
-
+                    let yielded = self.take_pending();
                     let timestamp = parsed
                         .timestamp
                         .map(|t| t.to_string())
                         .unwrap_or_else(|| self.last_timestamp.clone());
-
-                    if !uuid.is_empty() {
-                        self.last_uuid = uuid.clone();
-                    }
-                    if parsed.timestamp.is_some() {
-                        self.last_timestamp = timestamp.clone();
-                    }
-
-                    self.start_block_for_message(&message_kind);
-                    // The entry this line opens does not exist yet, so its
-                    // warning is carried across rather than pushed onto the
-                    // pending entry the way a merged line's is.
-                    let opening_warning =
-                        if matches!(message_kind, MessageKind::CodecNegotiation { .. }) {
-                            self.accumulate_codec_entry(parsed.message)
-                        } else {
-                            None
-                        };
-
-                    let mut entry = self.new_entry(
-                        uuid,
-                        timestamp,
-                        parsed.message.to_string(),
-                        parsed.kind,
-                        message_kind,
-                    );
-                    entry.level = parsed.level;
-                    entry.idle_pct = parsed.idle_pct.map(|s| s.to_string());
-                    entry.source = parsed.source.map(|s| s.to_string());
-                    entry.warnings.extend(opening_warning);
-                    self.pending = Some(entry);
+                    self.open_entry(&parsed, uuid, timestamp);
 
                     if yielded.is_some() {
                         return yielded;
@@ -809,45 +789,19 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
                 LineKind::UuidContinuation => {
                     let uuid = parsed.uuid.unwrap_or("").to_string();
-                    let is_primary = parsed.message.starts_with("EXECUTE ");
+                    // An EXECUTE trace is its own entry even mid-block, and a
+                    // different UUID means a different session's output.
+                    let continues = !parsed.message.starts_with("EXECUTE ")
+                        && self.pending.as_ref().is_some_and(|p| p.entry.uuid == uuid);
 
-                    if let Some(ref pending) = self.pending {
-                        if !is_primary && uuid == pending.uuid {
-                            self.accumulate_continuation(parsed.message, &line);
-                        } else {
-                            let yielded = self.finalize_pending();
-                            let message_kind = classify_message(parsed.message);
-
-                            if !uuid.is_empty() {
-                                self.last_uuid = uuid.clone();
-                            }
-
-                            self.start_block_for_message(&message_kind);
-                            self.pending = Some(self.new_entry(
-                                uuid,
-                                self.last_timestamp.clone(),
-                                parsed.message.to_string(),
-                                parsed.kind,
-                                message_kind,
-                            ));
-
+                    if continues {
+                        self.accumulate_continuation(parsed.message, &line);
+                    } else {
+                        let yielded = self.take_pending();
+                        self.open_entry(&parsed, uuid, self.last_timestamp.clone());
+                        if yielded.is_some() {
                             return yielded;
                         }
-                    } else {
-                        let message_kind = classify_message(parsed.message);
-
-                        if !uuid.is_empty() {
-                            self.last_uuid = uuid.clone();
-                        }
-
-                        self.start_block_for_message(&message_kind);
-                        self.pending = Some(self.new_entry(
-                            uuid,
-                            self.last_timestamp.clone(),
-                            parsed.message.to_string(),
-                            parsed.kind,
-                            message_kind,
-                        ));
                     }
                 }
 
@@ -859,20 +813,15 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                             UnclassifiedReason::OrphanContinuation,
                             Some(&line),
                         );
-                        let message_kind = classify_message(parsed.message);
-                        self.pending = Some(self.new_entry(
-                            self.last_uuid.clone(),
-                            self.last_timestamp.clone(),
-                            parsed.message.to_string(),
-                            parsed.kind,
-                            message_kind,
-                        ));
+                        let (uuid, timestamp) =
+                            (self.last_uuid.clone(), self.last_timestamp.clone());
+                        self.open_entry(&parsed, uuid, timestamp);
                     }
                 }
 
                 LineKind::Empty => {
                     if let Some(ref mut pending) = self.pending {
-                        pending.attached.push(&line);
+                        pending.entry.attached.push(&line);
                     } else {
                         self.stats.lines_empty_orphan += 1;
                     }

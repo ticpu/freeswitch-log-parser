@@ -263,6 +263,71 @@ fn intersects(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
 
+/// Locate the fields of one raw physical line — an attached line, prefix and all.
+///
+/// `parse_line`'s message is always a suffix of the line it parsed, so the
+/// header width is the length difference; deriving it that way keeps the
+/// branches that hand back a `""` literal harmless, where taking the message's
+/// address would not.
+fn raw_line_fields(line: &str, at: FieldLocation) -> Vec<Field> {
+    let message = crate::line::parse_line(line).message;
+    debug_assert!(line.ends_with(message), "message is a suffix of its line");
+    let offset = line.len() - message.len();
+
+    let mut out: Vec<Field> = message_fields(message)
+        .into_iter()
+        .map(|f| Field {
+            kind: f.kind,
+            at,
+            range: f.range.start + offset..f.range.end + offset,
+        })
+        .collect();
+
+    // The session UUID sits in the header the message excludes.
+    for (start, uuid) in find_uuids(&line[..offset]) {
+        out.push(Field {
+            kind: FieldKind::Uuid,
+            at,
+            range: start..start + uuid.len(),
+        });
+    }
+
+    out.sort_by(|a, b| {
+        (
+            a.range.start,
+            std::cmp::Reverse(a.range.end),
+            kind_rank(a.kind),
+        )
+            .cmp(&(
+                b.range.start,
+                std::cmp::Reverse(b.range.end),
+                kind_rank(b.kind),
+            ))
+    });
+    out
+}
+
+impl crate::stream::LogEntry {
+    /// Locate every field this entry carries, across its message and each raw
+    /// attached line.
+    ///
+    /// Recomputed per call and never stored — an entry nobody interrogates pays
+    /// nothing. Ranges index [`message`](crate::LogEntry::message) or the
+    /// attached line named by [`Field::at`], never a reassembled
+    /// [`Block`](crate::Block); [`uuid`](crate::LogEntry::uuid) is a field of the
+    /// entry rather than message text, so no span covers it.
+    ///
+    /// Ordering within one location is [`message_fields`]'s; locations follow
+    /// the message, then attached lines in order.
+    pub fn fields(&self) -> Vec<Field> {
+        let mut out = message_fields(&self.message);
+        for (i, line) in self.attached.iter().enumerate() {
+            out.extend(raw_line_fields(line, FieldLocation::Attached(i)));
+        }
+        out
+    }
+}
+
 fn push(out: &mut Vec<Field>, kind: FieldKind, range: Range<usize>) {
     if !range.is_empty() {
         out.push(Field {
@@ -707,5 +772,90 @@ mod tests {
     #[test]
     fn general_message_emits_nothing() {
         assert_eq!(spans("Activating RTCP PORT 4001"), []);
+    }
+
+    const UUID1: &str = "00112233-4455-6677-8899-aabbccddeeff";
+
+    fn entry_from(lines: &[String]) -> crate::stream::LogEntry {
+        crate::stream::LogStream::new(lines.iter().cloned())
+            .next()
+            .expect("one entry")
+    }
+
+    fn text_at<'a>(entry: &'a crate::stream::LogEntry, f: &Field) -> &'a str {
+        match f.at {
+            FieldLocation::Message => &entry.message[f.range.clone()],
+            FieldLocation::Attached(i) => &entry.attached.get(i).expect("line")[f.range.clone()],
+        }
+    }
+
+    #[test]
+    fn attached_spans_index_the_raw_line_including_its_prefix() {
+        let lines = vec![
+            format!("{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"),
+            format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
+        ];
+        let entry = entry_from(&lines);
+        let fields = entry.fields();
+
+        // The prefix UUID of the attached line is located, and the caller-id
+        // span sits past it in the same coordinate system.
+        let attached: Vec<_> = fields
+            .iter()
+            .filter(|f| f.at == FieldLocation::Attached(0))
+            .collect();
+        assert_eq!(attached[0].kind, FieldKind::Uuid);
+        assert_eq!(text_at(&entry, attached[0]), UUID1);
+        assert_eq!(attached[1].kind, FieldKind::CallerIdNumber);
+        assert_eq!(text_at(&entry, attached[1]), "15555550100");
+        assert!(attached[1].range.start > UUID1.len());
+    }
+
+    #[test]
+    fn message_and_attached_locations_stay_separate() {
+        let lines = vec![
+            format!("{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"),
+            format!("{UUID1} Channel-Name: [sofia/internal/1263@192.0.2.1]"),
+        ];
+        let entry = entry_from(&lines);
+        for f in entry.fields() {
+            let text = text_at(&entry, &f);
+            assert!(!text.is_empty());
+            match f.kind {
+                FieldKind::Uuid => assert!(crate::uuid::is_uuid(text)),
+                FieldKind::ChannelName => assert_eq!(text, "sofia/internal/1263@192.0.2.1"),
+                FieldKind::IpAddr => assert_eq!(text, "192.0.2.1"),
+                other => panic!("unexpected kind {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn bare_continuation_has_no_prefix_to_skip() {
+        let lines = vec![
+            format!("{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"),
+            format!("{UUID1} variable_sip_full_from: [x"),
+            "Caller-Destination-Number: [1263]".to_string(),
+        ];
+        let entry = entry_from(&lines);
+        let f = entry
+            .fields()
+            .into_iter()
+            .find(|f| f.kind == FieldKind::DestinationNumber)
+            .expect("destination span");
+        assert_eq!(f.at, FieldLocation::Attached(1));
+        assert_eq!(text_at(&entry, &f), "1263");
+    }
+
+    #[test]
+    fn entry_without_attached_lines_yields_message_spans_only() {
+        let lines = vec![format!(
+            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] switch_core_session.c:2907 \
+             EXECUTE [depth=0] sofia/internal/1263@192.0.2.1 answer"
+        )];
+        let entry = entry_from(&lines);
+        let fields = entry.fields();
+        assert!(fields.iter().all(|f| f.at == FieldLocation::Message));
+        assert_eq!(fields[0].kind, FieldKind::ChannelName);
     }
 }

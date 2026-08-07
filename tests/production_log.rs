@@ -5,8 +5,9 @@ use std::path::Path;
 use std::collections::HashMap;
 
 use freeswitch_log_parser::{
-    classify_message, parse_line, read_log_lines, truncate_at_char_boundary, Block, CodecMedia,
-    LineKind, LogEntry, LogStream, MessageKind, SessionTracker, UnclassifiedTracking,
+    classify_message, is_uuid, parse_line, read_log_lines, truncate_at_char_boundary, Block,
+    CodecMedia, Field, FieldKind, FieldLocation, LineKind, LogEntry, LogStream, MessageKind,
+    SessionTracker, UnclassifiedTracking,
 };
 use xz2::read::XzDecoder;
 
@@ -706,6 +707,149 @@ fn sdp_bodies_parse_across_the_corpus() {
     eprintln!("parsed {parsed} SDP bodies");
     assert!(parsed > 0, "corpus should contain SDP blocks");
     assert_no_violations(failures, "SDP bodies that did not parse");
+}
+
+/// Every span an entry reports must be usable: in bounds, on character
+/// boundaries, non-empty, ordered container-first, and never partially
+/// overlapping a sibling.
+#[test]
+fn field_spans_are_well_formed_across_the_corpus() {
+    if skip_if_no_fixtures() {
+        return;
+    }
+    let mut total: u64 = 0;
+    let violations = for_each_fixture(|corpus, name, _, entry| {
+        let mut bad = Vec::new();
+        let fields = entry.fields();
+        total += fields.len() as u64;
+
+        let text_of = |at: FieldLocation| -> Option<&str> {
+            match at {
+                FieldLocation::Message => Some(entry.message.as_str()),
+                FieldLocation::Attached(i) => entry.attached.get(i),
+            }
+        };
+
+        let mut prev: Option<&Field> = None;
+        for f in &fields {
+            let where_ = format!("{corpus}/{name} L{} {}", entry.line_number, f.kind);
+            let Some(text) = text_of(f.at) else {
+                bad.push(format!("{where_}: names a missing attached line"));
+                continue;
+            };
+            if f.range.is_empty() {
+                bad.push(format!("{where_}: empty range"));
+                continue;
+            }
+            if f.range.end > text.len() {
+                bad.push(format!("{where_}: {:?} past {} bytes", f.range, text.len()));
+                continue;
+            }
+            if !text.is_char_boundary(f.range.start) || !text.is_char_boundary(f.range.end) {
+                bad.push(format!("{where_}: {:?} splits a character", f.range));
+                continue;
+            }
+            if f.kind == FieldKind::Uuid && !is_uuid(&text[f.range.clone()]) {
+                bad.push(format!("{where_}: not a uuid"));
+            }
+
+            if let Some(p) = prev.filter(|p| p.at == f.at) {
+                if p.range.start > f.range.start {
+                    bad.push(format!("{where_}: out of order after {:?}", p.range));
+                } else if f.range.start < p.range.end && f.range.end > p.range.end {
+                    bad.push(format!(
+                        "{where_}: {:?} partially overlaps {:?}",
+                        f.range, p.range
+                    ));
+                }
+            }
+            prev = Some(f);
+        }
+        bad
+    });
+    eprintln!("checked {total} field spans");
+    assert!(total > 0, "corpus should yield field spans");
+    assert_no_violations(violations, "malformed field spans");
+}
+
+/// The applier must survive the whole corpus in both directions: replacing
+/// nothing is a byte-identical round trip, replacing everything never conflicts.
+#[test]
+fn render_with_round_trips_and_replaces_across_the_corpus() {
+    if skip_if_no_fixtures() {
+        return;
+    }
+    let violations = for_each_fixture(|corpus, name, _, entry| {
+        let mut bad = Vec::new();
+        let at = format!("{corpus}/{name} L{}", entry.line_number);
+
+        match entry.render_with(|_, _| None) {
+            Ok(out) => {
+                if out.message != entry.message {
+                    bad.push(format!("{at}: identity rewrite changed the message"));
+                }
+                for (i, line) in out.attached.iter().enumerate() {
+                    if entry.attached.get(i) != Some(line.as_str()) {
+                        bad.push(format!("{at}: identity rewrite changed attached line {i}"));
+                    }
+                }
+            }
+            Err(e) => bad.push(format!("{at}: identity rewrite failed: {e}")),
+        }
+
+        if let Err(e) = entry.render_with(|f, _| Some(format!("<{}>", f.kind))) {
+            bad.push(format!("{at}: full rewrite failed: {e}"));
+        }
+        bad
+    });
+    assert_no_violations(violations, "render_with failures");
+}
+
+/// What the span API actually reaches, per corpus — the counterpart to the
+/// classification report above, for judging coverage rather than correctness.
+#[test]
+fn field_span_report() {
+    if skip_if_no_fixtures() {
+        return;
+    }
+    for (corpus, files) in &fixture_corpora() {
+        eprintln!();
+        eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy();
+            let mut entries: u64 = 0;
+            let mut entries_with_fields: u64 = 0;
+            let mut kind_counts: HashMap<&str, u64> = HashMap::new();
+            let mut in_message: u64 = 0;
+            let mut in_attached: u64 = 0;
+
+            for entry in LogStream::new(lines_from_file(file)) {
+                entries += 1;
+                let fields = entry.fields();
+                if !fields.is_empty() {
+                    entries_with_fields += 1;
+                }
+                for f in fields {
+                    *kind_counts.entry(f.kind.label()).or_default() += 1;
+                    match f.at {
+                        FieldLocation::Message => in_message += 1,
+                        FieldLocation::Attached(_) => in_attached += 1,
+                    }
+                }
+            }
+
+            let total: u64 = kind_counts.values().sum();
+            eprintln!();
+            eprintln!("=== {corpus}/{name} (field spans) ===");
+            eprintln!("  entries: {entries}, with at least one span: {entries_with_fields}");
+            eprintln!("  spans: {total} (message {in_message}, attached {in_attached})");
+            let mut by_count: Vec<_> = kind_counts.into_iter().collect();
+            by_count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            for (kind, count) in by_count {
+                eprintln!("    {kind:<20} {count}");
+            }
+        }
+    }
 }
 
 #[test]

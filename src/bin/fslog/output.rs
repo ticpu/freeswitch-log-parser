@@ -455,6 +455,30 @@ impl EntryPrinter {
         )
     }
 
+    /// Field-span coverage of the matched entries — which typed values the
+    /// parser located, and where.
+    pub fn print_field_stats(
+        &self,
+        w: &mut dyn Write,
+        fields: &crate::context::FieldCounts,
+        matched: u64,
+    ) -> io::Result<()> {
+        let total = fields.total();
+        if total == 0 {
+            return Ok(());
+        }
+        writeln!(w)?;
+        writeln!(
+            w,
+            "{total} field spans in {}/{matched} entries (message {}, attached {})",
+            fields.entries_with_fields, fields.in_message, fields.in_attached,
+        )?;
+        for (kind, count) in fields.by_kind() {
+            writeln!(w, "  {kind:<20} {count}")?;
+        }
+        Ok(())
+    }
+
     pub fn print_unclassified(
         &self,
         w: &mut dyn Write,

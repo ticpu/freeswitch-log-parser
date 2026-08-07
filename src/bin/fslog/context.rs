@@ -1,7 +1,9 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write};
 
-use freeswitch_log_parser::{LogEntry, MessageKind, SegmentTracker, SessionSnapshot};
+use freeswitch_log_parser::{
+    FieldLocation, LogEntry, MessageKind, SegmentTracker, SessionSnapshot,
+};
 
 use crate::output::{EntryPrinter, FilterConfig, Hidden, Verdict};
 use crate::separator_entry;
@@ -53,6 +55,45 @@ pub struct Emitter<'a> {
     pub matched: u64,
     /// What a narrowed scope kept out, reported at end of run.
     pub hidden: HiddenCounts,
+    /// Field spans of the matching entries, tallied only under `--stats`.
+    pub fields: FieldCounts,
+}
+
+/// Per-kind field-span tally, for the `--stats` coverage line.
+#[derive(Debug, Default)]
+pub struct FieldCounts {
+    pub entries_with_fields: u64,
+    pub in_message: u64,
+    pub in_attached: u64,
+    by_kind: BTreeMap<&'static str, u64>,
+}
+
+impl FieldCounts {
+    fn tally(&mut self, entry: &LogEntry) {
+        let fields = entry.fields();
+        if fields.is_empty() {
+            return;
+        }
+        self.entries_with_fields += 1;
+        for f in fields {
+            *self.by_kind.entry(f.kind.label()).or_default() += 1;
+            match f.at {
+                FieldLocation::Message => self.in_message += 1,
+                FieldLocation::Attached(_) => self.in_attached += 1,
+            }
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.by_kind.values().sum()
+    }
+
+    /// Kinds seen, most frequent first.
+    pub fn by_kind(&self) -> Vec<(&'static str, u64)> {
+        let mut v: Vec<_> = self.by_kind.iter().map(|(k, c)| (*k, *c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        v
+    }
 }
 
 impl<'a> Emitter<'a> {
@@ -80,6 +121,7 @@ impl<'a> Emitter<'a> {
             count: 0,
             matched: 0,
             hidden: HiddenCounts::default(),
+            fields: FieldCounts::default(),
         }
     }
 
@@ -108,6 +150,9 @@ impl<'a> Emitter<'a> {
         }
         self.matched += 1;
         if self.stats_only {
+            // Locating fields costs a re-parse per entry, so it is paid only
+            // when the run exists to report on them.
+            self.fields.tally(entry);
             return Ok(());
         }
         self.feed_match(out, entry, session)

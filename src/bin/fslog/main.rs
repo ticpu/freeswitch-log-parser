@@ -22,7 +22,7 @@ use freeswitch_log_parser::{
     SessionTracker, TrackedChain, UnclassifiedTracking,
 };
 
-use context::{Emitter, HiddenCounts};
+use context::{Emitter, FieldCounts, HiddenCounts};
 use files::{
     discover_log_files, filter_files_by_date, format_size, lazy_log_reader, lossy_line_iter,
     normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader, resolve_log_path,
@@ -170,18 +170,15 @@ impl FilterArgs {
 }
 
 /// Stats/unclassified epilogue on stderr, shared by search and read.
-fn print_epilogue(
-    printer: &EntryPrinter,
-    fargs: &FilterArgs,
-    stats: &ParseStats,
-    count: u64,
-    session_count: usize,
-) -> io::Result<()> {
+fn print_epilogue(printer: &EntryPrinter, fargs: &FilterArgs, run: &RunSummary) -> io::Result<()> {
     if fargs.stats || fargs.unclassified {
-        printer.print_stats(&mut io::stderr(), stats, count, session_count)?;
+        printer.print_stats(&mut io::stderr(), &run.stats, run.count, run.session_count)?;
+    }
+    if fargs.stats {
+        printer.print_field_stats(&mut io::stderr(), &run.fields, run.matched)?;
     }
     if fargs.unclassified {
-        printer.print_unclassified(&mut io::stderr(), stats)?;
+        printer.print_unclassified(&mut io::stderr(), &run.stats)?;
     }
     Ok(())
 }
@@ -659,13 +656,7 @@ fn cmd_search(
         args.related,
         &run.hidden,
     );
-    print_epilogue(
-        &printer,
-        &args.filter,
-        &run.stats,
-        run.count,
-        run.session_count,
-    )
+    print_epilogue(&printer, &args.filter, &run)
 }
 
 struct RunSummary {
@@ -674,6 +665,7 @@ struct RunSummary {
     count: u64,
     matched: u64,
     hidden: HiddenCounts,
+    fields: FieldCounts,
 }
 
 /// Drive the parse over `segments`, emitting matches through `Emitter`. The
@@ -717,6 +709,7 @@ fn run_output(
         count: emitter.count,
         matched: emitter.matched,
         hidden: emitter.hidden,
+        fields: emitter.fields,
     })
 }
 
@@ -770,13 +763,7 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
         false,
         &run.hidden,
     );
-    print_epilogue(
-        &printer,
-        &args.filter,
-        &run.stats,
-        run.count,
-        run.session_count,
-    )
+    print_epilogue(&printer, &args.filter, &run)
 }
 
 fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {

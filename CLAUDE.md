@@ -237,10 +237,10 @@ Never copy production log lines verbatim into source.
 ## Rust Guidelines
 
 ### Workflow
-- `cargo check --message-format=short` → `cargo clippy --fix --allow-dirty --message-format=short` → `cargo fmt --all` → `cargo test --release -- --quiet`
-- Always run tests with `--release` — debug builds are too slow on xz-compressed production fixture tests
-- Build the binary with `cargo build --release --features tui` — the `tui` feature enables the monitor subcommand (includes ratatui, serde, serde_yml)
-- `sdp` is a library feature (off by default, enabled by `cli`) gating `Block::sdp_codecs()`; run `cargo test --release --all-features` as well, or its tests never build
+- **`hooks/pre-commit` is the verification.** Run `cargo clippy --fix --allow-dirty --message-format=short && cargo fmt`, then commit and let the hook gate it. It runs `cargo fmt --check`, `cargo clippy --all-targets --features tui -D warnings`, `cargo test --release --features tui` and gitleaks — do not re-run any of those by hand
+- `tui → cli → sdp`, so the hook's one test run already covers every feature the crate has. There is no `--all-features` run to add, and no `cargo build` to add
+- `cargo test --release` on its own only when iterating on a failing test — never in debug, xz-compressed production fixture tests are far too slow there
+- `cargo build --release --features tui` when you actually need the `fslog` binary to run against fixtures; `tui` enables the monitor subcommand (ratatui, serde, serde_yml), `sdp` gates `Block::sdp_codecs()`
 - **Cargo.lock is never committed** — this is a library crate, Cargo.lock stays in .gitignore
 - `fslog monitor --dump` prints the call table to stdout (no TUI), useful for testing and scripting
 

@@ -67,6 +67,22 @@ fn rightmost_in_context_wins() {
 }
 
 #[test]
+fn padded_context_marker_keeps_span_on_the_token() {
+    let msg = "Processing 15555550100->1263 in context \tpublic";
+    let p = parts(msg);
+    assert_eq!(&msg[p.context], "public");
+}
+
+/// Padding shifts the span end back into the token's last character, so a
+/// trailing multi-byte character is what turns the misalignment into a panic.
+#[test]
+fn padded_multibyte_context_stays_on_char_boundaries() {
+    let msg = "Processing 15555550100->1263 in context  café";
+    let p = parts(msg);
+    assert_eq!(&msg[p.context], "café");
+}
+
+#[test]
 fn no_context_marker_yields_none() {
     assert!(processing_parts("Processing ACME <15555550100>->1263").is_none());
 }

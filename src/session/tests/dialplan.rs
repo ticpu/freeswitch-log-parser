@@ -34,6 +34,20 @@ fn processing_line_extracts_context() {
     assert_eq!(session.dialplan_to.as_deref(), Some("5559876543"));
 }
 
+/// The context span used to be derived by adding the token's length to the
+/// marker offset, which omitted any padding before it and could end mid-codepoint.
+#[test]
+fn padded_multibyte_context_survives_the_tracker() {
+    let lines = vec![full_line(
+        UUID1,
+        TS1,
+        "Processing 5551234567->5559876543 in context  café",
+    )];
+    let entries = collect_enriched(lines);
+    let session = entries[0].session.as_ref().unwrap();
+    assert_eq!(session.dialplan_context.as_deref(), Some("café"));
+}
+
 #[test]
 fn initial_context_preserved_across_transfers() {
     let lines = vec![

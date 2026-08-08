@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use super::subslice_range;
+
 /// The byte ranges a dialplan `Processing` line decomposes into.
 ///
 /// `name` and `number` are `None` for the bracketless `from->to` shape, where
@@ -32,8 +34,8 @@ pub(crate) fn processing_parts(msg: &str) -> Option<ProcessingParts> {
     let head = &after_proc[..ctx_idx];
 
     let ctx_start = base + ctx_idx + " in context ".len();
-    let context_token = msg[ctx_start..].split_whitespace().next()?;
-    let context = ctx_start..ctx_start + context_token.len();
+    let context_token = msg.get(ctx_start..)?.split_whitespace().next()?;
+    let context = subslice_range(msg, context_token)?;
 
     let (head_range, dest) = match head.rfind(">->") {
         Some(i) => (base..base + i + 1, base + i + ">->".len()..base + ctx_idx),

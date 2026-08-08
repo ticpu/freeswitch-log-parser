@@ -13,21 +13,7 @@ use crate::uuid::find_uuids;
 
 use super::kind::{kind_rank, Field, FieldKind, FieldLocation};
 use super::processing::processing_parts;
-
-/// The byte range of `sub` inside `parent`, or `None` when `sub` is not a
-/// subslice of it. Empty subslices never yield a range — a helper that returns
-/// a `""` literal rather than an in-place empty slice must degrade to no span.
-fn subslice_range(parent: &str, sub: &str) -> Option<Range<usize>> {
-    if sub.is_empty() {
-        return None;
-    }
-    let base = parent.as_ptr() as usize;
-    let start = (sub.as_ptr() as usize).checked_sub(base)?;
-    if start + sub.len() > parent.len() {
-        return None;
-    }
-    Some(start..start + sub.len())
-}
+use super::subslice_range;
 
 /// The host of a channel name, when it is a literal address rather than a
 /// hostname. Handles the bracketed IPv6 form and a trailing port.

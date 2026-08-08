@@ -224,6 +224,44 @@ fn timestamp_collision_no_idle_pct_run_on() {
     assert_accounting(&stream);
 }
 
+/// The cut lands mid-value and the collided suffix is the *next* variable, so
+/// reassembly must stop rather than join it — a join loses that variable.
+#[test]
+fn a_cut_value_does_not_swallow_the_next_variable() {
+    let padding = "x".repeat(2000);
+    let collision_line =
+        format!("{UUID1} variable_long_xml: [{padding}{UUID1} variable_direction: [inbound]");
+
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),
+        collision_line,
+        full_line(UUID1, TS2, "Next log entry"),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+
+    match entries[0].block.as_ref().expect("should have block") {
+        Block::ChannelData { variables, .. } => {
+            assert_eq!(variables.len(), 2);
+            assert_eq!(variables[0].0, "variable_long_xml");
+            assert!(
+                !variables[0].1.contains("variable_direction"),
+                "the cut value swallowed the next variable"
+            );
+            assert_eq!(
+                variables[1],
+                ("variable_direction".to_string(), "inbound".to_string())
+            );
+        }
+        other => panic!("expected ChannelData block, got {other:?}"),
+    }
+    assert!(entries[0]
+        .warnings
+        .contains(&ParseWarning::TruncatedVariable {
+            name: "variable_long_xml".to_string()
+        }));
+}
+
 #[test]
 fn truncated_collision_in_channel_data_variable() {
     // A CHANNEL_DATA block where a variable value exceeds the 2048-byte

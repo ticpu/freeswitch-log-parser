@@ -146,6 +146,24 @@ impl BlockBuilder {
         }
     }
 
+    /// Close a variable whose value the logger cut, so the line after the cut
+    /// opens the next variable instead of being joined to this one — a join
+    /// consumes that variable entirely, where closing costs one warned value.
+    pub(super) fn close_cut_variable(&mut self) -> Option<ParseWarning> {
+        let BlockBuilder::ChannelData {
+            variables,
+            open_var,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let (name, value) = open_var.take()?;
+        let warning = ParseWarning::TruncatedVariable { name: name.clone() };
+        variables.push((name, value));
+        Some(warning)
+    }
+
     /// Absorb one line of a codec negotiation run. Unlike the other blocks
     /// these arrive as primary lines, so this is a separate entry point.
     pub(super) fn push_codec_trace(&mut self, msg: &str) -> Option<ParseWarning> {

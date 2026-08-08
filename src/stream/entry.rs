@@ -139,6 +139,9 @@ pub enum ParseWarning {
     /// A CHANNEL_DATA variable opened its `[` and the block ended before the `]`.
     /// The value collected so far is still recorded.
     UnclosedVariable { name: String },
+    /// A CHANNEL_DATA variable's value was cut by the logger's write buffer. The
+    /// value is recorded up to the cut; the line after it opens the next variable.
+    TruncatedVariable { name: String },
     /// A line inside a CHANNEL_DATA block matched neither the field nor the
     /// variable shape, so it contributed nothing to the block.
     UnparseableChannelData { line: String },
@@ -180,6 +183,9 @@ impl fmt::Display for ParseWarning {
         match self {
             ParseWarning::UnclosedVariable { name } => {
                 write!(f, "unclosed multi-line variable: {name}")
+            }
+            ParseWarning::TruncatedVariable { name } => {
+                write!(f, "multi-line variable cut by the log buffer: {name}")
             }
             ParseWarning::UnparseableChannelData { line } => {
                 write!(f, "unparseable CHANNEL_DATA line: {line}")

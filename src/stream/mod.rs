@@ -49,6 +49,9 @@ pub struct LogStream<I> {
     tracking: UnclassifiedTracking,
     line_number: u64,
     split_pending: VecDeque<String>,
+    /// Whether the line dispatched before the current one ended at a split
+    /// rather than at its own newline — the logger cut it short.
+    prev_line_cut: bool,
     /// A warning about the line currently being dispatched, claimed by whichever
     /// of `open_entry`/`attach` ends up owning it. Emitting it on arrival would
     /// pin it on the pending entry, which for a line that starts a new one is
@@ -68,6 +71,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
             split_pending: VecDeque::new(),
+            prev_line_cut: false,
             line_warning: None,
         }
     }
@@ -168,10 +172,14 @@ impl<I: Iterator<Item = String>> LogStream<I> {
 
     /// Feed a continuation line to the pending entry — both its block and its
     /// raw attached lines.
-    fn accumulate_continuation(&mut self, msg: &str, line: &str, has_uuid: bool) {
+    fn accumulate_continuation(&mut self, msg: &str, line: &str, has_uuid: bool, prev_cut: bool) {
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
+        if prev_cut {
+            let warning = pending.block.close_cut_variable();
+            pending.entry.warnings.extend(warning);
+        }
         let warning = pending.block.push_continuation(msg, has_uuid);
         pending.entry.warnings.extend(warning);
         self.attach(line);
@@ -376,6 +384,11 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 self.detect_collision(line)
             };
 
+            // A non-empty queue means this chunk ended at a split, not a newline.
+            // Recomputed every line: a stale flag would close a multi-line value.
+            let prev_cut =
+                std::mem::replace(&mut self.prev_line_cut, !self.split_pending.is_empty());
+
             let parsed = parse_line(&line);
 
             match parsed.kind {
@@ -412,7 +425,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                             .is_some_and(|p| p.entry.uuid.as_deref() == Some(uuid.as_str()));
 
                     if continues {
-                        self.accumulate_continuation(parsed.message, &line, true);
+                        self.accumulate_continuation(parsed.message, &line, true, prev_cut);
                     } else {
                         let yielded = self.take_pending();
                         self.open_entry(&parsed, uuid, self.last_timestamp.clone());
@@ -424,7 +437,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
                 LineKind::BareContinuation => {
                     if self.pending.is_some() {
-                        self.accumulate_continuation(parsed.message, &line, false);
+                        self.accumulate_continuation(parsed.message, &line, false, prev_cut);
                     } else {
                         self.record_unclassified(
                             UnclassifiedReason::OrphanContinuation,

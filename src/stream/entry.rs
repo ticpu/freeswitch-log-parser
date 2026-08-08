@@ -26,6 +26,14 @@ pub enum Block {
         variables: Vec<(String, String)>,
     },
     /// SDP session description body, collected line by line.
+    ///
+    /// The marker may be a continuation of another entry — sofia logs the
+    /// outbound invite line and the marker together — and a body carrying no
+    /// marker at all, such as the SIP message a recorder packet dump prints,
+    /// opens on its version line with [`SdpDirection::Unknown`]. Lines ahead of
+    /// the body stay in [`LogEntry::attached`], spanned by [`LogEntry::fields`]
+    /// but not read as a SIP message: that is `freeswitch-sofia-trace-parser`'s
+    /// job, not this crate's.
     Sdp {
         direction: SdpDirection,
         body: Vec<String>,

@@ -101,7 +101,9 @@ Two structurally distinct output types. The `[LEVEL] source:line` marker is defi
 | Source | Format | Multi-line |
 |--------|--------|------------|
 | mod_dptools.c:1999 | `"CHANNEL_DATA:\n%s\n"` | Yes — serialized event |
-| sofia_glue.c:1676 | `"Local SDP %s:\n%s\n"` | Yes — SDP body |
+| sofia_glue.c:1676 | `"%s sending invite version: %s\nLocal SDP:\n%s\n"` | Yes — marker on line 2, then body |
+| mod_sofia.c:914 | `"Local SDP %s:\n%s\n"` | Yes — SDP body |
+| mod_oreka.c:121 | `"Oreka SIP Packet (...):\n%s"` | Yes — whole SIP message, no SDP marker |
 | sofia.c:7634 | `"Remote SDP:\n%s\n"` | Yes — SDP body |
 | switch_channel.c:2615 | `"(%s) State Change %s -> %s\n"` | No |
 | switch_core_media.c:8892 | `"Activating RTCP PORT %d\n"` | No |
@@ -122,7 +124,7 @@ Chatplan (mod_sms.c) uses identical patterns with `"Chatplan:"` prefix.
 
 Execution traces (switch_core_session.c:2907): `"EXECUTE [depth=%d] %s %s(%s)\n"`
 
-CHANNEL_DATA (switch_event.c:1603): `"FIELDNAME: [VALUE]\n"` — multi-line values keep `[` on first line, content on subsequent lines, `]` closes on its own line.
+CHANNEL_DATA (switch_event.c:1603): `"FIELDNAME: [VALUE]\n"` — multi-line values keep `[` on first line, content on subsequent lines. `switch_event.c:1587` glues `]` to the end of the last content line, so it lands on a line of its own only when the value itself ends in a newline (SDP does; an arbitrary value need not).
 
 State machine: `"%s Standard EXECUTE\n"`, `"%s Standard SOFT_EXECUTE\n"` (switch_core_state_machine.c)
 

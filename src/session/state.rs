@@ -126,8 +126,13 @@ impl SessionState {
                 match name.as_str() {
                     "Channel-Name" => self.channel_name = Some(value.clone()),
                     "Channel-State" => self.channel_state = Some(value.clone()),
+                    // A value the enum does not know leaves the last known
+                    // direction standing; a dump that repeats a field the parser
+                    // cannot read must not erase what an earlier one established.
                     "Call-Direction" => {
-                        self.call_direction = CallDirection::from_str(value).ok();
+                        if let Ok(dir) = CallDirection::from_str(value) {
+                            self.call_direction = Some(dir);
+                        }
                     }
                     "Caller-Caller-ID-Number" => {
                         self.caller_id_number = Some(value.clone());

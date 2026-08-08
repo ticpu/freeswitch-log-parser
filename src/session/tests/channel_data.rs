@@ -1,5 +1,7 @@
 //! Variables and channel fields learned from dumps and executions.
 
+use freeswitch_types::CallDirection;
+
 use super::*;
 
 #[test]
@@ -19,6 +21,19 @@ fn channel_data_populates_session() {
         Some("sofia/internal/+15550001234@192.0.2.1")
     );
     assert_eq!(session.channel_state.as_deref(), Some("CS_EXECUTE"));
+}
+
+#[test]
+fn unreadable_call_direction_keeps_the_known_one() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} Call-Direction: [inbound]"),
+        full_line(UUID1, TS2, "CHANNEL_DATA:"),
+        format!("{UUID1} Call-Direction: [sideways]"),
+    ];
+    let entries = collect_enriched(lines);
+    let session = entries.last().unwrap().session.as_ref().unwrap();
+    assert_eq!(session.call_direction, Some(CallDirection::Inbound));
 }
 
 #[test]

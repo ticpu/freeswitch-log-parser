@@ -56,9 +56,7 @@ fn variables_learned_from_channel_data() {
         "variable_sip_call_id: [test123@192.0.2.1]".to_string(),
         "variable_direction: [inbound]".to_string(),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
         state.variables.get("sip_call_id").map(|s| s.as_str()),
@@ -76,9 +74,7 @@ fn typed_variable_accessor() {
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
         "variable_sip_call_id: [test123@192.0.2.1]".to_string(),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
         state.variable(SofiaVariable::SipCallId),
@@ -102,9 +98,7 @@ fn multi_line_variable_survives_attached_rescan() {
         "]".to_string(),
         format!("{UUID1} variable_direction: [inbound]"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let state = tracker.sessions().get(UUID1).unwrap();
     let sdp = state
@@ -151,9 +145,7 @@ fn variables_learned_from_export_execute() {
         full_line(UUID1, TS1, "First"),
         format!("{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 export(originate_timeout=3600)"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
         state.variables.get("originate_timeout").map(|s| s.as_str()),
@@ -175,9 +167,7 @@ fn session_isolation_between_uuids() {
             "Processing 5553333333->5554444444 in context private",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
     let s1 = tracker.sessions().get(UUID1).unwrap();
     let s2 = tracker.sessions().get(UUID2).unwrap();
     assert_eq!(s1.dialplan_context.as_deref(), Some("public"));

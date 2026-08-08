@@ -12,6 +12,15 @@ pub struct LogFile {
     pub size: u64,
 }
 
+/// A path's file name for display, falling back to empty rather than the
+/// full path when it has none (a `..` or root path, in practice never a log file).
+pub fn display_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 pub fn discover_log_files(dir: &Path) -> io::Result<Vec<LogFile>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir)? {

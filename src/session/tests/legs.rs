@@ -10,9 +10,7 @@ fn originate_success_links_both_legs() {
         full_line(UUID2, TS1, "New Channel sofia/esinet1-v6-tcp/sip:target.example.com [b2c3d4e5-f6a7-8901-bcde-f12345678901]"),
         full_line(UUID1, TS2, "Originate Resulted in Success: [sofia/esinet1-v6-tcp/sip:target.example.com] Peer UUID: b2c3d4e5-f6a7-8901-bcde-f12345678901"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -46,9 +44,7 @@ fn originate_success_channel_fallback_links_legs() {
             "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -86,9 +82,7 @@ fn originate_success_peer_uuid_wins_over_channel_fallback() {
             "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744] Peer UUID: b2c3d4e5-f6a7-8901-bcde-f12345678901",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -125,9 +119,7 @@ fn originate_success_channel_fallback_skips_when_ambiguous() {
             "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -166,9 +158,7 @@ fn originate_success_channel_fallback_skips_terminated_candidates() {
             "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -200,9 +190,7 @@ fn originate_success_channel_fallback_skips_when_no_match() {
         TS2,
         "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744]",
     )];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(a_leg.other_leg_uuid, None);
@@ -217,9 +205,7 @@ fn bridge_origination_uuid_links_a_leg_immediately() {
         full_line(UUID1, TS1, "EXECUTE [depth=0] sofia/internal-v6/1232@[2001:db8::10] bridge([origination_uuid=b2c3d4e5-f6a7-8901-bcde-f12345678901,leg_timeout=2]sofia/esinet1-v6-tcp/sip:target.example.com)"),
         full_line(UUID2, TS1, "New Channel sofia/esinet1-v6-tcp/sip:target.example.com [b2c3d4e5-f6a7-8901-bcde-f12345678901]"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -245,9 +231,7 @@ fn bridge_target_matches_new_channel() {
         full_line(UUID1, TS1, "Parsing session specific variables"),
         full_line(UUID2, TS1, "New Channel sofia/gateway/carrier/+15559876543 [b2c3d4e5-f6a7-8901-bcde-f12345678901]"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -293,9 +277,7 @@ fn originate_success_corrects_wrong_target_match() {
         full_line(UUID2, TS1, "New Channel sofia/gateway/carrier/+15559876543 [b2c3d4e5-f6a7-8901-bcde-f12345678901]"),
         full_line(UUID1, TS2, "Originate Resulted in Success: [sofia/gateway/carrier/+15559876543] Peer UUID: c3d4e5f6-a7b8-9012-cdef-234567890123"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -319,9 +301,7 @@ fn channel_data_other_leg_uuid() {
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
         format!("{UUID1} Other-Leg-Unique-ID: [{UUID2}]"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
@@ -353,9 +333,7 @@ fn relink_removes_stale_by_other_leg_entry() {
             &format!("New Channel sofia/external/dest@192.0.2.9 [{UUID3}]"),
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(a_leg.other_leg_uuid.as_deref(), Some(UUID2));

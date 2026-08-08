@@ -205,6 +205,25 @@ fn message_kind_on_execute() {
     }
 }
 
+/// The closing `]` is one delimiter, not a run of them — a value whose own last
+/// character is `]` keeps it.
+#[test]
+fn channel_data_multiline_variable_keeps_a_trailing_bracket() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        "variable_json_payload: [{".to_string(),
+        r#""targets":[1,2]]"#.to_string(),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+    let block = entries[0].block.as_ref().expect("should have block");
+    match block {
+        Block::ChannelData { variables, .. } => {
+            assert_eq!(variables[0].1, "{\n\"targets\":[1,2]");
+        }
+        other => panic!("expected ChannelData block, got {other:?}"),
+    }
+}
+
 #[test]
 fn channel_data_multiline_variable_spans_many_lines() {
     let lines = vec![

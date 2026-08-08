@@ -89,7 +89,8 @@ impl BlockBuilder {
                     val.push_str(msg);
                     if msg.ends_with(']') {
                         if let Some((name, val)) = open_var.take() {
-                            variables.push((name, val.trim_end_matches(']').to_string()));
+                            let closed = val.strip_suffix(']').unwrap_or(&val).to_string();
+                            variables.push((name, closed));
                         }
                     }
                     return None;

@@ -86,7 +86,7 @@ pub use peer::{
 };
 pub use session::{
     conference::ConferenceMembership,
-    media::{MediaCodecs, SessionMedia},
+    media::{CodecImpl, MediaCodecs, SessionMedia},
     parse_bridge_args, BridgeInfo, EnrichedEntry, SessionSnapshot, SessionState, SessionTracker,
 };
 pub use stamp::{log_rotation_stamp, normalize_entry_timestamp};

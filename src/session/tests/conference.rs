@@ -127,7 +127,7 @@ fn media_keeps_the_outcome_and_the_deduped_offer_set() {
         "audio and video outcomes are tracked apart"
     );
 
-    assert_eq!(media.read_codec.as_ref().unwrap().payload_type, 116);
+    assert_eq!(media.read_codec.as_ref().unwrap().payload_type, Some(116));
     assert_eq!(media.active_audio.as_ref().unwrap().clock_rate, Some(16000));
 }
 

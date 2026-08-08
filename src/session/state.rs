@@ -43,6 +43,7 @@ fn read<T: FromStr>(
 /// Variables accumulate from CHANNEL_DATA dumps, `set()`/`export()` executions,
 /// `SET`/`EXPORT` log lines, and inline `variable_*` lines.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct SessionState {
     /// `None` until a `Channel-Name` field is encountered.
     pub channel_name: Option<String>,
@@ -92,6 +93,7 @@ pub struct SessionState {
 /// Does not include `variables` to keep snapshots lightweight — access the full
 /// variable map via [`SessionTracker::sessions()`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SessionSnapshot {
     pub channel_name: Option<String>,
     pub channel_state: Option<ChannelState>,

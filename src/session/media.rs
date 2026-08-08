@@ -25,17 +25,43 @@ impl MediaCodecs {
     }
 }
 
+/// A codec implementation the engine reports it is running, as distinct from a
+/// [`CodecOffer`] read off the wire.
+///
+/// Every field but the name is optional because each line that produces one
+/// carries a different subset — an engine line naming no payload type must not
+/// be forced to claim one, which is what sharing `CodecOffer` did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CodecImpl {
+    pub name: String,
+    pub payload_type: Option<u8>,
+    pub clock_rate: Option<u32>,
+    pub ptime: Option<u32>,
+    pub bitrate: Option<u32>,
+    pub channels: Option<u8>,
+}
+
+impl CodecImpl {
+    /// A codec known only by name, for a line to fill in what it carries.
+    fn named(name: &str) -> Self {
+        CodecImpl {
+            name: name.to_string(),
+            ..CodecImpl::default()
+        }
+    }
+}
+
 /// Codecs a session negotiated, by media type and by direction.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionMedia {
     pub audio: MediaCodecs,
     pub video: MediaCodecs,
     /// `Original read codec set to <name>:<pt>` — `switch_core_codec.c:132`.
-    /// Carries no rate or ptime, so those stay `None`.
-    pub read_codec: Option<CodecOffer>,
+    pub read_codec: Option<CodecImpl>,
     /// `Set Codec <chan> <name>/<rate> <ptime> ms …` — `switch_core_media.c:3739`,
-    /// reporting the audio engine's read implementation. No payload type.
-    pub active_audio: Option<CodecOffer>,
+    /// reporting the audio engine's read implementation.
+    pub active_audio: Option<CodecImpl>,
 }
 
 impl SessionMedia {
@@ -47,9 +73,11 @@ impl SessionMedia {
             ..
         }) = &entry.block
         {
+            // Both arms named: a wildcard would file a media type added later
+            // under audio without anyone noticing.
             let side = match media {
                 CodecMedia::Video => &mut self.video,
-                _ => &mut self.audio,
+                CodecMedia::Audio => &mut self.audio,
             };
             for (offered, _local) in comparisons {
                 side.offer(offered);
@@ -72,24 +100,21 @@ impl SessionMedia {
 }
 
 /// `<chan> Original read codec set to <name>:<payload>`
-fn parse_original_read_codec(msg: &str) -> Option<CodecOffer> {
+fn parse_original_read_codec(msg: &str) -> Option<CodecImpl> {
     let rest = msg.split_once("Original read codec set to ")?.1;
     let (name, payload) = rest.trim().split_once(':')?;
     if name.is_empty() {
         return None;
     }
-    Some(CodecOffer {
+    Some(CodecImpl {
         name: name.to_string(),
-        payload_type: payload.parse().ok()?,
-        clock_rate: None,
-        ptime: None,
-        bitrate: None,
-        channels: None,
+        payload_type: Some(payload.parse().ok()?),
+        ..CodecImpl::named(name)
     })
 }
 
 /// `Set Codec <chan> <name>/<rate> <ptime> ms <samples> samples <bits> bits <channels> channels`
-fn parse_set_codec(msg: &str) -> Option<CodecOffer> {
+fn parse_set_codec(msg: &str) -> Option<CodecImpl> {
     let rest = msg.strip_prefix("Set Codec ")?;
     let (_channel, rest) = rest.split_once(' ')?;
     let mut fields = rest.split(' ');
@@ -98,14 +123,10 @@ fn parse_set_codec(msg: &str) -> Option<CodecOffer> {
         return None;
     }
     let ptime = fields.next()?.parse().ok()?;
-    // The payload type is absent from this line; 0 would claim PCMU.
-    let mut codec = CodecOffer {
-        name: name.to_string(),
-        payload_type: 0,
+    let mut codec = CodecImpl {
         clock_rate: rate.parse().ok(),
         ptime: Some(ptime),
-        bitrate: None,
-        channels: None,
+        ..CodecImpl::named(name)
     };
     let tail: Vec<&str> = fields.collect();
     for pair in tail.windows(2) {
@@ -128,7 +149,7 @@ mod tests {
             parse_original_read_codec("sofia/softphone/1213 Original read codec set to opus:116")
                 .expect("parsed");
         assert_eq!(c.name, "opus");
-        assert_eq!(c.payload_type, 116);
+        assert_eq!(c.payload_type, Some(116));
         assert_eq!(c.clock_rate, None);
         assert_eq!(c.ptime, None);
     }
@@ -144,6 +165,10 @@ mod tests {
         assert_eq!(c.ptime, Some(20));
         assert_eq!(c.bitrate, Some(0));
         assert_eq!(c.channels, Some(1));
+        assert_eq!(
+            c.payload_type, None,
+            "the line names none, and 0 would claim PCMU"
+        );
     }
 
     #[test]

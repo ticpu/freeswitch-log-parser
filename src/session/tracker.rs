@@ -218,140 +218,95 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         conference::refresh(membership, variables);
     }
 
-    /// The A leg of the loopback whose B leg just appeared. Shares the
-    /// originate fallback's ambiguity guard: concurrent loopbacks to the same
-    /// destination produce identical names, and linking the wrong pair is worse
-    /// than linking none.
-    fn loopback_a_leg(&self, b_channel: &str, b_uuid: &str) -> Option<String> {
-        let a_channel = loopback::a_leg_name(b_channel)?;
-        let candidates: Vec<&String> = self
-            .by_channel_name
-            .get(&a_channel)?
+    /// The one live session among `candidates` other than `exclude`, or `None`
+    /// when the log leaves the choice ambiguous. Sessions in a terminal state are
+    /// stragglers from earlier calls and never count.
+    fn sole_live_leg(&self, candidates: &HashSet<String>, exclude: &str) -> Option<String> {
+        let mut live = candidates
             .iter()
-            .filter(|u| *u != b_uuid)
+            .filter(|u| u.as_str() != exclude)
             .filter(|u| {
                 self.sessions
                     .get(*u)
                     .map(|s| !is_terminal_channel_state(s.channel_state.as_deref()))
                     .unwrap_or(false)
-            })
-            .collect();
-        match candidates.as_slice() {
-            [a_uuid] => Some((*a_uuid).clone()),
+            });
+        match (live.next(), live.next()) {
+            (Some(only), None) => Some(only.clone()),
             _ => None,
+        }
+    }
+
+    /// The one live session answering to `channel`, other than `exclude`.
+    fn unique_live_leg(&self, channel: &str, exclude: &str) -> Option<String> {
+        self.sole_live_leg(self.by_channel_name.get(channel)?, exclude)
+    }
+
+    /// The A leg of the loopback whose B leg just appeared. Concurrent loopbacks
+    /// to the same destination produce identical names, so this inherits the
+    /// ambiguity guard rather than guessing between them.
+    fn loopback_a_leg(&self, b_channel: &str, b_uuid: &str) -> Option<String> {
+        let a_channel = loopback::a_leg_name(b_channel)?;
+        self.unique_live_leg(&a_channel, b_uuid)
+    }
+
+    /// Point two legs at each other, retire the A leg's pending bridge target,
+    /// and bring both directions of `by_other_leg` in line.
+    ///
+    /// The diff bracket around `next()` would reindex whichever leg produced the
+    /// entry, but not its peer — indexing both here keeps the pair symmetric
+    /// whichever side the log spoke from.
+    fn link_pair(&mut self, a_uuid: &str, b_uuid: &str) {
+        let a_old_pending = self
+            .sessions
+            .get(a_uuid)
+            .and_then(|s| s.pending_bridge_target.clone());
+
+        let a_state = self.sessions.entry(a_uuid.to_string()).or_default();
+        let a_old_leg = a_state.other_leg_uuid.replace(b_uuid.to_string());
+        a_state.pending_bridge_target = None;
+
+        let b_state = self.sessions.entry(b_uuid.to_string()).or_default();
+        let b_old_leg = b_state.other_leg_uuid.replace(a_uuid.to_string());
+
+        self.index_other_leg(a_uuid, a_old_leg, b_uuid);
+        self.index_other_leg(b_uuid, b_old_leg, a_uuid);
+        if let Some(old_target) = a_old_pending {
+            self.by_pending_target.remove(&old_target);
         }
     }
 
     /// Cross-session leg linking. Called after `update_from_entry` so per-session
     /// state (bridge target, channel name) is already populated.
     fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
-        // 1. "Originate Resulted in Success ... Peer UUID: BLEG" — authoritative
+        // "Originate Resulted in Success ... Peer UUID: BLEG" — authoritative
         if entry.message.contains("Originate Resulted in Success") {
-            let a_uuid = uuid.to_string();
             if let Some(peer_uuid) = parse_originate_success(&entry.message) {
-                let a_old_pending = self
-                    .sessions
-                    .get(&a_uuid)
-                    .and_then(|s| s.pending_bridge_target.clone());
-
-                let mut a_old_leg = None;
-                if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                    a_old_leg = a_state.other_leg_uuid.replace(peer_uuid.clone());
-                    a_state.pending_bridge_target = None;
-                }
-                self.index_other_leg(&a_uuid, a_old_leg, &peer_uuid);
-                if let Some(old_target) = a_old_pending {
-                    self.by_pending_target.remove(&old_target);
-                }
-
-                let b_state = self.sessions.entry(peer_uuid.clone()).or_default();
-                let b_old_leg = b_state.other_leg_uuid.replace(a_uuid.clone());
-                self.index_other_leg(&peer_uuid, b_old_leg, &a_uuid);
+                self.link_pair(uuid, &peer_uuid);
             } else if let Some(chan) = parse_originate_channel(&entry.message) {
-                // Fallback for FS builds without `Peer UUID:` suffix (e.g. 1.10.5-dev):
-                // link via unique non-terminated b-leg session whose channel_name
-                // matches. Candidates in terminal states are stragglers; if zero or
-                // multiple live candidates remain, skip (correctness over coverage).
-                let candidates: Vec<String> = self
-                    .by_channel_name
-                    .get(chan)
-                    .map(|set| {
-                        set.iter()
-                            .filter(|u| *u != &a_uuid)
-                            .filter(|u| {
-                                self.sessions
-                                    .get(*u)
-                                    .map(|s| !is_terminal_channel_state(s.channel_state.as_deref()))
-                                    .unwrap_or(false)
-                            })
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                if let [b_uuid] = candidates.as_slice() {
-                    let b_uuid = b_uuid.clone();
-                    let a_old_pending = self
-                        .sessions
-                        .get(&a_uuid)
-                        .and_then(|s| s.pending_bridge_target.clone());
-
-                    let mut a_old_leg = None;
-                    if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                        a_old_leg = a_state.other_leg_uuid.replace(b_uuid.clone());
-                        a_state.pending_bridge_target = None;
-                    }
-                    let mut b_old_leg = None;
-                    if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
-                        b_old_leg = b_state.other_leg_uuid.replace(a_uuid.clone());
-                    }
-
-                    self.index_other_leg(&a_uuid, a_old_leg, &b_uuid);
-                    self.index_other_leg(&b_uuid, b_old_leg, &a_uuid);
-                    if let Some(old_target) = a_old_pending {
-                        self.by_pending_target.remove(&old_target);
-                    }
+                // Builds whose originate line omits the `Peer UUID:` suffix leave
+                // the channel name as the only handle on the B leg.
+                if let Some(b_uuid) = self.unique_live_leg(chan, uuid) {
+                    self.link_pair(uuid, &b_uuid);
                 }
             }
             return;
         }
 
-        // 2. New Channel on this UUID — check if any other session has a pending bridge
-        //    with origination_uuid matching this UUID, or target matching this channel name.
+        // New Channel on this UUID — another session may have been waiting for it,
+        // either by forced origination UUID or by the target it named.
         if let MessageKind::ChannelLifecycle { detail } = &entry.message_kind {
             if let Some(channel_name) = parse_new_channel(detail) {
-                let b_uuid = uuid.to_string();
-
-                // O(1) index lookups instead of full scan
-                let a_uuid_found = self
+                let a_uuid = self
                     .by_other_leg
-                    .get(&b_uuid)
+                    .get(uuid)
                     .cloned()
                     .or_else(|| self.by_pending_target.get(&channel_name).cloned())
-                    .or_else(|| self.loopback_a_leg(&channel_name, &b_uuid))
-                    .filter(|a| a != &b_uuid);
+                    .or_else(|| self.loopback_a_leg(&channel_name, uuid))
+                    .filter(|a| a.as_str() != uuid);
 
-                if let Some(a_uuid) = a_uuid_found {
-                    let a_old_pending = self
-                        .sessions
-                        .get(&a_uuid)
-                        .and_then(|s| s.pending_bridge_target.clone());
-
-                    let mut a_old_leg = None;
-                    if let Some(a_state) = self.sessions.get_mut(&a_uuid) {
-                        a_old_leg = a_state.other_leg_uuid.replace(b_uuid.clone());
-                        a_state.pending_bridge_target = None;
-                    }
-                    let mut b_old_leg = None;
-                    if let Some(b_state) = self.sessions.get_mut(&b_uuid) {
-                        b_old_leg = b_state.other_leg_uuid.replace(a_uuid.clone());
-                    }
-
-                    self.index_other_leg(&a_uuid, a_old_leg, &b_uuid);
-                    self.index_other_leg(&b_uuid, b_old_leg, &a_uuid);
-                    if let Some(old_target) = a_old_pending {
-                        self.by_pending_target.remove(&old_target);
-                    }
+                if let Some(a_uuid) = a_uuid {
+                    self.link_pair(&a_uuid, uuid);
                 }
             }
         }

@@ -8,7 +8,7 @@ use super::*;
 fn entry(uuid: &str, message: &str, attached: &[&str]) -> LogEntry {
     let mut a = AttachedLines::new();
     for l in attached {
-        a.push(l);
+        a.push(l).expect("fits");
     }
     LogEntry {
         uuid: uuid.to_string(),

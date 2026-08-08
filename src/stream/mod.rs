@@ -125,6 +125,21 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
     }
 
+    /// Store a raw line on the pending entry, or record that the entry has no
+    /// room left for it. Every attach goes through here so a dropped line is
+    /// counted once and the accounting invariant still balances.
+    fn attach(&mut self, line: &str) {
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        if pending.entry.attached.push(line).is_err() {
+            pending.entry.warnings.push(ParseWarning::AttachedOverflow {
+                line: ParseWarning::excerpt(line),
+            });
+            self.stats.lines_dropped += 1;
+        }
+    }
+
     /// Absorb a codec trace line into the run the pending entry already owns,
     /// reporting whether it belonged there.
     ///
@@ -150,7 +165,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
 
         let warning = pending.block.push_codec_trace(parsed.message);
         pending.entry.warnings.extend(warning);
-        pending.entry.attached.push(line);
+        self.attach(line);
         true
     }
 
@@ -162,7 +177,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         };
         let warning = pending.block.push_continuation(msg);
         pending.entry.warnings.extend(warning);
-        pending.entry.attached.push(line);
+        self.attach(line);
     }
 
     /// Install a fresh pending entry for a line that starts one, opening
@@ -418,8 +433,8 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 }
 
                 LineKind::Empty => {
-                    if let Some(ref mut pending) = self.pending {
-                        pending.entry.attached.push(&line);
+                    if self.pending.is_some() {
+                        self.attach(&line);
                     } else {
                         self.stats.lines_empty_orphan += 1;
                     }

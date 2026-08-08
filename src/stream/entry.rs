@@ -155,6 +155,10 @@ pub enum ParseWarning {
     /// was cut short and lost its trailing newline. `bytes` is the formatted
     /// length, prefix included.
     OversizeLine { bytes: usize },
+    /// The entry's attached lines outgrew the offsets addressing them, so this
+    /// line could not be stored. Counted in
+    /// [`ParseStats::lines_dropped`](super::ParseStats::lines_dropped).
+    AttachedOverflow { line: String },
     /// A per-session reading met a value its vocabulary does not know — either
     /// FreeSWITCH gained one or the line is corrupt. The state that reading
     /// feeds keeps its last resolved value.
@@ -197,6 +201,9 @@ impl fmt::Display for ParseWarning {
             ),
             ParseWarning::UnreadableValue { reading, value } => {
                 write!(f, "unreadable {reading}: {value}")
+            }
+            ParseWarning::AttachedOverflow { line } => {
+                write!(f, "entry's attached lines full, dropped: {line}")
             }
         }
     }

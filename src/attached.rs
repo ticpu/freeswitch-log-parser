@@ -13,6 +13,18 @@
 //! never exposed to callers — [`AttachedLines::iter`] and
 //! [`AttachedLines::get`] return `&str` slices that exclude it.
 
+/// One entry's attached lines outgrew the `u32` offsets addressing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttachedOverflow;
+
+impl std::fmt::Display for AttachedOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("attached lines exceed the 4 GiB an entry can address")
+    }
+}
+
+impl std::error::Error for AttachedOverflow {}
+
 /// Compact storage for the raw continuation lines of a log entry.
 ///
 /// Iteration yields each pushed line as `&str` in insertion order. The
@@ -44,14 +56,16 @@ impl AttachedLines {
     /// Append a line. The trailing `\n` separator is added internally and is
     /// not part of the line returned by [`Self::get`] or [`Self::iter`].
     ///
-    /// Panics if the buffer would exceed 4 GiB — `u32` offsets can address up
-    /// to that, and a single log entry larger than that is structurally
-    /// impossible under `mod_logfile`'s 2 KiB-per-physical-line budget.
-    pub fn push(&mut self, line: &str) {
-        let start = u32::try_from(self.buf.len()).expect("attached buffer exceeded 4 GiB");
+    /// Fails once the buffer would outgrow the `u32` offsets that address it.
+    /// `mod_logfile`'s write budget bounds one physical line, not how many join
+    /// an entry, so nothing upstream caps this — the caller decides what to do,
+    /// and the line is not stored.
+    pub fn push(&mut self, line: &str) -> Result<(), AttachedOverflow> {
+        let start = u32::try_from(self.buf.len()).map_err(|_| AttachedOverflow)?;
         self.offsets.push(start);
         self.buf.push_str(line);
         self.buf.push('\n');
+        Ok(())
     }
 
     /// Borrow the i-th line, or `None` if out of range.
@@ -123,9 +137,9 @@ mod tests {
     #[test]
     fn push_and_iterate_preserves_order_and_content() {
         let mut a = AttachedLines::new();
-        a.push("first");
-        a.push("");
-        a.push("third line");
+        a.push("first").expect("fits");
+        a.push("").expect("fits");
+        a.push("third line").expect("fits");
         assert_eq!(a.len(), 3);
         assert!(!a.is_empty());
         assert_eq!(a.get(0), Some("first"));
@@ -139,8 +153,8 @@ mod tests {
     #[test]
     fn intoiter_for_ref_works_in_for_loop() {
         let mut a = AttachedLines::new();
-        a.push("a");
-        a.push("b");
+        a.push("a").expect("fits");
+        a.push("b").expect("fits");
         let mut out = Vec::new();
         for line in &a {
             out.push(line.to_string());
@@ -154,8 +168,8 @@ mod tests {
         // corrupt content that happens to contain them — the offset table
         // delimits by index, not by scanning for '\n'.
         let mut a = AttachedLines::new();
-        a.push("has\nnewline");
-        a.push("plain");
+        a.push("has\nnewline").expect("fits");
+        a.push("plain").expect("fits");
         assert_eq!(a.get(0), Some("has\nnewline"));
         assert_eq!(a.get(1), Some("plain"));
     }
@@ -168,7 +182,8 @@ mod tests {
         for i in 0..200 {
             a.push(&format!(
                 "variable_some_long_name_{i}: [a typical value here]"
-            ));
+            ))
+            .expect("fits");
         }
         assert_eq!(a.len(), 200);
         // Round-trip check: every line readable in order.

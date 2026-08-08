@@ -63,7 +63,7 @@ mod stamp;
 mod stream;
 mod uuid;
 
-pub use attached::{AttachedLines, AttachedLinesIter};
+pub use attached::{AttachedLines, AttachedLinesIter, AttachedOverflow};
 pub use chain::{SegmentTracker, TrackedChain};
 pub use codec::{CodecMedia, CodecOffer, CodecParseError};
 pub use decode::{

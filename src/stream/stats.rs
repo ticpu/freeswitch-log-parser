@@ -47,6 +47,11 @@ pub struct ParseStats {
     /// Physical lines that were split into multiple logical entries due to
     /// mod_logfile's 2048-byte snprintf truncation causing same-line collisions.
     pub lines_split: u64,
+    /// Continuation lines an entry could not store because its attached buffer
+    /// outgrew the offsets addressing it. The entry carries a
+    /// [`ParseWarning::AttachedOverflow`](super::ParseWarning::AttachedOverflow)
+    /// naming each one.
+    pub lines_dropped: u64,
     /// Populated only when tracking is `TrackLines` or `CaptureData`.
     pub unclassified_lines: Vec<UnclassifiedLine>,
 }
@@ -56,10 +61,13 @@ impl ParseStats {
     ///
     /// Returns 0 when the parser correctly accounts for every input line.
     /// A non-zero value indicates a parser bug — lines were silently lost.
+    /// A line the parser knowingly could not keep is counted in
+    /// [`lines_dropped`](Self::lines_dropped) rather than going missing here.
     ///
-    /// Invariant: `lines_processed + lines_split == lines_in_entries + lines_empty_orphan`
+    /// Invariant:
+    /// `lines_processed + lines_split == lines_in_entries + lines_empty_orphan + lines_dropped`
     pub fn unaccounted_lines(&self) -> u64 {
-        let expected = self.lines_in_entries + self.lines_empty_orphan;
+        let expected = self.lines_in_entries + self.lines_empty_orphan + self.lines_dropped;
         let actual = self.lines_processed + self.lines_split;
         actual.saturating_sub(expected)
     }

@@ -1,5 +1,9 @@
 //! Channel state, hangup and answer lifecycle, and tracker bookkeeping.
 
+use freeswitch_types::{CallState, ChannelState, HangupCause};
+
+use crate::stream::{ParseWarning, SessionReading};
+
 use super::super::parse::{is_answered, parse_hangup};
 use super::*;
 
@@ -29,15 +33,37 @@ fn new_channel_sets_channel_name() {
 }
 
 #[test]
+fn unreadable_state_warns_and_keeps_the_last_one() {
+    let lines = vec![
+        full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING"),
+        full_line(UUID1, TS2, "State Change CS_ROUTING -> CS_TELEPORT"),
+    ];
+    let entries = collect_enriched(lines);
+    let last = entries.last().unwrap();
+    assert_eq!(
+        last.session.as_ref().unwrap().channel_state,
+        Some(ChannelState::CsRouting),
+        "the reading that failed leaves the last one that resolved"
+    );
+    assert_eq!(
+        last.entry.warnings,
+        [ParseWarning::UnreadableValue {
+            reading: SessionReading::ChannelState,
+            value: "CS_TELEPORT".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn state_change_updates_channel_state() {
     let lines = vec![full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING")];
     let entries = collect_enriched(lines);
     let session = entries[0].session.as_ref().unwrap();
-    assert_eq!(session.channel_state.as_deref(), Some("CS_ROUTING"));
+    assert_eq!(session.channel_state, Some(ChannelState::CsRouting));
 }
 
 #[test]
-fn callstate_change_updates_channel_state() {
+fn callstate_change_updates_call_state() {
     let lines = vec![full_line(
         UUID1,
         TS1,
@@ -45,11 +71,11 @@ fn callstate_change_updates_channel_state() {
     )];
     let entries = collect_enriched(lines);
     let session = entries[0].session.as_ref().unwrap();
-    assert_eq!(session.channel_state.as_deref(), Some("RINGING"));
+    assert_eq!(session.call_state, Some(CallState::Ringing));
 }
 
 #[test]
-fn state_change_overrides_callstate() {
+fn the_two_state_vocabularies_do_not_displace_each_other() {
     let lines = vec![
         full_line(
             UUID1,
@@ -64,22 +90,16 @@ fn state_change_overrides_callstate() {
     ];
     let entries = collect_enriched(lines);
     assert_eq!(
-        entries[0]
-            .session
-            .as_ref()
-            .unwrap()
-            .channel_state
-            .as_deref(),
-        Some("RINGING")
+        entries[0].session.as_ref().unwrap().call_state,
+        Some(CallState::Ringing)
     );
+
+    let last = entries[1].session.as_ref().unwrap();
+    assert_eq!(last.channel_state, Some(ChannelState::CsExchangeMedia));
     assert_eq!(
-        entries[1]
-            .session
-            .as_ref()
-            .unwrap()
-            .channel_state
-            .as_deref(),
-        Some("CS_EXCHANGE_MEDIA")
+        last.call_state,
+        Some(CallState::Ringing),
+        "a channel-state change must not erase the call state"
     );
 }
 
@@ -130,13 +150,13 @@ fn bleg_lifecycle_extracts_data_from_processing() {
     let entries = collect_enriched(lines);
 
     let after_ringing = entries[4].session.as_ref().unwrap();
-    assert_eq!(after_ringing.channel_state.as_deref(), Some("RINGING"));
+    assert_eq!(after_ringing.call_state, Some(CallState::Ringing));
     assert!(after_ringing.initial_context.is_none());
 
     let after_processing = entries[6].session.as_ref().unwrap();
     assert_eq!(
-        after_processing.channel_state.as_deref(),
-        Some("CS_EXCHANGE_MEDIA")
+        after_processing.channel_state,
+        Some(ChannelState::CsExchangeMedia)
     );
     assert_eq!(
         after_processing.initial_context.as_deref(),
@@ -152,7 +172,7 @@ fn bleg_lifecycle_extracts_data_from_processing() {
     );
 
     let after_hangup = entries[7].session.as_ref().unwrap();
-    assert_eq!(after_hangup.channel_state.as_deref(), Some("CS_HANGUP"));
+    assert_eq!(after_hangup.channel_state, Some(ChannelState::CsHangup));
     assert_eq!(after_hangup.initial_context.as_deref(), Some("recordings"));
 }
 
@@ -259,8 +279,8 @@ fn hangup_cause_from_lifecycle() {
     let entries = collect_enriched(lines);
     let session = entries[0].session.as_ref().unwrap();
     assert_eq!(
-        session.hangup_cause.as_deref(),
-        Some("NORMAL_CLEARING"),
+        session.hangup_cause,
+        Some(HangupCause::NormalClearing),
         "hangup_cause extracted from ChannelLifecycle Hangup"
     );
 }

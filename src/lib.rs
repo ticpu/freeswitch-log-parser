@@ -75,7 +75,7 @@ pub use fields::{
 };
 pub use freeswitch_types::{
     variables::{ConferenceVariable, SofiaVariable, VariableName},
-    CallDirection, CallState, ChannelState, ChannelVariable,
+    CallDirection, CallState, ChannelState, ChannelVariable, HangupCause,
 };
 pub use level::{LogLevel, ParseLevelError};
 pub use line::{parse_line, LineKind, RawLine};
@@ -91,7 +91,7 @@ pub use session::{
 };
 pub use stamp::{log_rotation_stamp, normalize_entry_timestamp};
 pub use stream::{
-    Block, LogEntry, LogStream, ParseStats, ParseWarning, UnclassifiedLine, UnclassifiedReason,
-    UnclassifiedTracking,
+    Block, LogEntry, LogStream, ParseStats, ParseWarning, SessionReading, UnclassifiedLine,
+    UnclassifiedReason, UnclassifiedTracking,
 };
 pub use uuid::{find_uuids, is_uuid, FindUuids};

@@ -74,6 +74,31 @@ impl Block {
 /// kilobytes; the excerpt is for a human reading the warning, not for matching on.
 pub(super) const WARNING_EXCERPT_LEN: usize = 80;
 
+/// A per-session reading whose value its vocabulary did not know.
+///
+/// Named rather than free-form so a consumer can tell which reading lapsed
+/// without matching on the value it choked on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SessionReading {
+    ChannelState,
+    CallState,
+    CallDirection,
+    HangupCause,
+}
+
+impl fmt::Display for SessionReading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            SessionReading::ChannelState => "channel state",
+            SessionReading::CallState => "call state",
+            SessionReading::CallDirection => "call direction",
+            SessionReading::HangupCause => "hangup cause",
+        };
+        f.write_str(label)
+    }
+}
+
 /// A parsing anomaly, attached to the entry whose lines produced it.
 ///
 /// The set is closed and every kind is named — see `docs/design-rationale.md`.
@@ -99,6 +124,13 @@ pub enum ParseWarning {
     /// was cut short and lost its trailing newline. `bytes` is the formatted
     /// length, prefix included.
     OversizeLine { bytes: usize },
+    /// A per-session reading met a value its vocabulary does not know — either
+    /// FreeSWITCH gained one or the line is corrupt. The state that reading
+    /// feeds keeps its last resolved value.
+    UnreadableValue {
+        reading: SessionReading,
+        value: String,
+    },
 }
 
 impl ParseWarning {
@@ -132,6 +164,9 @@ impl fmt::Display for ParseWarning {
                 "line exceeds mod_logfile {MOD_LOGFILE_BUF_SIZE}-byte buffer \
                  ({bytes} bytes), data may be truncated"
             ),
+            ParseWarning::UnreadableValue { reading, value } => {
+                write!(f, "unreadable {reading}: {value}")
+            }
         }
     }
 }

@@ -39,9 +39,22 @@ pub(super) fn parse_new_channel(detail: &str) -> Option<String> {
     new_channel_name(detail).map(str::to_string)
 }
 
-pub(super) fn parse_state_change(detail: &str) -> Option<String> {
+/// Which of the two state vocabularies a `... Change <old> -> <new>` line speaks.
+pub(super) enum StateChange<'a> {
+    Channel(&'a str),
+    Call(&'a str),
+}
+
+/// The new state a change line moves to. `Callstate Change` and `State Change`
+/// are distinct markers, so the two vocabularies never have to share a slot.
+pub(super) fn parse_state_change(detail: &str) -> Option<StateChange<'_>> {
     let arrow = detail.find(" -> ")?;
-    Some(detail[arrow + 4..].trim().to_string())
+    let to = detail[arrow + 4..].trim();
+    if detail.contains("Callstate Change") {
+        Some(StateChange::Call(to))
+    } else {
+        Some(StateChange::Channel(to))
+    }
 }
 
 pub(super) fn parse_hangup(detail: &str) -> Option<String> {
@@ -117,18 +130,4 @@ pub(super) fn parse_originate_channel(msg: &str) -> Option<&str> {
     } else {
         Some(chan)
     }
-}
-
-/// Terminal channel-/callstate values — sessions left in one of these are
-/// stragglers from prior calls and must not be considered candidates when
-/// disambiguating channel-name collisions in the originate-success fallback.
-///
-/// Covers both `Channel-State` (`CS_*`) and `Callstate` (`HANGUP`). `DOWN` is
-/// excluded because it doubles as the initial Callstate before any change is
-/// observed.
-pub(super) fn is_terminal_channel_state(state: Option<&str>) -> bool {
-    matches!(
-        state,
-        Some("CS_HANGUP" | "CS_REPORTING" | "CS_DESTROY" | "CS_NONE" | "HANGUP")
-    )
 }

@@ -16,7 +16,7 @@ use freeswitch_log_parser::{
 
 use crate::files::{discover_log_files, open_full_tail_reader, open_log_reader};
 
-use super::model::{AppState, CallEnd, CallEvent, CallFields, CallRow, LegState, ReaderMsg};
+use super::model::{AppState, CallEnd, CallEvent, CallFields, CallRow, ReaderMsg};
 
 pub(super) fn build_update(
     enriched: &EnrichedEntry,
@@ -60,9 +60,11 @@ pub(super) fn build_update(
             .and_then(|s| s.other_leg_uuid.clone())
             .or_else(|| snap.and_then(|s| s.other_leg_uuid.clone())),
         channel_state: state
-            .and_then(|s| s.channel_state.as_deref())
-            .or_else(|| snap.and_then(|s| s.channel_state.as_deref()))
-            .map(LegState::parse),
+            .and_then(|s| s.channel_state)
+            .or_else(|| snap.and_then(|s| s.channel_state)),
+        call_state: state
+            .and_then(|s| s.call_state)
+            .or_else(|| snap.and_then(|s| s.call_state)),
         context: state
             .and_then(|s| s.initial_context.clone())
             .or_else(|| snap.and_then(|s| s.initial_context.clone())),

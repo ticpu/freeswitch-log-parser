@@ -1,6 +1,6 @@
 //! Variables and channel fields learned from dumps and executions.
 
-use freeswitch_types::CallDirection;
+use freeswitch_types::{CallDirection, ChannelState};
 
 use super::*;
 
@@ -20,7 +20,7 @@ fn channel_data_populates_session() {
         session.channel_name.as_deref(),
         Some("sofia/internal/+15550001234@192.0.2.1")
     );
-    assert_eq!(session.channel_state.as_deref(), Some("CS_EXECUTE"));
+    assert_eq!(session.channel_state, Some(ChannelState::CsExecute));
 }
 
 #[test]

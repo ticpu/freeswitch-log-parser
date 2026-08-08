@@ -20,7 +20,7 @@ use crate::message::{classify_message, MessageKind};
 use block::BlockBuilder;
 use collision::{COLLISION_SCAN_SLACK, MAX_LINE_PAYLOAD};
 
-pub use entry::{Block, LogEntry, ParseWarning};
+pub use entry::{Block, LogEntry, ParseWarning, SessionReading};
 pub use stats::{ParseStats, UnclassifiedLine, UnclassifiedReason, UnclassifiedTracking};
 
 /// The entry being assembled, together with the block it owns. Pairing them

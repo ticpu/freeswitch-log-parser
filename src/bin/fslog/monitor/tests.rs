@@ -1,9 +1,9 @@
 //! Behavioral tests for the monitor — timestamp arithmetic, row lifecycle,
 //! and the fixture-backed dump.
 
-use freeswitch_log_parser::CallDirection;
+use freeswitch_log_parser::{CallDirection, CallState, ChannelState};
 
-use super::model::{AppState, CallEvent, CallFields, ContextFilter, LegState, ReaderMsg};
+use super::model::{state_label, AppState, CallEvent, CallFields, ContextFilter, ReaderMsg};
 use super::reader::{apply_update, drain_session_removals, gc_ended};
 use super::time::{call_duration, format_age, format_duration, log_age, parse_timestamp_secs};
 use super::*;
@@ -95,29 +95,39 @@ fn format_age_days() {
     assert_eq!(format_age(Duration::from_secs(259200)), "3d");
 }
 
-fn state_short(raw: &str) -> String {
-    LegState::parse(raw).short()
+fn state_short(cs: ChannelState) -> String {
+    state_label(Some(cs), None).expect("a channel state always labels")
 }
 
 #[test]
 fn format_state_cs_prefix() {
-    assert_eq!(state_short("CS_EXECUTE"), "EXECUTE");
-    assert_eq!(state_short("CS_ROUTING"), "ROUTING");
-    assert_eq!(state_short("CS_HANGUP"), "HANGUP");
-    assert_eq!(state_short("CS_DESTROY"), "DESTROY");
+    assert_eq!(state_short(ChannelState::CsExecute), "EXECUTE");
+    assert_eq!(state_short(ChannelState::CsRouting), "ROUTING");
+    assert_eq!(state_short(ChannelState::CsHangup), "HANGUP");
+    assert_eq!(state_short(ChannelState::CsDestroy), "DESTROY");
 }
 
 #[test]
 fn format_state_abbreviations() {
-    assert_eq!(state_short("CS_EXCHANGE_MEDIA"), "MEDIA");
-    assert_eq!(state_short("CS_CONSUME_MEDIA"), "CONSUME");
-    assert_eq!(state_short("CS_SOFT_EXECUTE"), "SOFTEX");
-    assert_eq!(state_short("CS_REPORTING"), "REPORT");
+    assert_eq!(state_short(ChannelState::CsExchangeMedia), "MEDIA");
+    assert_eq!(state_short(ChannelState::CsConsumeMedia), "CONSUME");
+    assert_eq!(state_short(ChannelState::CsSoftExecute), "SOFTEX");
+    assert_eq!(state_short(ChannelState::CsReporting), "REPORT");
 }
 
 #[test]
-fn format_state_unknown_passthrough() {
-    assert_eq!(state_short("SOMETHING_ELSE"), "SOMETHING_ELSE");
+fn call_state_labels_a_live_call_but_yields_to_teardown() {
+    assert_eq!(
+        state_label(Some(ChannelState::CsExecute), Some(CallState::Active)),
+        Some("ACTIVE".to_string()),
+        "what an operator watches for wins while the call is up"
+    );
+    assert_eq!(
+        state_label(Some(ChannelState::CsDestroy), Some(CallState::Active)),
+        Some("DESTROY".to_string()),
+        "a leg being torn down must not keep showing ACTIVE"
+    );
+    assert_eq!(state_label(None, None), None);
 }
 
 #[test]
@@ -210,7 +220,7 @@ fn make_update(uuid: &str, ts: &str, is_hangup: bool) -> ReaderMsg {
         uuid: uuid.to_string(),
         timestamp: ts.to_string(),
         fields: CallFields {
-            channel_state: Some(LegState::parse("CS_EXECUTE")),
+            channel_state: Some(ChannelState::CsExecute),
             context: Some("public".to_string()),
             direction: Some(CallDirection::Inbound),
             caller: Some("1234".to_string()),
@@ -236,7 +246,7 @@ fn no_row_for_call_first_seen_in_terminal_state() {
         uuid: "aaaa".to_string(),
         timestamp: "2025-01-15 10:30:45.000000".to_string(),
         fields: CallFields {
-            channel_state: Some(LegState::parse("CS_HANGUP")),
+            channel_state: Some(ChannelState::CsHangup),
             ..CallFields::default()
         },
         event: None,
@@ -247,7 +257,7 @@ fn no_row_for_call_first_seen_in_terminal_state() {
         uuid: "aaaa".to_string(),
         timestamp: "2025-01-15 10:30:45.000000".to_string(),
         fields: CallFields {
-            channel_state: Some(LegState::parse("CS_DESTROY")),
+            channel_state: Some(ChannelState::CsDestroy),
             ..CallFields::default()
         },
         event: Some(CallEvent::Hangup),

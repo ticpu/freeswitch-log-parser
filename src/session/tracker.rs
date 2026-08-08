@@ -8,9 +8,7 @@ use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 use super::conference::{self, ConferenceEvent, ConferenceMembership, ConferenceRegistry};
 use super::index::{deindex, IndexedFieldChanges, IndexedFields};
 use super::loopback;
-use super::parse::{
-    is_terminal_channel_state, parse_new_channel, parse_originate_channel, parse_originate_success,
-};
+use super::parse::{parse_new_channel, parse_originate_channel, parse_originate_success};
 use super::state::{SessionSnapshot, SessionState};
 use super::SessionHook;
 
@@ -220,7 +218,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             .filter(|u| {
                 self.sessions
                     .get(*u)
-                    .map(|s| !is_terminal_channel_state(s.channel_state.as_deref()))
+                    .map(|s| !s.is_terminal())
                     .unwrap_or(false)
             });
         match (live.next(), live.next()) {
@@ -314,7 +312,7 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
     type Item = EnrichedEntry;
 
     fn next(&mut self) -> Option<EnrichedEntry> {
-        let entry = self.inner.next()?;
+        let mut entry = self.inner.next()?;
 
         if entry.uuid.is_empty() {
             return Some(EnrichedEntry {
@@ -335,7 +333,7 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
             hook(&entry, state);
         }
 
-        state.update_from_entry(&entry);
+        let unreadable = state.update_from_entry(&entry);
 
         self.update_conference(&uuid, &entry);
         self.link_legs(&uuid, &entry);
@@ -352,6 +350,7 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         let changes = IndexedFieldChanges::diff(old, state);
         let snapshot = state.snapshot();
         self.apply_index_changes(&uuid, &changes);
+        entry.warnings.extend(unreadable);
 
         Some(EnrichedEntry {
             entry,

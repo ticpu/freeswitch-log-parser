@@ -9,7 +9,7 @@ use ratatui::widgets::{
 
 use freeswitch_log_parser::CallDirection;
 
-use super::model::{AppState, CallRow, LegState, UiMode};
+use super::model::{state_label, AppState, CallRow, UiMode};
 use super::time::{call_age, call_duration, format_age, format_duration};
 
 pub(super) fn format_direction(direction: Option<CallDirection>) -> &'static str {
@@ -46,11 +46,7 @@ pub(super) fn row_cells(r: &CallRow, latest: &str) -> [String; 9] {
         format_direction(r.fields.direction).to_string(),
         r.fields.caller.as_deref().unwrap_or("-").to_string(),
         r.fields.callee.as_deref().unwrap_or("-").to_string(),
-        r.fields
-            .channel_state
-            .as_ref()
-            .map(LegState::short)
-            .unwrap_or_else(|| "-".to_string()),
+        state_label(r.fields.channel_state, r.fields.call_state).unwrap_or_else(|| "-".to_string()),
         format_duration(call_duration(r)),
         format_age(call_age(r, latest)),
         r.fields.context.as_deref().unwrap_or("-").to_string(),

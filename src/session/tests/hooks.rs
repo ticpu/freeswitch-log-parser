@@ -1,5 +1,7 @@
 //! Consumer hooks — ordering against built-in extraction, and index upkeep.
 
+use freeswitch_types::ChannelState;
+
 use super::*;
 
 #[test]
@@ -84,17 +86,12 @@ fn pre_hook_runs_before_builtin() {
     let lines = vec![full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING")];
     let stream = LogStream::new(lines.into_iter());
     let mut tracker = SessionTracker::new(stream).with_pre_hook(|_entry, state| {
-        state.channel_state = Some("PRE_SET".to_string());
+        state.channel_state = Some(ChannelState::CsNew);
     });
     let entries: Vec<_> = tracker.by_ref().collect();
     assert_eq!(
-        entries[0]
-            .session
-            .as_ref()
-            .unwrap()
-            .channel_state
-            .as_deref(),
-        Some("CS_ROUTING"),
+        entries[0].session.as_ref().unwrap().channel_state,
+        Some(ChannelState::CsRouting),
         "built-in overwrites pre_hook value when no guard"
     );
 }
@@ -104,7 +101,7 @@ fn post_hook_runs_after_builtin() {
     let lines = vec![full_line(UUID1, TS1, "State Change CS_INIT -> CS_ROUTING")];
     let stream = LogStream::new(lines.into_iter());
     let mut tracker = SessionTracker::new(stream).with_post_hook(|_entry, state| {
-        if state.channel_state.as_deref() == Some("CS_ROUTING") {
+        if state.channel_state == Some(ChannelState::CsRouting) {
             state
                 .variables
                 .insert("routing_seen".to_string(), "true".to_string());

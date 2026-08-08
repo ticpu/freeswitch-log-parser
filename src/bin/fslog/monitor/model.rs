@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -10,38 +9,41 @@ use crate::config::Tool;
 
 use freeswitch_log_parser::{CallDirection, CallState, ChannelState};
 
-/// Channel state parsed once at the reader boundary: usually a `CS_*`
-/// ChannelState, sometimes a CallState; anything else passes through raw.
-pub(super) enum LegState {
-    Channel(ChannelState),
-    Call(CallState),
-    Raw(String),
+/// The state column's label.
+///
+/// The call state is what an operator is watching a call for, so it wins where
+/// both are known — but a terminal channel state outranks it, or a leg being
+/// torn down would sit at ACTIVE until it vanished.
+pub(super) fn state_label(
+    channel: Option<ChannelState>,
+    call: Option<CallState>,
+) -> Option<String> {
+    let terminal = matches!(
+        channel,
+        Some(
+            ChannelState::CsHangup
+                | ChannelState::CsReporting
+                | ChannelState::CsDestroy
+                | ChannelState::CsNone
+        )
+    );
+    match (channel, call) {
+        (Some(cs), _) if terminal => Some(short_channel(cs)),
+        (_, Some(cs)) => Some(cs.to_string()),
+        (Some(cs), None) => Some(short_channel(cs)),
+        (None, None) => None,
+    }
 }
 
-impl LegState {
-    pub(super) fn parse(raw: &str) -> Self {
-        if let Ok(cs) = ChannelState::from_str(raw) {
-            LegState::Channel(cs)
-        } else if let Ok(cs) = CallState::from_str(raw) {
-            LegState::Call(cs)
-        } else {
-            LegState::Raw(raw.to_string())
-        }
-    }
-
-    /// Short column label for the call table.
-    pub(super) fn short(&self) -> String {
-        match self {
-            LegState::Channel(ChannelState::CsExchangeMedia) => "MEDIA".to_string(),
-            LegState::Channel(ChannelState::CsConsumeMedia) => "CONSUME".to_string(),
-            LegState::Channel(ChannelState::CsSoftExecute) => "SOFTEX".to_string(),
-            LegState::Channel(ChannelState::CsReporting) => "REPORT".to_string(),
-            LegState::Channel(cs) => {
-                let s = cs.to_string();
-                s.strip_prefix("CS_").unwrap_or(&s).to_string()
-            }
-            LegState::Call(cs) => cs.to_string(),
-            LegState::Raw(s) => s.clone(),
+fn short_channel(cs: ChannelState) -> String {
+    match cs {
+        ChannelState::CsExchangeMedia => "MEDIA".to_string(),
+        ChannelState::CsConsumeMedia => "CONSUME".to_string(),
+        ChannelState::CsSoftExecute => "SOFTEX".to_string(),
+        ChannelState::CsReporting => "REPORT".to_string(),
+        cs => {
+            let s = cs.to_string();
+            s.strip_prefix("CS_").unwrap_or(&s).to_string()
         }
     }
 }
@@ -53,7 +55,8 @@ pub(super) struct CallFields {
     pub(super) direction: Option<CallDirection>,
     pub(super) caller: Option<String>,
     pub(super) callee: Option<String>,
-    pub(super) channel_state: Option<LegState>,
+    pub(super) channel_state: Option<ChannelState>,
+    pub(super) call_state: Option<CallState>,
     pub(super) context: Option<String>,
 }
 
@@ -66,6 +69,7 @@ impl CallFields {
             caller,
             callee,
             channel_state,
+            call_state,
             context,
         } = update;
         if other_leg_uuid.is_some() {
@@ -82,6 +86,9 @@ impl CallFields {
         }
         if channel_state.is_some() {
             self.channel_state = channel_state;
+        }
+        if call_state.is_some() {
+            self.call_state = call_state;
         }
         if context.is_some() {
             self.context = context;

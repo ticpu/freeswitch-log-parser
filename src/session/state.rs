@@ -5,18 +5,37 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use freeswitch_types::variables::VariableName;
-use freeswitch_types::CallDirection;
+use freeswitch_types::{CallDirection, CallState, ChannelState, HangupCause};
 
 use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
-use crate::stream::{Block, LogEntry};
+use crate::stream::{Block, LogEntry, ParseWarning, SessionReading};
 
 use super::conference::ConferenceMembership;
 use super::media::SessionMedia;
 use super::parse::{
     is_answered, parse_bridge_args, parse_dialplan_context, parse_hangup, parse_new_channel,
-    parse_processing_line, parse_state_change,
+    parse_processing_line, parse_state_change, StateChange,
 };
+
+/// Resolve a typed value into `slot`, or record that it could not be read.
+///
+/// The failed reading leaves whatever `slot` already held — a repeat of a field
+/// the vocabulary cannot read must not erase what an earlier one established.
+fn read<T: FromStr>(
+    slot: &mut Option<T>,
+    value: &str,
+    reading: SessionReading,
+    warnings: &mut Vec<ParseWarning>,
+) {
+    match T::from_str(value) {
+        Ok(parsed) => *slot = Some(parsed),
+        Err(_) => warnings.push(ParseWarning::UnreadableValue {
+            reading,
+            value: ParseWarning::excerpt(value),
+        }),
+    }
+}
 
 /// Mutable per-UUID state accumulator, updated as entries are processed.
 ///
@@ -27,8 +46,11 @@ use super::parse::{
 pub struct SessionState {
     /// `None` until a `Channel-Name` field is encountered.
     pub channel_name: Option<String>,
-    /// `None` until a state change or `Channel-State` field is encountered.
-    pub channel_state: Option<String>,
+    /// `None` until a `State Change` line or a `Channel-State` field is seen.
+    pub channel_state: Option<ChannelState>,
+    /// `None` until a `Callstate Change` line is seen. A distinct vocabulary from
+    /// [`channel_state`](Self::channel_state); neither displaces the other.
+    pub call_state: Option<CallState>,
     /// First dialplan context seen; set once and never overwritten.
     pub initial_context: Option<String>,
     /// Destination of the first `Processing` line = the dialed number at ingress;
@@ -50,7 +72,7 @@ pub struct SessionState {
     /// Destination number from `Caller-Destination-Number` CHANNEL_DATA field; `None` until seen.
     pub destination_number: Option<String>,
     /// Hangup cause extracted from ChannelLifecycle Hangup detail; `None` until hangup seen.
-    pub hangup_cause: Option<String>,
+    pub hangup_cause: Option<HangupCause>,
     /// Timestamp when "has been answered" lifecycle event was seen; `None` until answered.
     pub answered_at: Option<String>,
     /// Other leg's UUID; `None` until bridged. Set from `Originate Resulted in Success` on A-leg,
@@ -72,7 +94,8 @@ pub struct SessionState {
 #[derive(Debug, Clone)]
 pub struct SessionSnapshot {
     pub channel_name: Option<String>,
-    pub channel_state: Option<String>,
+    pub channel_state: Option<ChannelState>,
+    pub call_state: Option<CallState>,
     pub initial_context: Option<String>,
     pub initial_destination: Option<String>,
     pub dialplan_context: Option<String>,
@@ -82,7 +105,7 @@ pub struct SessionSnapshot {
     pub caller_id_number: Option<String>,
     pub caller_id_name: Option<String>,
     pub destination_number: Option<String>,
-    pub hangup_cause: Option<String>,
+    pub hangup_cause: Option<HangupCause>,
     pub answered_at: Option<String>,
     pub other_leg_uuid: Option<String>,
     pub conference: Option<ConferenceMembership>,
@@ -102,7 +125,8 @@ impl SessionState {
     pub(super) fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             channel_name: self.channel_name.clone(),
-            channel_state: self.channel_state.clone(),
+            channel_state: self.channel_state,
+            call_state: self.call_state,
             initial_context: self.initial_context.clone(),
             initial_destination: self.initial_destination.clone(),
             dialplan_context: self.dialplan_context.clone(),
@@ -112,7 +136,7 @@ impl SessionState {
             caller_id_number: self.caller_id_number.clone(),
             caller_id_name: self.caller_id_name.clone(),
             destination_number: self.destination_number.clone(),
-            hangup_cause: self.hangup_cause.clone(),
+            hangup_cause: self.hangup_cause,
             answered_at: self.answered_at.clone(),
             other_leg_uuid: self.other_leg_uuid.clone(),
             conference: self.conference.clone(),
@@ -124,18 +148,21 @@ impl SessionState {
     /// field over as its own entry rather than inside a block, so both arrival
     /// shapes decode here — a lighter reading on one of them would drop whatever
     /// it left out, `Other-Leg-Unique-ID` included, only for split dumps.
-    fn apply_channel_field(&mut self, name: &str, value: &str) {
+    fn apply_channel_field(&mut self, name: &str, value: &str, warnings: &mut Vec<ParseWarning>) {
         match name {
             "Channel-Name" => self.channel_name = Some(value.to_string()),
-            "Channel-State" => self.channel_state = Some(value.to_string()),
-            // A value the enum does not know leaves the last known direction
-            // standing; a dump that repeats a field the parser cannot read must
-            // not erase what an earlier one established.
-            "Call-Direction" => {
-                if let Ok(dir) = CallDirection::from_str(value) {
-                    self.call_direction = Some(dir);
-                }
-            }
+            "Channel-State" => read(
+                &mut self.channel_state,
+                value,
+                SessionReading::ChannelState,
+                warnings,
+            ),
+            "Call-Direction" => read(
+                &mut self.call_direction,
+                value,
+                SessionReading::CallDirection,
+                warnings,
+            ),
             "Caller-Caller-ID-Number" => self.caller_id_number = Some(value.to_string()),
             "Caller-Caller-ID-Name" => self.caller_id_name = Some(value.to_string()),
             "Caller-Destination-Number" => self.destination_number = Some(value.to_string()),
@@ -144,11 +171,30 @@ impl SessionState {
         }
     }
 
-    pub(super) fn update_from_entry(&mut self, entry: &LogEntry) {
+    /// Whether this session has reached a state it cannot leave. Stragglers in a
+    /// terminal state are never candidates for leg linking.
+    ///
+    /// `DOWN` is not terminal: it doubles as the initial call state before any
+    /// change is observed.
+    pub(super) fn is_terminal(&self) -> bool {
+        matches!(
+            self.channel_state,
+            Some(
+                ChannelState::CsHangup
+                    | ChannelState::CsReporting
+                    | ChannelState::CsDestroy
+                    | ChannelState::CsNone
+            )
+        ) || matches!(self.call_state, Some(CallState::Hangup))
+    }
+
+    /// Absorb an entry, returning whatever readings its values defeated.
+    pub(super) fn update_from_entry(&mut self, entry: &LogEntry) -> Vec<ParseWarning> {
+        let mut warnings = Vec::new();
         let block_has_channel_data = matches!(entry.block, Some(Block::ChannelData { .. }));
         if let Some(Block::ChannelData { fields, variables }) = &entry.block {
             for (name, value) in fields {
-                self.apply_channel_field(name, value);
+                self.apply_channel_field(name, value, &mut warnings);
             }
             for (name, value) in variables {
                 let var_name = name.strip_prefix("variable_").unwrap_or(name);
@@ -184,13 +230,18 @@ impl SessionState {
                     }
                 }
                 if let Some(cause) = parse_hangup(detail) {
-                    self.hangup_cause = Some(cause);
+                    read(
+                        &mut self.hangup_cause,
+                        &cause,
+                        SessionReading::HangupCause,
+                        &mut warnings,
+                    );
                 }
                 if is_answered(detail) && self.answered_at.is_none() {
                     self.answered_at = Some(entry.timestamp.clone());
                 }
             }
-            kind => self.apply_kind(kind),
+            kind => self.apply_kind(kind, &mut warnings),
         }
 
         self.apply_processing(&entry.message);
@@ -198,14 +249,15 @@ impl SessionState {
 
         for attached in &entry.attached {
             let parsed = parse_line(attached);
-            self.update_from_message(parsed.message, block_has_channel_data);
+            self.update_from_message(parsed.message, block_has_channel_data, &mut warnings);
         }
+        warnings
     }
 
     /// Canonical extraction for message kinds that appear on both primary and
     /// attached lines. Entry-only kinds (Execute, ChannelLifecycle — the
     /// latter needs the entry timestamp) stay in `update_from_entry`.
-    fn apply_kind(&mut self, kind: &MessageKind) {
+    fn apply_kind(&mut self, kind: &MessageKind, warnings: &mut Vec<ParseWarning>) {
         match kind {
             MessageKind::Dialplan { detail, .. } => {
                 if let Some(context) = parse_dialplan_context(detail) {
@@ -217,12 +269,24 @@ impl SessionState {
                 let var_name = name.strip_prefix("variable_").unwrap_or(name);
                 self.variables.insert(var_name.to_string(), value.clone());
             }
-            MessageKind::ChannelField { name, value } => self.apply_channel_field(name, value),
-            MessageKind::StateChange { detail } => {
-                if let Some(new_state) = parse_state_change(detail) {
-                    self.channel_state = Some(new_state);
-                }
+            MessageKind::ChannelField { name, value } => {
+                self.apply_channel_field(name, value, warnings)
             }
+            MessageKind::StateChange { detail } => match parse_state_change(detail) {
+                Some(StateChange::Channel(to)) => read(
+                    &mut self.channel_state,
+                    to,
+                    SessionReading::ChannelState,
+                    warnings,
+                ),
+                Some(StateChange::Call(to)) => read(
+                    &mut self.call_state,
+                    to,
+                    SessionReading::CallState,
+                    warnings,
+                ),
+                None => {}
+            },
             _ => {}
         }
     }
@@ -242,7 +306,12 @@ impl SessionState {
         }
     }
 
-    fn update_from_message(&mut self, msg: &str, block_provides_channel_data: bool) {
+    fn update_from_message(
+        &mut self,
+        msg: &str,
+        block_provides_channel_data: bool,
+        warnings: &mut Vec<ParseWarning>,
+    ) {
         let kind = classify_message(msg);
         match &kind {
             // A ChannelData block already carries these — re-applying the raw
@@ -250,7 +319,7 @@ impl SessionState {
             // their opening fragment.
             MessageKind::Variable { .. } | MessageKind::ChannelField { .. }
                 if block_provides_channel_data => {}
-            kind => self.apply_kind(kind),
+            kind => self.apply_kind(kind, warnings),
         }
         self.apply_processing(msg);
     }

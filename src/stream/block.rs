@@ -6,6 +6,10 @@ use crate::message::{classify_message, MessageKind, SdpDirection};
 
 use super::entry::{Block, ParseWarning};
 
+/// SDP's mandatory first line. A body carrying no marker of its own is still
+/// recognisable by it, since no other line may open one.
+const SDP_VERSION_LINE: &str = "v=0";
+
 fn parse_field_line(msg: &str) -> Option<(String, String)> {
     let colon = msg.find(": ")?;
     let name = &msg[..colon];
@@ -76,8 +80,9 @@ impl BlockBuilder {
         }
     }
 
-    /// Absorb a continuation line — one that carries no header of its own.
-    pub(super) fn push_continuation(&mut self, msg: &str) -> Option<ParseWarning> {
+    /// Absorb a continuation line. An idle builder may open an SDP block here;
+    /// `has_uuid` gates the marker-less version-line rule (see [`Block::Sdp`]).
+    pub(super) fn push_continuation(&mut self, msg: &str, has_uuid: bool) -> Option<ParseWarning> {
         match self {
             BlockBuilder::ChannelData {
                 fields,
@@ -122,7 +127,22 @@ impl BlockBuilder {
             BlockBuilder::Codec { .. } => Some(ParseWarning::UnexpectedCodecContinuation {
                 line: ParseWarning::excerpt(msg),
             }),
-            BlockBuilder::Idle => None,
+            BlockBuilder::Idle => {
+                // Trimming catches the CR a wire-CRLF body line keeps: the
+                // logger's line split strips only spaces.
+                if has_uuid && msg.trim() == SDP_VERSION_LINE {
+                    *self = BlockBuilder::Sdp {
+                        direction: SdpDirection::Unknown,
+                        body: vec![msg.to_string()],
+                    };
+                } else if let MessageKind::SdpMarker { direction } = classify_message(msg) {
+                    *self = BlockBuilder::Sdp {
+                        direction,
+                        body: Vec::new(),
+                    };
+                }
+                None
+            }
         }
     }
 

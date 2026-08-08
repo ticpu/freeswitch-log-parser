@@ -168,11 +168,11 @@ impl<I: Iterator<Item = String>> LogStream<I> {
 
     /// Feed a continuation line to the pending entry — both its block and its
     /// raw attached lines.
-    fn accumulate_continuation(&mut self, msg: &str, line: &str) {
+    fn accumulate_continuation(&mut self, msg: &str, line: &str, has_uuid: bool) {
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
-        let warning = pending.block.push_continuation(msg);
+        let warning = pending.block.push_continuation(msg, has_uuid);
         pending.entry.warnings.extend(warning);
         self.attach(line);
     }
@@ -412,7 +412,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                             .is_some_and(|p| p.entry.uuid.as_deref() == Some(uuid.as_str()));
 
                     if continues {
-                        self.accumulate_continuation(parsed.message, &line);
+                        self.accumulate_continuation(parsed.message, &line, true);
                     } else {
                         let yielded = self.take_pending();
                         self.open_entry(&parsed, uuid, self.last_timestamp.clone());
@@ -424,7 +424,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
                 LineKind::BareContinuation => {
                     if self.pending.is_some() {
-                        self.accumulate_continuation(parsed.message, &line);
+                        self.accumulate_continuation(parsed.message, &line, false);
                     } else {
                         self.record_unclassified(
                             UnclassifiedReason::OrphanContinuation,

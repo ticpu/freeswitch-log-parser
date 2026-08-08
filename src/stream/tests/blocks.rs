@@ -310,6 +310,97 @@ fn sdp_from_verto_update_media() {
     }
 }
 
+/// `sofia_glue.c` logs the invite line and the marker from one format string, so
+/// the marker is never the entry's own message.
+#[test]
+fn sdp_marker_on_a_continuation_opens_the_block() {
+    let lines = vec![
+        full_line(
+            UUID1,
+            TS1,
+            "sofia/internal/+15550001234@192.0.2.1 sending invite version: 1.10.13",
+        ),
+        format!("{UUID1} Local SDP:"),
+        format!("{UUID1} v=0"),
+        format!("{UUID1} o=FreeSWITCH 1234 5678 IN IP4 192.0.2.1"),
+        format!("{UUID1} m=audio 10000 RTP/AVP 0"),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+    assert_eq!(entries.len(), 1);
+    match &entries[0].message_kind {
+        MessageKind::SipInvite { .. } => {}
+        other => panic!("expected SipInvite, got {other:?}"),
+    }
+    match entries[0].block.as_ref().expect("should have block") {
+        Block::Sdp { direction, body } => {
+            assert_eq!(*direction, SdpDirection::Local);
+            assert_eq!(body.len(), 3, "the marker line is not part of the body");
+            assert_eq!(body[0], "v=0");
+        }
+        other => panic!("expected Sdp block, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_markerless_body_opens_on_its_version_line() {
+    let lines = vec![
+        full_line(
+            UUID1,
+            TS1,
+            "Oreka SIP Packet (SELECTED RTP PORT: R=10000, W=10002, SOURCE=DEFAULT):",
+        ),
+        format!("{UUID1} INVITE sip:rec@192.0.2.1:5060 SIP/2.0\r"),
+        format!("{UUID1} Subject: BEGIN RX recording of Pat Doe\r"),
+        format!("{UUID1} \r"),
+        format!("{UUID1} v=0\r"),
+        format!("{UUID1} o=freeswitch 1234 1 IN IP4 192.0.2.1\r"),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+    assert_eq!(entries.len(), 1);
+    match entries[0].block.as_ref().expect("should have block") {
+        Block::Sdp { direction, body } => {
+            assert_eq!(*direction, SdpDirection::Unknown);
+            assert_eq!(body.len(), 2, "the SIP headers ahead of it are not body");
+            assert_eq!(body[0], "v=0\r");
+        }
+        other => panic!("expected Sdp block, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_markerless_body_without_a_uuid_opens_no_block() {
+    let lines = vec![
+        full_line(UUID1, TS1, "Entry that owns no block"),
+        "recv 1024 bytes from udp/[192.0.2.9]:5060:".to_string(),
+        "v=0".to_string(),
+        "m=audio 10000 RTP/AVP 0".to_string(),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].block.is_none());
+}
+
+#[test]
+fn an_embedded_sdp_value_stays_in_the_channel_data_block() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} variable_switch_r_sdp: [v=0"),
+        format!("{UUID1} o=- 1234 5678 IN IP4 192.0.2.1"),
+        format!("{UUID1} m=audio 10000 RTP/AVP 0]"),
+        format!("{UUID1} variable_direction: [inbound]"),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+    assert_eq!(entries.len(), 1);
+    match entries[0].block.as_ref().expect("should have block") {
+        Block::ChannelData { variables, .. } => {
+            assert_eq!(variables.len(), 2);
+            assert!(variables[0].1.starts_with("v=0\n"));
+            assert_eq!(variables[1].0, "variable_direction");
+        }
+        other => panic!("expected ChannelData block, got {other:?}"),
+    }
+}
+
 #[test]
 fn duplicate_sdp_marker() {
     let lines = vec![

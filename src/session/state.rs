@@ -36,9 +36,10 @@ pub struct SessionState {
     pub initial_destination: Option<String>,
     /// Current dialplan context; updated on each transfer/continue.
     pub dialplan_context: Option<String>,
-    /// Source extension in the dialplan routing; `None` until a dialplan line is processed.
+    /// Caller side of the last `Processing` line — a number, or a display name
+    /// and number. `None` until one is seen.
     pub dialplan_from: Option<String>,
-    /// Target extension in the dialplan routing; `None` until a dialplan line is processed.
+    /// Dialed destination of the last `Processing` line. `None` until one is seen.
     pub dialplan_to: Option<String>,
     /// Call direction from `Call-Direction` CHANNEL_DATA field; `None` until seen.
     pub call_direction: Option<CallDirection>,
@@ -207,11 +208,9 @@ impl SessionState {
     fn apply_kind(&mut self, kind: &MessageKind) {
         match kind {
             MessageKind::Dialplan { detail, .. } => {
-                if let Some(dp) = parse_dialplan_context(detail) {
-                    self.initial_context.get_or_insert(dp.context.clone());
-                    self.dialplan_context = Some(dp.context);
-                    self.dialplan_from = Some(dp.from);
-                    self.dialplan_to = Some(dp.to);
+                if let Some(context) = parse_dialplan_context(detail) {
+                    self.initial_context.get_or_insert(context.to_string());
+                    self.dialplan_context = Some(context.to_string());
                 }
             }
             MessageKind::Variable { name, value } => {

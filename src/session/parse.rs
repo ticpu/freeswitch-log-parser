@@ -13,23 +13,17 @@ pub(super) struct DialplanContext {
     pub(super) context: String,
 }
 
-pub(super) fn parse_dialplan_context(detail: &str) -> Option<DialplanContext> {
-    if !detail.starts_with("parsing [") {
-        return None;
-    }
-    let rest = &detail["parsing [".len()..];
+/// The context of a `parsing [<context>-><extension>]` line.
+///
+/// The extension is deliberately dropped: it names a dialplan entry point, not
+/// the dialed number `dialplan_to` carries, and folding the two into one field
+/// left it meaning whichever shape was logged last.
+pub(super) fn parse_dialplan_context(detail: &str) -> Option<&str> {
+    let rest = detail.strip_prefix("parsing [")?;
     let bracket_end = rest.find(']')?;
     let inner = &rest[..bracket_end];
-
     let arrow = inner.find("->")?;
-    let from_part = &inner[..arrow];
-    let to_part = &inner[arrow + 2..];
-
-    Some(DialplanContext {
-        from: from_part.to_string(),
-        to: to_part.to_string(),
-        context: from_part.to_string(),
-    })
+    Some(&inner[..arrow])
 }
 
 pub(super) fn parse_processing_line(msg: &str) -> Option<DialplanContext> {

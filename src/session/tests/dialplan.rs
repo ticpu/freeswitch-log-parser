@@ -16,8 +16,12 @@ fn dialplan_context_propagation() {
     let last = entries.last().unwrap();
     let session = last.session.as_ref().unwrap();
     assert_eq!(session.dialplan_context.as_deref(), Some("public"));
-    assert_eq!(session.dialplan_from.as_deref(), Some("public"));
-    assert_eq!(session.dialplan_to.as_deref(), Some("global"));
+    assert_eq!(
+        (&session.dialplan_from, &session.dialplan_to),
+        (&None, &None),
+        "a parsing [ctx->ext] line names a context and an entry point, neither of \
+         which is the caller/dialed pair these fields carry"
+    );
 }
 
 #[test]

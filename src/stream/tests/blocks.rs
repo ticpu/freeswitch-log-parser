@@ -1,5 +1,8 @@
 //! CHANNEL_DATA and SDP block detection, and multi-line value reassembly.
 
+use freeswitch_types::variables::SofiaVariable;
+use freeswitch_types::ChannelVariable;
+
 use super::*;
 
 // --- New: Block detection tests ---
@@ -203,6 +206,29 @@ fn message_kind_on_execute() {
         }
         other => panic!("expected Execute, got {other:?}"),
     }
+}
+
+#[test]
+fn block_accessors_hide_the_variable_prefix() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} Channel-Name: [sofia/internal/1000@192.0.2.1]"),
+        "variable_sip_call_id: [test123@192.0.2.1]".to_string(),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+    let block = entries[0].block.as_ref().expect("should have block");
+
+    assert_eq!(
+        block.field("Channel-Name"),
+        Some("sofia/internal/1000@192.0.2.1")
+    );
+    assert_eq!(block.field("Channel-State"), None);
+    assert_eq!(
+        block.variable(SofiaVariable::SipCallId),
+        Some("test123@192.0.2.1"),
+        "the caller never spells the variable_ prefix a dump stores"
+    );
+    assert_eq!(block.variable(ChannelVariable::Direction), None);
 }
 
 /// The closing `]` is one delimiter, not a run of them — a value whose own last

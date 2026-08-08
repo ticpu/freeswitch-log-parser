@@ -42,6 +42,37 @@ pub enum Block {
     },
 }
 
+impl Block {
+    /// Value of a `Channel-*` field in a CHANNEL_DATA dump, or `None` if this
+    /// block is another kind or never carried that field.
+    pub fn field(&self, name: &str) -> Option<&str> {
+        let Block::ChannelData { fields, .. } = self else {
+            return None;
+        };
+        fields
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Value of a channel variable in a CHANNEL_DATA dump.
+    ///
+    /// Accepts any of `freeswitch-types`' variable-name enums, and spares the
+    /// caller from knowing that a dump spells its keys with the `variable_`
+    /// prefix that [`SessionState::variable`](crate::SessionState::variable)
+    /// strips — the two surfaces answer the same question the same way.
+    pub fn variable<V: freeswitch_types::variables::VariableName>(&self, var: V) -> Option<&str> {
+        let Block::ChannelData { variables, .. } = self else {
+            return None;
+        };
+        let wanted = var.as_str();
+        variables
+            .iter()
+            .find(|(n, _)| n.strip_prefix("variable_").unwrap_or(n) == wanted)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
 #[cfg(feature = "sdp")]
 impl Block {
     /// Codecs described by an SDP body.

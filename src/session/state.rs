@@ -120,35 +120,35 @@ impl SessionState {
         }
     }
 
+    /// Absorb one CHANNEL_DATA field. The collision splitter can hand a dump
+    /// field over as its own entry rather than inside a block, so both arrival
+    /// shapes decode here — a lighter reading on one of them would drop whatever
+    /// it left out, `Other-Leg-Unique-ID` included, only for split dumps.
+    fn apply_channel_field(&mut self, name: &str, value: &str) {
+        match name {
+            "Channel-Name" => self.channel_name = Some(value.to_string()),
+            "Channel-State" => self.channel_state = Some(value.to_string()),
+            // A value the enum does not know leaves the last known direction
+            // standing; a dump that repeats a field the parser cannot read must
+            // not erase what an earlier one established.
+            "Call-Direction" => {
+                if let Ok(dir) = CallDirection::from_str(value) {
+                    self.call_direction = Some(dir);
+                }
+            }
+            "Caller-Caller-ID-Number" => self.caller_id_number = Some(value.to_string()),
+            "Caller-Caller-ID-Name" => self.caller_id_name = Some(value.to_string()),
+            "Caller-Destination-Number" => self.destination_number = Some(value.to_string()),
+            "Other-Leg-Unique-ID" => self.other_leg_uuid = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
     pub(super) fn update_from_entry(&mut self, entry: &LogEntry) {
         let block_has_channel_data = matches!(entry.block, Some(Block::ChannelData { .. }));
         if let Some(Block::ChannelData { fields, variables }) = &entry.block {
             for (name, value) in fields {
-                match name.as_str() {
-                    "Channel-Name" => self.channel_name = Some(value.clone()),
-                    "Channel-State" => self.channel_state = Some(value.clone()),
-                    // A value the enum does not know leaves the last known
-                    // direction standing; a dump that repeats a field the parser
-                    // cannot read must not erase what an earlier one established.
-                    "Call-Direction" => {
-                        if let Ok(dir) = CallDirection::from_str(value) {
-                            self.call_direction = Some(dir);
-                        }
-                    }
-                    "Caller-Caller-ID-Number" => {
-                        self.caller_id_number = Some(value.clone());
-                    }
-                    "Caller-Caller-ID-Name" => {
-                        self.caller_id_name = Some(value.clone());
-                    }
-                    "Caller-Destination-Number" => {
-                        self.destination_number = Some(value.clone());
-                    }
-                    "Other-Leg-Unique-ID" => {
-                        self.other_leg_uuid = Some(value.clone());
-                    }
-                    _ => {}
-                }
+                self.apply_channel_field(name, value);
             }
             for (name, value) in variables {
                 let var_name = name.strip_prefix("variable_").unwrap_or(name);
@@ -217,11 +217,7 @@ impl SessionState {
                 let var_name = name.strip_prefix("variable_").unwrap_or(name);
                 self.variables.insert(var_name.to_string(), value.clone());
             }
-            MessageKind::ChannelField { name, value } => match name.as_str() {
-                "Channel-Name" => self.channel_name = Some(value.clone()),
-                "Channel-State" => self.channel_state = Some(value.clone()),
-                _ => {}
-            },
+            MessageKind::ChannelField { name, value } => self.apply_channel_field(name, value),
             MessageKind::StateChange { detail } => {
                 if let Some(new_state) = parse_state_change(detail) {
                     self.channel_state = Some(new_state);

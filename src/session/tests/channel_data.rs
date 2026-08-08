@@ -36,6 +36,19 @@ fn unreadable_call_direction_keeps_the_known_one() {
     assert_eq!(session.call_direction, Some(CallDirection::Inbound));
 }
 
+/// A dump field split out of its block by a truncated-line collision still
+/// carries the peer UUID that leg linking depends on.
+#[test]
+fn standalone_channel_field_carries_the_peer_uuid() {
+    let lines = vec![
+        full_line(UUID1, TS1, "Ring-Ready sofia/internal/1000@192.0.2.1"),
+        format!("{UUID1} Other-Leg-Unique-ID: [{UUID2}]"),
+    ];
+    let entries = collect_enriched(lines);
+    let session = entries.last().unwrap().session.as_ref().unwrap();
+    assert_eq!(session.other_leg_uuid.as_deref(), Some(UUID2));
+}
+
 #[test]
 fn variables_learned_from_channel_data() {
     let lines = vec![

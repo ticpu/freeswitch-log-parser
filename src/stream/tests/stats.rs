@@ -3,6 +3,26 @@
 
 use super::*;
 
+/// Crash padding leaves a real log line with a leading NUL. It is not the
+/// segment sentinel, and must reach the counters like any other line.
+#[test]
+fn a_nul_prefixed_line_is_not_a_segment_boundary() {
+    let lines = vec![
+        full_line(UUID1, TS1, "before padding"),
+        "\u{0}2025-01-15 10:30:46.000000 95.97% [DEBUG] sofia.c:100 after padding".to_string(),
+    ];
+    let mut stream = LogStream::new(lines.into_iter());
+    let entries: Vec<_> = stream.by_ref().collect();
+
+    assert_eq!(stream.stats().lines_processed, 2);
+    assert_eq!(stream.stats().unaccounted_lines(), 0);
+    assert!(
+        entries.iter().any(|e| e.message.contains("after padding")),
+        "the padded line's content must survive, got {:?}",
+        entries.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
 // --- New: ParseStats tests ---
 
 #[test]

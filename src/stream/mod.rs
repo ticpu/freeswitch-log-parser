@@ -12,6 +12,7 @@ mod tests;
 use std::collections::VecDeque;
 
 use crate::attached::AttachedLines;
+use crate::chain::SEGMENT_BOUNDARY;
 use crate::line::{
     is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind, RawLine, UUID_PREFIX_LEN,
 };
@@ -360,7 +361,11 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     return self.take_pending();
                 };
 
-                if line.starts_with('\x00') {
+                // Exactly the sentinel, never merely starting with it: crash
+                // padding leaves real log lines with a leading NUL, and decode
+                // passes those through as valid text. Treating one as a segment
+                // boundary would discard its content before any counter saw it.
+                if line == SEGMENT_BOUNDARY {
                     let yielded = self.take_pending();
                     self.last_uuid.clear();
                     self.last_timestamp.clear();

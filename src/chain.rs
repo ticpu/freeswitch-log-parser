@@ -50,13 +50,18 @@ impl TrackedChain {
     }
 }
 
+/// Marks the seam between two chained segments. In band because the iterator
+/// yields plain `String`s, so it is a line no log can produce: a real line with
+/// a leading NUL still carries text after it.
+pub(crate) const SEGMENT_BOUNDARY: &str = "\x00";
+
 impl Iterator for TrackedChain {
     type Item = String;
 
     fn next(&mut self) -> Option<String> {
         if self.emit_sentinel {
             self.emit_sentinel = false;
-            return Some("\x00".to_string());
+            return Some(SEGMENT_BOUNDARY.to_string());
         }
         loop {
             if self.current >= self.segments.len() {

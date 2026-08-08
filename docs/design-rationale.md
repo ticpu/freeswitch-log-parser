@@ -203,4 +203,7 @@ run lasts. `mod_logfile`'s write budget bounds one physical line, not how many
 of them a session emits before the next primary. The attached buffer addresses
 its lines with `u32` offsets, so exhausting that range is an outcome the stream
 has to report rather than an impossibility it may assume: appending is fallible,
-and overflow finalizes the entry with a warning instead of aborting the parse.
+and a line that no longer fits is named in a warning and counted as dropped
+instead of aborting the parse. The line accounting carries that count as its own
+term, so a line the parser knowingly could not keep still balances rather than
+reading as one it silently lost.

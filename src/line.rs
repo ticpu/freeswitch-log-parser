@@ -183,9 +183,10 @@ fn parse_idle_pct(rest: &str) -> (Option<&str>, &str) {
     {
         return (None, rest);
     }
-    // A multi-byte char where the "% " separator's space belongs means this
-    // is not an idle-percentage field.
-    if rest.len() > pct_pos + 2 && !rest.is_char_boundary(pct_pos + 2) {
+    // The field is written "% ", so anything other than a space after the sign
+    // is not one — `is_log_header_at` requires the same, and two validators
+    // disagreeing on the same format is how a corrupt line gets read two ways.
+    if rest.len() > pct_pos + 1 && bytes[pct_pos + 1] != b' ' {
         return (None, rest);
     }
     let idle_pct = &rest[0..=pct_pos];
@@ -395,6 +396,14 @@ mod tests {
         let line = format!("{UUID1} 2025-01-15 10:30:45.123456 0.00% [DEBUG] sofia.c:100 Low idle");
         let parsed = parse_line(&line);
         assert_eq!(parsed.idle_pct, Some("0.00%"));
+    }
+
+    /// The field is written `"% "`. Without the space it is not one, and
+    /// reporting it as one claimed a scheduler reading off a corrupt line.
+    #[test]
+    fn idle_pct_requires_the_space_after_the_sign() {
+        let line = format!("{UUID1} 2025-01-15 10:30:45.123456 9%X[DEBUG] sofia.c:100 Message");
+        assert_eq!(parse_line(&line).idle_pct, None);
     }
 
     #[test]

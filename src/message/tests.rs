@@ -780,3 +780,95 @@ fn dtmf_label() {
     };
     assert_eq!(kind.label(), "dtmf");
 }
+
+/// `ALL_LABELS` is hand-maintained beside `label()`, and `fslog -c` rejects any
+/// value absent from it — a variant in one and not the other is a category no
+/// one can filter for. The exhaustive match is the guard: adding a variant
+/// stops this compiling until its exemplar is listed here.
+#[test]
+fn every_message_kind_label_is_listed_in_all_labels() {
+    let exemplars = [
+        MessageKind::Execute {
+            depth: 0,
+            channel: String::new(),
+            application: String::new(),
+            arguments: String::new(),
+        },
+        MessageKind::Dialplan {
+            channel: String::new(),
+            detail: String::new(),
+        },
+        MessageKind::ChannelData,
+        MessageKind::ChannelField {
+            name: String::new(),
+            value: String::new(),
+        },
+        MessageKind::Variable {
+            name: String::new(),
+            value: String::new(),
+        },
+        MessageKind::SdpMarker {
+            direction: SdpDirection::Local,
+        },
+        MessageKind::StateChange {
+            detail: String::new(),
+        },
+        MessageKind::CodecNegotiation {
+            media: crate::codec::CodecMedia::Audio,
+        },
+        MessageKind::Media {
+            detail: String::new(),
+        },
+        MessageKind::ChannelLifecycle {
+            detail: String::new(),
+        },
+        MessageKind::SipInvite {
+            direction: SipInviteDirection::Receiving,
+            profile: String::new(),
+            call_id: None,
+        },
+        MessageKind::EventSocket {
+            detail: String::new(),
+        },
+        MessageKind::Dtmf {
+            source: DtmfSource::Rtp,
+            digit: '1',
+            duration_ms: None,
+        },
+        MessageKind::General,
+        MessageKind::FileChange,
+        MessageKind::DateChange,
+    ];
+
+    for kind in &exemplars {
+        // The match is the drift guard; the binding is what the loop asserts on.
+        let label = match kind {
+            MessageKind::Execute { .. }
+            | MessageKind::Dialplan { .. }
+            | MessageKind::ChannelData
+            | MessageKind::ChannelField { .. }
+            | MessageKind::Variable { .. }
+            | MessageKind::SdpMarker { .. }
+            | MessageKind::StateChange { .. }
+            | MessageKind::CodecNegotiation { .. }
+            | MessageKind::Media { .. }
+            | MessageKind::ChannelLifecycle { .. }
+            | MessageKind::SipInvite { .. }
+            | MessageKind::EventSocket { .. }
+            | MessageKind::Dtmf { .. }
+            | MessageKind::General
+            | MessageKind::FileChange
+            | MessageKind::DateChange => kind.label(),
+        };
+        assert!(
+            MessageKind::ALL_LABELS.contains(&label),
+            "{label} is returned by label() but missing from ALL_LABELS"
+        );
+    }
+
+    assert_eq!(
+        MessageKind::ALL_LABELS.len(),
+        exemplars.len(),
+        "ALL_LABELS lists a label no variant returns"
+    );
+}

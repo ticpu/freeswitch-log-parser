@@ -144,6 +144,18 @@ values is likewise not this crate's call — the variable vocabulary lives in
 an identifier that is itself a UUID), so the applier treats a contained replacement
 as absorbed by the outer one and only partial overlap as an error.
 
+## MessageKind owns its payloads
+
+Classified payloads are owned strings rather than byte ranges into the message,
+accepting that some variants duplicate the whole message text. A range is only
+meaningful paired with the exact string it was cut from, and `classify_message`
+is a standalone function over any `&str`: nothing would keep a stored range and
+its text together, and a range applied to the wrong string either panics or
+silently yields the wrong substring. The saving would be small in any case —
+classification is a minor share of parse time, and its payloads a minority of
+the allocations a line already costs. Consumers wanting positions use the field
+spans, which travel with the text they index.
+
 ## Index maintenance by diffing, not setters
 
 Hooks receive `&mut SessionState` and set fields directly — but three of

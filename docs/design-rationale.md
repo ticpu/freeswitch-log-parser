@@ -76,6 +76,12 @@ variables that name a peer, the originate result line, the endpoints whose leg
 naming implies the pairing, and a channel-name fallback for builds whose
 originate line omits the peer UUID.
 
+A candidate the log does not disambiguate is left unlinked. Channel names and
+bridge targets both repeat across concurrent calls, so a discovery path keyed on
+either must find exactly one live, non-terminal candidate or link nothing: a
+wrong pairing propagates silently into every consumer's correlation, while a
+missing one is visible as absence.
+
 Consumers have application-specific patterns the library can't anticipate:
 Lua `uuid_bridge` API results (`set(api_result=+OK <uuid>)`), custom SIP
 headers (`sip_h_X-*`), or proprietary bridging commands. Without extensibility,
@@ -180,3 +186,13 @@ parser could not read call for different handling — and the line excerpt a
 warning carries is deliberately truncated, so its text cannot be matched on to
 recover the kind. A catch-all variant would push that discrimination back into
 the text.
+
+## An entry's size is bounded by the log, not by the parser
+
+Continuation lines join the entry ahead of them under no per-entry limit, so a
+run that never presents a primary line grows a single entry for as long as the
+run lasts. `mod_logfile`'s write budget bounds one physical line, not how many
+of them a session emits before the next primary. The attached buffer addresses
+its lines with `u32` offsets, so exhausting that range is an outcome the stream
+has to report rather than an impossibility it may assume: appending is fallible,
+and overflow finalizes the entry with a warning instead of aborting the parse.

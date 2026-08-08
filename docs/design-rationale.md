@@ -179,13 +179,21 @@ belongs where the bytes are read.
 
 ## Parse warnings are a closed set of named kinds
 
-Every anomaly the stream can attach to an entry is a distinct variant, and none
+Every anomaly a layer can attach to an entry is a distinct variant, and none
 carries a free-form message. A consumer decides per kind whether the entry is
 still trustworthy — a record the log buffer cut short and a codec token the
 parser could not read call for different handling — and the line excerpt a
 warning carries is deliberately truncated, so its text cannot be matched on to
 recover the kind. A catch-all variant would push that discrimination back into
 the text.
+
+Warnings are not the stream's alone. A reading only the per-session layer
+attempts fails where only that layer can see it, and the vocabularies those
+readings resolve against carry drift checks on FreeSWITCH source, so a value
+none of them knows is evidence rather than noise. Such a warning lands on the
+entry beside the stream's own, because a separate per-session channel would give
+a consumer two places to look for one question. The failed reading never
+regresses the state it was for: the last value that did resolve stands.
 
 ## An entry's size is bounded by the log, not by the parser
 

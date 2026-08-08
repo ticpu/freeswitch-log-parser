@@ -117,6 +117,17 @@ largest things in the log and most consumers never open them. It would also give
 the block two representations that can disagree, when the raw lines are the ones
 the transparency principle promises stay authoritative.
 
+## A block opens on its shape wherever it appears in the entry
+
+One `switch_log_printf` can put a block's marker on a continuation line rather than on
+the entry's own message, so keying detection on the primary message leaves real bodies
+untyped — and an untyped body is one a consumer's text scan may rewrite in the places
+the typed path promises to leave alone. SDP also opens on its mandatory opening line,
+which needs no marker to be recognised; that rule is restricted to continuations
+carrying a session UUID, because a continuation carrying none may belong to a
+whole-SIP-message trace logged outside any session, and would graft a body onto
+whichever entry happened to be open.
+
 ## Downstream re-derivations belong on the public surface
 
 Helpers a consumer can only write by re-deriving parser knowledge — which channel
@@ -138,9 +149,11 @@ The span API never scans free text for addresses, URIs, or numbers — a kind is
 emitted only at positions the classifier already isolates, so every span is as
 trustworthy as the classification itself. General pattern-matching stays in the
 consumer's backstop, labelled best-effort there; a scanner here would promote the
-weakest detection to the trusted surface. Which channel variables carry sensitive
-values is likewise not this crate's call — the variable vocabulary lives in
-`freeswitch-types`. Nested spans are deliberate (an address inside a channel name,
+weakest detection to the trusted surface. Which names carry sensitive values is
+likewise not this crate's call — the variable vocabulary lives in
+`freeswitch-types`, so a dump slot — a channel variable's or a channel field's —
+whose name resolves to no identity slot is spanned as a value and nothing more,
+leaving the consumer to decide from the name the classification already hands it. Nested spans are deliberate (an address inside a channel name,
 an identifier that is itself a UUID), so the applier treats a contained replacement
 as absorbed by the outer one and only partial overlap as an error.
 
@@ -219,3 +232,13 @@ and a line that no longer fits is named in a warning and counted as dropped
 instead of aborting the parse. The line accounting carries that count as its own
 term, so a line the parser knowingly could not keep still balances rather than
 reading as one it silently lost.
+
+## A value the logger cut is closed, not joined
+
+Reassembly of a multi-line channel-variable value stops when the write buffer cut the
+preceding physical line, because the line after a cut opens the next variable: joining
+it consumes that variable silently, where closing early costs one warned value. The
+stream's own line split is the evidence — one of its two split mechanisms recognises
+the cut exactly and the other is a heuristic, and only the exact one can reach an open
+value, since a chunk the heuristic produces begins with a log header and dispatches as
+a primary line.

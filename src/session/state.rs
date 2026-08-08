@@ -124,25 +124,51 @@ impl SessionState {
         self.variables.get(var.as_str()).map(String::as_str)
     }
 
+    /// Destructured rather than field-by-field: the snapshot mirrors this struct
+    /// by hand, and without an exhaustive binding a field added to one and
+    /// forgotten in the other compiles silently. The two `_` bindings are the
+    /// deliberate omissions.
     pub(super) fn snapshot(&self) -> SessionSnapshot {
+        let SessionState {
+            channel_name,
+            channel_state,
+            call_state,
+            initial_context,
+            initial_destination,
+            dialplan_context,
+            dialplan_from,
+            dialplan_to,
+            call_direction,
+            caller_id_number,
+            caller_id_name,
+            destination_number,
+            hangup_cause,
+            answered_at,
+            other_leg_uuid,
+            conference,
+            media,
+            pending_bridge_target: _,
+            variables: _,
+        } = self;
+
         SessionSnapshot {
-            channel_name: self.channel_name.clone(),
-            channel_state: self.channel_state,
-            call_state: self.call_state,
-            initial_context: self.initial_context.clone(),
-            initial_destination: self.initial_destination.clone(),
-            dialplan_context: self.dialplan_context.clone(),
-            dialplan_from: self.dialplan_from.clone(),
-            dialplan_to: self.dialplan_to.clone(),
-            call_direction: self.call_direction,
-            caller_id_number: self.caller_id_number.clone(),
-            caller_id_name: self.caller_id_name.clone(),
-            destination_number: self.destination_number.clone(),
-            hangup_cause: self.hangup_cause,
-            answered_at: self.answered_at.clone(),
-            other_leg_uuid: self.other_leg_uuid.clone(),
-            conference: self.conference.clone(),
-            media: self.media.clone(),
+            channel_name: channel_name.clone(),
+            channel_state: *channel_state,
+            call_state: *call_state,
+            initial_context: initial_context.clone(),
+            initial_destination: initial_destination.clone(),
+            dialplan_context: dialplan_context.clone(),
+            dialplan_from: dialplan_from.clone(),
+            dialplan_to: dialplan_to.clone(),
+            call_direction: *call_direction,
+            caller_id_number: caller_id_number.clone(),
+            caller_id_name: caller_id_name.clone(),
+            destination_number: destination_number.clone(),
+            hangup_cause: *hangup_cause,
+            answered_at: answered_at.clone(),
+            other_leg_uuid: other_leg_uuid.clone(),
+            conference: conference.clone(),
+            media: media.clone(),
         }
     }
 

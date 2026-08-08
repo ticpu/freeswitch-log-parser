@@ -6,7 +6,7 @@ use crate::message::MessageKind;
 use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
 use super::conference::{self, ConferenceEvent, ConferenceMembership, ConferenceRegistry};
-use super::index::{IndexedFieldChanges, IndexedFields};
+use super::index::{deindex, IndexedFieldChanges, IndexedFields};
 use super::loopback;
 use super::parse::{
     is_terminal_channel_state, parse_new_channel, parse_originate_channel, parse_originate_success,
@@ -32,7 +32,10 @@ pub struct SessionTracker<I> {
     inner: LogStream<I>,
     pub(super) sessions: HashMap<String, SessionState>,
     pub(super) by_channel_name: HashMap<String, HashSet<String>>,
-    pub(super) by_pending_target: HashMap<String, String>,
+    /// Bridge target name to the sessions waiting on it. A target string repeats
+    /// across concurrent calls, so this is a set — a lone live candidate links,
+    /// several link nothing.
+    pub(super) by_pending_target: HashMap<String, HashSet<String>>,
     pub(super) by_other_leg: HashMap<String, String>,
     pub(super) conferences: ConferenceRegistry,
     pre_hook: Option<SessionHook>,
@@ -116,23 +119,12 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// (e.g. `CS_DESTROY` or hangup) to free memory.
     pub fn remove_session(&mut self, uuid: &str) -> Option<SessionState> {
         let state = self.sessions.remove(uuid)?;
-        if let Some(chan) = &state.channel_name {
-            if let Some(set) = self.by_channel_name.get_mut(chan) {
-                set.remove(uuid);
-                if set.is_empty() {
-                    self.by_channel_name.remove(chan);
-                }
-            }
-        }
-        if let Some(target) = &state.pending_bridge_target {
-            self.by_pending_target.remove(target);
-        }
-        if let Some(other) = &state.other_leg_uuid {
-            self.by_other_leg.remove(other);
-        }
-        if let Some(conf) = &state.conference {
-            self.conferences.leave(&conf.name, uuid);
-        }
+        // Removal is the every-field-to-None diff, so it goes through the same
+        // bracket as every other mutation rather than unwinding each index by
+        // hand — a field indexed later cannot then be forgotten here.
+        let changes =
+            IndexedFieldChanges::diff(IndexedFields::of(&state), &SessionState::default());
+        self.apply_index_changes(uuid, &changes);
         Some(state)
     }
 
@@ -242,6 +234,11 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         self.sole_live_leg(self.by_channel_name.get(channel)?, exclude)
     }
 
+    /// The one live session waiting on bridge target `target`, other than `exclude`.
+    fn unique_pending_leg(&self, target: &str, exclude: &str) -> Option<String> {
+        self.sole_live_leg(self.by_pending_target.get(target)?, exclude)
+    }
+
     /// The A leg of the loopback whose B leg just appeared. Concurrent loopbacks
     /// to the same destination produce identical names, so this inherits the
     /// ambiguity guard rather than guessing between them.
@@ -272,7 +269,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         self.index_other_leg(a_uuid, a_old_leg, b_uuid);
         self.index_other_leg(b_uuid, b_old_leg, a_uuid);
         if let Some(old_target) = a_old_pending {
-            self.by_pending_target.remove(&old_target);
+            deindex(&mut self.by_pending_target, &old_target, a_uuid);
         }
     }
 
@@ -301,7 +298,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                     .by_other_leg
                     .get(uuid)
                     .cloned()
-                    .or_else(|| self.by_pending_target.get(&channel_name).cloned())
+                    .or_else(|| self.unique_pending_leg(&channel_name, uuid))
                     .or_else(|| self.loopback_a_leg(&channel_name, uuid))
                     .filter(|a| a.as_str() != uuid);
 

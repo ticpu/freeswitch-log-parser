@@ -265,6 +265,26 @@ fn bridge_target_matches_new_channel() {
 }
 
 #[test]
+fn concurrent_bridges_to_one_target_link_nothing() {
+    // Two A legs waiting on the same target string: the New Channel that follows
+    // belongs to one of them and the log does not say which.
+    let lines = vec![
+        full_line(UUID1, TS1, "EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 bridge(sofia/gateway/carrier/+15559876543)"),
+        full_line(UUID3, TS1, "EXECUTE [depth=0] sofia/internal/+15550005678@192.0.2.1 bridge(sofia/gateway/carrier/+15559876543)"),
+        full_line(UUID2, TS2, "New Channel sofia/gateway/carrier/+15559876543 [b2c3d4e5-f6a7-8901-bcde-f12345678901]"),
+    ];
+    let tracker = track(lines);
+
+    for uuid in [UUID1, UUID2, UUID3] {
+        assert_eq!(
+            tracker.sessions().get(uuid).unwrap().other_leg_uuid,
+            None,
+            "{uuid} must not be linked on an ambiguous target"
+        );
+    }
+}
+
+#[test]
 fn originate_success_corrects_wrong_target_match() {
     // Bridge target matching guessed UUID2 as B-leg, but originate success reveals
     // the actual B-leg is UUID3. The authoritative success message must override.

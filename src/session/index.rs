@@ -1,9 +1,22 @@
 //! Secondary lookup indexes, maintained by diffing the fields that back them
 //! across every mutation source rather than by setters.
 
+use std::collections::{HashMap, HashSet};
+
 use super::conference::ConferenceMembership;
 use super::state::SessionState;
 use super::tracker::SessionTracker;
+
+/// Drop `uuid` from the set under `key`, and the key itself once it is empty —
+/// a lingering empty set would read as a live candidate list.
+pub(super) fn deindex(map: &mut HashMap<String, HashSet<String>>, key: &str, uuid: &str) {
+    if let Some(set) = map.get_mut(key) {
+        set.remove(uuid);
+        if set.is_empty() {
+            map.remove(key);
+        }
+    }
+}
 
 /// Changes to indexed fields, diffed across hooks and built-in extraction
 /// for index maintenance.
@@ -67,12 +80,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     pub(super) fn apply_index_changes(&mut self, uuid: &str, changes: &IndexedFieldChanges) {
         if let Some((old, new)) = &changes.channel_name {
             if let Some(old_name) = old {
-                if let Some(set) = self.by_channel_name.get_mut(old_name) {
-                    set.remove(uuid);
-                    if set.is_empty() {
-                        self.by_channel_name.remove(old_name);
-                    }
-                }
+                deindex(&mut self.by_channel_name, old_name, uuid);
             }
             if let Some(new_name) = new {
                 self.by_channel_name
@@ -83,11 +91,13 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         }
         if let Some((old, new)) = &changes.pending_bridge_target {
             if let Some(old_target) = old {
-                self.by_pending_target.remove(old_target);
+                deindex(&mut self.by_pending_target, old_target, uuid);
             }
             if let Some(new_target) = new {
                 self.by_pending_target
-                    .insert(new_target.clone(), uuid.to_string());
+                    .entry(new_target.clone())
+                    .or_default()
+                    .insert(uuid.to_string());
             }
         }
         if let Some((old, new)) = &changes.other_leg_uuid {

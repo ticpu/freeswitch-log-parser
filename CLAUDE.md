@@ -194,19 +194,21 @@ Three tiers:
 `ParseStats` accounting invariant:
 
 ```
-lines_processed + lines_split == lines_in_entries + lines_empty_orphan
+lines_processed + lines_split == lines_in_entries + lines_empty_orphan + lines_dropped
 ```
 
 `ParseStats::unaccounted_lines()` returns the difference — non-zero indicates a parser bug.
 
-Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in entries: 1 primary + N attached), `lines_empty_orphan` (empty lines with no pending entry), `lines_split` (truncated collisions split into multiple entries), `lines_unclassified` (orthogonal anomaly counter).
+Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in entries: 1 primary + N attached), `lines_empty_orphan` (empty lines with no pending entry), `lines_split` (truncated collisions split into multiple entries), `lines_dropped` (continuation lines an entry's attached buffer had no room for), `lines_unclassified` (orthogonal anomaly counter).
 
 ### Per-session state propagation
 
 `SessionTracker` maintains `SessionState` per UUID:
 
-- `channel_name`, `channel_state` — from CHANNEL_DATA blocks
-- `dialplan_context`, `dialplan_from`, `dialplan_to` — from dialplan processing messages
+- `channel_name` — from CHANNEL_DATA blocks
+- `channel_state` (`CS_*`) and `call_state` — separate vocabularies, separate typed fields; neither displaces the other
+- `hangup_cause`, `call_direction` — typed from `freeswitch-types`. A value none of these vocabularies knows raises `ParseWarning::UnreadableValue` on the entry and leaves the last resolved value standing
+- `dialplan_context` — from dialplan processing messages; `dialplan_from`/`dialplan_to` carry the caller/dialed pair of a `Processing` line only, never a `parsing [ctx->ext]` context
 - `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines. Keys have the `variable_` prefix stripped; `SessionState::variable(V: VariableName)` hides that and takes any `freeswitch-types` variable-name enum
 - `conference` — name and instance from `conference()` / a transfer to an inline `conference:` extension; member id and conference UUID only when a dump supplies them
 - `media` — matched codec and deduped remote offer set per media type, plus the engine's read implementation. FreeSWITCH logs no write codec at DEBUG, so none is modelled
@@ -255,7 +257,8 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`
-- `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`
+- `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests. `SessionState`/`SessionSnapshot` are the same: build one from a tracker, or from `Default` plus field assignment. Hooks still get plain `&mut` field access
+- `LogEntry` is not marked, but `LogEntry::synthetic` exists so a consumer needing one does not spell out every field
 - NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)
 - New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

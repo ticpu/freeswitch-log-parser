@@ -35,10 +35,10 @@ check it *before* evaluating the request's mechanics.
 
 - `src/level.rs` — `LogLevel` enum with `FromStr`/`Display`/`Ord`
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
-- `src/message.rs` — `classify_message()` pure function, `MessageKind`, `SdpDirection`
-- `src/fields.rs` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
-- `src/stream.rs` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`
-- `src/session/mod.rs` — `SessionTracker`, `SessionState`, `EnrichedEntry`, `SessionSnapshot`
+- `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`; `parts.rs` holds the positional slicers `fields/` reuses
+- `src/fields/` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
+- `src/stream/` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`
+- `src/session/` — `SessionTracker` (`tracker.rs`), `SessionState` (`state.rs`), the secondary indexes (`index.rs`), line shapes (`parse.rs`)
 - `src/codec.rs` — `CodecOffer`/`CodecMedia`, the bracketed token in codec-negotiation traces
 - `src/session/conference.rs` — `ConferenceMembership`, conference join/leave detection
 - `src/session/media.rs` — `SessionMedia`, negotiated/offered codecs per media type

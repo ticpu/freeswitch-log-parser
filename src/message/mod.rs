@@ -12,7 +12,7 @@ mod tests;
 
 pub use classify::classify_message;
 pub use kind::{DtmfSource, MessageKind, SdpDirection, SipInviteDirection};
-pub(crate) use lifecycle::{call_id_token, sip_invite_direction};
+pub(crate) use lifecycle::{call_id_token, is_channel_variable_narration, sip_invite_direction};
 pub(crate) use parts::{
     dialplan_parts, execute_parts, hangup_channel, new_channel_name, paren_channel,
     parse_bracketed_value, set_export_parts, strip_channel_prefix,

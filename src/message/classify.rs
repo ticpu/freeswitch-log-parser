@@ -78,7 +78,12 @@ pub fn classify_message(msg: &str) -> MessageKind {
         };
     }
 
-    if msg.starts_with("SET ") || msg.starts_with("EXPORT ") {
+    // `set()` logs its verb first, and the stack variants share the shape.
+    if msg.starts_with("SET ")
+        || msg.starts_with("EXPORT ")
+        || msg.starts_with("PUSH ")
+        || msg.starts_with("UNSHIFT ")
+    {
         if let Some(sv) = parse_set_or_export(msg) {
             return sv;
         }

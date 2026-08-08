@@ -2,6 +2,13 @@
 
 use super::kind::{MessageKind, SipInviteDirection};
 use super::media::detect_media;
+use super::parts::set_export_parts;
+
+/// Whether what follows a channel name is one of the core `[name]=[value]`
+/// narrations. Only the shape is matched here; [`set_export_parts`] slices it.
+pub(crate) fn is_channel_variable_narration(rest: &str) -> bool {
+    rest.starts_with("EXPORTING[") || rest.starts_with("setting variable [")
+}
 
 pub(super) fn classify_channel_prefixed(channel_part: &str, rest: &str) -> MessageKind {
     // Sofia INVITE lines — typed extraction of (direction, profile, call-id).
@@ -16,6 +23,17 @@ pub(super) fn classify_channel_prefixed(channel_part: &str, rest: &str) -> Messa
             profile,
             call_id,
         };
+    }
+
+    // Variable narrations that put the channel name first. Ahead of the media
+    // and lifecycle fallbacks, which would otherwise claim them.
+    if is_channel_variable_narration(rest) {
+        if let Some(parts) = set_export_parts(rest) {
+            return MessageKind::Variable {
+                name: format!("variable_{}", parts.name),
+                value: parts.value.to_string(),
+            };
+        }
     }
 
     // SOFIA STATE / Standard STATE / RTC STATE

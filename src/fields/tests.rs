@@ -171,9 +171,107 @@ fn set_emits_channel_but_export_does_not() {
         [
             (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
             (FieldKind::IpAddr, "192.0.2.1"),
+            (FieldKind::VariableValue, "host.example.test"),
         ]
     );
-    assert_eq!(spans("EXPORT (export_vars) [originate_timeout]=[3600]"), []);
+    assert_eq!(
+        spans("EXPORT (export_vars) [originate_timeout]=[3600]"),
+        [(FieldKind::VariableValue, "3600")]
+    );
+}
+
+#[test]
+fn a_variable_named_in_the_identity_vocabulary_gets_its_own_kind() {
+    assert_eq!(
+        spans("EXPORT (export_vars) [effective_caller_id_name]=[Pat Doe]"),
+        [(FieldKind::CallerIdName, "Pat Doe")]
+    );
+    assert_eq!(
+        spans("EXPORT (export_vars) [destination_number]=[15555550100]"),
+        [(FieldKind::DestinationNumber, "15555550100")]
+    );
+}
+
+#[test]
+fn exporting_names_its_channel_and_value() {
+    let msg = "sofia/internal/1263@192.0.2.1 EXPORTING[export_vars] \
+               [origination_caller_id_number]=[15555550100] to event";
+    assert_eq!(
+        spans(msg),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+            (FieldKind::CallerIdNumber, "15555550100"),
+        ]
+    );
+}
+
+#[test]
+fn a_value_holding_brackets_spans_to_its_own_close() {
+    assert_eq!(
+        spans("sofia/internal/1263@192.0.2.1 EXPORTING[export_vars] [x]=[a [b] c] to event"),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+            (FieldKind::VariableValue, "a [b] c"),
+        ]
+    );
+}
+
+/// `SET GLOBAL` names a scope, so there is no channel to span.
+#[test]
+fn a_global_set_emits_no_channel() {
+    assert_eq!(
+        spans("SET GLOBAL [hold_music]=[local_stream://moh]"),
+        [(FieldKind::VariableValue, "local_stream://moh")]
+    );
+}
+
+#[test]
+fn a_dump_line_spans_its_value_by_the_name_it_carries() {
+    assert_eq!(
+        spans("variable_effective_caller_id_name: [Pat Doe]"),
+        [(FieldKind::CallerIdName, "Pat Doe")]
+    );
+    assert_eq!(
+        spans("variable_rtp_use_ssrc: [1234]"),
+        [(FieldKind::VariableValue, "1234")]
+    );
+}
+
+/// The value is the dump line's whole bracketed payload, not a narration to
+/// slice at a `]=[` it happens to contain.
+#[test]
+fn a_dump_value_holding_the_narration_separator_is_not_sliced_at_it() {
+    assert_eq!(
+        spans("variable_x: [a]=[b]"),
+        [(FieldKind::VariableValue, "a]=[b")]
+    );
+}
+
+#[test]
+fn a_pre_dialplan_set_spans_its_value() {
+    assert_eq!(
+        spans("set variable effective_caller_id_name=Pat Doe"),
+        [(FieldKind::CallerIdName, "Pat Doe")]
+    );
+}
+
+#[test]
+fn core_session_set_variable_spans_its_value() {
+    assert_eq!(
+        spans("CoreSession::setVariable(caller_id_number, 15555550100)"),
+        [(FieldKind::CallerIdNumber, "15555550100")]
+    );
+}
+
+#[test]
+fn a_uuid_nests_inside_a_value_slot() {
+    let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    assert_eq!(
+        spans(&format!("EXPORT (export_vars) [ngcs_peer]=[{uuid}]")),
+        [(FieldKind::VariableValue, uuid), (FieldKind::Uuid, uuid),]
+    );
 }
 
 #[test]
@@ -187,6 +285,7 @@ fn bracketed_ipv6_channel_host_excludes_brackets() {
                 "sofia/internal-v6/1263@[2001:db8:2220:198::10]"
             ),
             (FieldKind::IpAddr, "2001:db8:2220:198::10"),
+            (FieldKind::VariableValue, "y"),
         ]
     );
 }

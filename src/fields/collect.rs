@@ -3,11 +3,14 @@
 
 use std::net::IpAddr;
 use std::ops::Range;
+use std::str::FromStr;
+
+use freeswitch_types::ChannelVariable;
 
 use crate::message::{
-    classify_message, dialplan_parts, execute_parts, hangup_channel, new_channel_name,
-    paren_channel, parse_bracketed_value, set_export_parts, sip_invite_direction,
-    strip_channel_prefix, MessageKind, SipInviteDirection,
+    classify_message, dialplan_parts, execute_parts, hangup_channel,
+    is_channel_variable_narration, new_channel_name, paren_channel, parse_bracketed_value,
+    set_export_parts, sip_invite_direction, strip_channel_prefix, MessageKind, SipInviteDirection,
 };
 use crate::uuid::find_uuids;
 
@@ -73,11 +76,14 @@ pub fn message_fields(msg: &str) -> Vec<Field> {
     let mut out = Vec::new();
     collect_typed(msg, &mut out);
 
-    // The generic scan runs last: a UUID already covered by a kind that names
-    // what it is adds nothing, and the specific kind is the better rewrite.
+    // The generic scan runs last: a UUID covered by a kind that names its shape
+    // adds nothing — but a value slot names none, so a UUID nests inside it.
     for (start, uuid) in find_uuids(msg) {
         let range = start..start + uuid.len();
-        if !out.iter().any(|f: &Field| intersects(&f.range, &range)) {
+        let covered = out
+            .iter()
+            .any(|f: &Field| f.kind != FieldKind::VariableValue && intersects(&f.range, &range));
+        if !covered {
             push(&mut out, FieldKind::Uuid, range);
         }
     }
@@ -160,17 +166,80 @@ fn push_channel(out: &mut Vec<Field>, msg: &str, channel: &str) {
     push(out, FieldKind::ChannelName, range);
 }
 
+/// The slot a variable's name names; a name outside the identity vocabulary
+/// falls to the neutral value slot rather than going unspanned.
+fn variable_value_kind(name: &str) -> FieldKind {
+    let bare = name.strip_prefix("variable_").unwrap_or(name);
+    match ChannelVariable::from_str(bare) {
+        Ok(ChannelVariable::CallerIdName)
+        | Ok(ChannelVariable::EffectiveCallerIdName)
+        | Ok(ChannelVariable::OriginationCallerIdName) => FieldKind::CallerIdName,
+        Ok(ChannelVariable::CallerIdNumber)
+        | Ok(ChannelVariable::EffectiveCallerIdNumber)
+        | Ok(ChannelVariable::OriginationCallerIdNumber) => FieldKind::CallerIdNumber,
+        Ok(ChannelVariable::DestinationNumber) => FieldKind::DestinationNumber,
+        _ => FieldKind::VariableValue,
+    }
+}
+
+/// The channel and value spans of a Variable-classified message, re-running the
+/// isolation of whichever shape classify_message read it as.
+fn collect_variable(msg: &str, name: &str, out: &mut Vec<Field>) {
+    let push_value = |out: &mut Vec<Field>, value: &str| {
+        if let Some(range) = subslice_range(msg, value) {
+            push(out, variable_value_kind(name), range);
+        }
+    };
+    if msg.starts_with("variable_") {
+        if let Some((_, value)) = parse_bracketed_value(msg, 0) {
+            push_value(out, value);
+        }
+        return;
+    }
+    if let Some((channel, rest)) = strip_channel_prefix(msg) {
+        if is_channel_variable_narration(rest) {
+            if let Some(parts) = set_export_parts(rest) {
+                push_channel(out, msg, channel);
+                push_value(out, parts.value);
+            }
+        }
+        return;
+    }
+    if msg.starts_with("SET ")
+        || msg.starts_with("EXPORT ")
+        || msg.starts_with("PUSH ")
+        || msg.starts_with("UNSHIFT ")
+    {
+        if let Some(parts) = set_export_parts(msg) {
+            if let Some(channel) = parts.channel {
+                push_channel(out, msg, channel);
+            }
+            push_value(out, parts.value);
+        }
+        return;
+    }
+    if let Some(rest) = msg.strip_prefix("CoreSession::setVariable(") {
+        if let Some(inner) = rest.strip_suffix(')') {
+            if let Some(comma) = inner.find(", ") {
+                push_value(out, &inner[comma + 2..]);
+            }
+        }
+        return;
+    }
+    if let Some(rest) = msg.strip_prefix("set variable ") {
+        if let Some((_, value)) = rest.split_once('=') {
+            push_value(out, value);
+        }
+    }
+}
+
 fn collect_typed(msg: &str, out: &mut Vec<Field>) {
     // Dispatch is classify_message's; this only re-runs the isolation each arm
     // already performed, to recover the offsets it dropped.
     match classify_message(msg) {
         MessageKind::Execute { .. } => push_channel(out, msg, execute_parts(msg).channel),
         MessageKind::Dialplan { .. } => collect_dialplan(msg, out),
-        MessageKind::Variable { .. } => {
-            if let Some(channel) = set_export_parts(msg).and_then(|p| p.channel) {
-                push_channel(out, msg, channel);
-            }
-        }
+        MessageKind::Variable { name, .. } => collect_variable(msg, &name, out),
         MessageKind::ChannelField { name, .. } => collect_channel_field(msg, &name, out),
         MessageKind::SipInvite { direction, .. } => collect_invite(msg, direction, out),
         MessageKind::StateChange { .. } | MessageKind::Media { .. } => {

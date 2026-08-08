@@ -344,6 +344,72 @@ fn export_simple_variable() {
     }
 }
 
+fn variable_parts(msg: &str) -> (String, String) {
+    match classify_message(msg) {
+        MessageKind::Variable { name, value } => (name, value),
+        other => panic!("expected Variable, got {other:?}"),
+    }
+}
+
+/// `set()` logs `SET`, `PUSH` or `UNSHIFT` depending on the stack it writes to.
+#[test]
+fn the_stack_variants_of_set_are_variables_too() {
+    for verb in ["PUSH", "UNSHIFT"] {
+        let msg = format!("{verb} sofia/internal/1263@192.0.2.1 [ngcs_leg]=[b]");
+        assert_eq!(
+            variable_parts(&msg),
+            ("variable_ngcs_leg".to_string(), "b".to_string())
+        );
+    }
+}
+
+#[test]
+fn exporting_is_a_variable_despite_its_channel_prefix() {
+    let msg = "sofia/internal/1263@192.0.2.1 EXPORTING[export_vars] \
+               [effective_caller_id_number]=[15555550100] to event";
+    assert_eq!(
+        variable_parts(msg),
+        (
+            "variable_effective_caller_id_number".to_string(),
+            "15555550100".to_string()
+        )
+    );
+}
+
+#[test]
+fn a_passthrough_header_becomes_a_variable() {
+    let msg = "sofia/internal/1263@192.0.2.1 setting variable [sip_h_X-Call-Info]=[ARRAY::a|:b]";
+    assert_eq!(
+        variable_parts(msg),
+        (
+            "variable_sip_h_X-Call-Info".to_string(),
+            "ARRAY::a|:b".to_string()
+        )
+    );
+}
+
+#[test]
+fn a_value_holding_brackets_is_not_cut_at_the_first_one() {
+    let msg = "EXPORT (export_vars) [caller_id_name]=[Doe [Mobile]]";
+    assert_eq!(
+        variable_parts(msg),
+        (
+            "variable_caller_id_name".to_string(),
+            "Doe [Mobile]".to_string()
+        )
+    );
+}
+
+/// `SET [n]=[v]` logs no channel token, so a `/` in the value must not turn
+/// the bracketed pair into one.
+#[test]
+fn a_channelless_set_with_a_slash_value_names_no_channel() {
+    let parts = set_export_parts("SET [tod]=[2026/08/09 12:00]").unwrap();
+    assert_eq!(parts.channel, None);
+    assert_eq!(parts.name, "tod");
+    assert_eq!(parts.value, "2026/08/09 12:00");
+}
+
 #[test]
 fn processing_in_context() {
     let msg = "Processing Extension 1263 <1263>->start_recording in context recordings";

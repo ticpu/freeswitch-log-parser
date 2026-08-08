@@ -145,25 +145,48 @@ pub(crate) struct SetExportParts<'a> {
     pub(crate) value: &'a str,
 }
 
+/// The offset of the `]` closing a value that opened at `from`, matching nested
+/// brackets so a value containing one is not cut at it.
+fn value_close(msg: &str, from: usize) -> Option<usize> {
+    let mut depth = 1u32;
+    for (i, b) in msg.as_bytes().iter().enumerate().skip(from) {
+        match b {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(crate) fn set_export_parts(msg: &str) -> Option<SetExportParts<'_>> {
-    // SET channel [name]=[value]
-    // EXPORT (export_vars) [name]=[value]
-    // EXPORT (export_vars) (REMOTE ONLY) [name]=[value]
+    // SET|PUSH|UNSHIFT channel [name]=[value]
+    // EXPORT (export_vars) [(REMOTE ONLY) ][name]=[value]
+    // channel EXPORTING[export_vars] [name]=[value] to event|channel
+    // channel setting variable [name]=[value]
     // Find "]=[" which uniquely identifies the [name]=[value] boundary
     let sep_pos = msg.find("]=[")?;
     let name_start = msg[..sep_pos].rfind('[')?;
     let name = &msg[name_start + 1..sep_pos];
     let val_start = sep_pos + 3; // skip "]=["
-    let val_end = msg[val_start..]
-        .find(']')
-        .map(|p| val_start + p)
-        .unwrap_or(msg.len());
+    let val_end = value_close(msg, val_start).unwrap_or(msg.len());
     let value = &msg[val_start..val_end];
 
-    let channel = msg.strip_prefix("SET ").and_then(|rest| {
-        let end = rest.find(' ').unwrap_or(rest.len());
-        Some(&rest[..end]).filter(|c| !c.is_empty() && !c.starts_with('['))
-    });
+    // Only verb-first shapes name a channel, and not always: `SET GLOBAL` is a
+    // scope and `SET [n]=[v]` has no token at all — an endpoint path qualifies.
+    let channel = msg
+        .strip_prefix("SET ")
+        .or_else(|| msg.strip_prefix("PUSH "))
+        .or_else(|| msg.strip_prefix("UNSHIFT "))
+        .and_then(|rest| {
+            let end = rest.find(' ').unwrap_or(rest.len());
+            Some(&rest[..end]).filter(|c| c.contains('/') && !c.starts_with('['))
+        });
 
     Some(SetExportParts {
         channel,

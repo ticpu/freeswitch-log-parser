@@ -31,6 +31,10 @@ pub enum FieldKind {
     /// An IP address, at positions the classifier frames (a channel name's host,
     /// an inbound INVITE's source).
     IpAddr,
+    /// A channel variable's value, where the variable's name names no slot above.
+    /// The crate locates it and stops there; whether the name makes the value
+    /// sensitive is the consumer's call, from the name the classification carries.
+    VariableValue,
 }
 
 impl FieldKind {
@@ -45,6 +49,7 @@ impl FieldKind {
             FieldKind::Uuid => "uuid",
             FieldKind::SipUri => "sip-uri",
             FieldKind::IpAddr => "ip-addr",
+            FieldKind::VariableValue => "variable-value",
         }
     }
 }
@@ -155,6 +160,7 @@ pub(super) fn kind_rank(kind: FieldKind) -> u8 {
         FieldKind::CallId => 4,
         FieldKind::SipUri => 5,
         FieldKind::IpAddr => 6,
-        FieldKind::Uuid => 7,
+        FieldKind::VariableValue => 7,
+        FieldKind::Uuid => 8,
     }
 }

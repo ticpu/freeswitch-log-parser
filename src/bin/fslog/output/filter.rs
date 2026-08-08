@@ -247,7 +247,7 @@ impl FilterConfig {
         match self.uuid_ac {
             None => true,
             Some(ref ac) => {
-                ac.is_match(entry.uuid.as_bytes())
+                ac.is_match(entry.uuid.as_deref().unwrap_or("").as_bytes())
                     || (body
                         && (ac.is_match(entry.message.as_bytes())
                             || entry.attached.iter().any(|l| ac.is_match(l.as_bytes()))))
@@ -287,13 +287,14 @@ impl FilterConfig {
     /// Whether the pattern sits in the channel-UUID column, asked with the
     /// semantics of the `-u` this would advertise rather than the pattern's own.
     fn pattern_in_uuid_column(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
+        let uuid = entry.uuid.as_deref().unwrap_or("");
         if let Some(ref ac) = self.fgrep_ac {
-            if !ac.is_match(entry.uuid.as_bytes()) {
+            if !ac.is_match(uuid.as_bytes()) {
                 return false;
             }
         }
         match self.grep_ci {
-            Some(ref re) => re.is_match(&entry.uuid),
+            Some(ref re) => re.is_match(uuid),
             None => true,
         }
     }

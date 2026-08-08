@@ -261,24 +261,14 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use freeswitch_log_parser::{AttachedLines, LineKind, TrackedChain};
+    use freeswitch_log_parser::TrackedChain;
 
     use crate::output::{ColorMode, FilterParams};
 
     fn entry(uuid: &str) -> LogEntry {
         LogEntry {
-            uuid: uuid.to_string(),
-            timestamp: String::new(),
-            level: None,
-            idle_pct: None,
-            source: None,
-            message: "x".to_string(),
-            kind: LineKind::Full,
-            message_kind: MessageKind::General,
-            block: None,
-            attached: AttachedLines::new(),
-            line_number: 0,
-            warnings: Vec::new(),
+            uuid: Some(uuid.to_string()),
+            ..LogEntry::synthetic("x")
         }
     }
 

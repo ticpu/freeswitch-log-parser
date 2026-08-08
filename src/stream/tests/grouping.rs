@@ -14,7 +14,7 @@ fn inherits_uuid_for_bare_continuation() {
     ];
     let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].uuid, UUID1);
+    assert_eq!(entries[0].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[0].attached.len(), 2);
     assert_eq!(entries[0].attached.get(0), Some("variable_foo: [bar]"));
     assert_eq!(entries[0].attached.get(1), Some("variable_baz: [qux]"));
@@ -29,7 +29,7 @@ fn inherits_timestamp_for_uuid_continuation() {
     let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].timestamp, TS1);
-    assert_eq!(entries[1].uuid, UUID2);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID2));
     assert_eq!(entries[1].timestamp, TS1);
 }
 
@@ -41,10 +41,10 @@ fn new_full_line_yields_previous() {
     ];
     let mut stream = LogStream::new(lines.into_iter());
     let first = stream.next().unwrap();
-    assert_eq!(first.uuid, UUID1);
+    assert_eq!(first.uuid.as_deref(), Some(UUID1));
     assert_eq!(first.message, "First");
     let second = stream.next().unwrap();
-    assert_eq!(second.uuid, UUID2);
+    assert_eq!(second.uuid.as_deref(), Some(UUID2));
     assert_eq!(second.message, "Second");
     assert!(stream.next().is_none());
 }
@@ -86,10 +86,10 @@ fn truncated_starts_new_entry() {
     ];
     let mut stream = LogStream::new(lines.into_iter());
     let first = stream.next().unwrap();
-    assert_eq!(first.uuid, UUID1);
+    assert_eq!(first.uuid.as_deref(), Some(UUID1));
     assert_eq!(first.message, "First");
     let second = stream.next().unwrap();
-    assert_eq!(second.uuid, UUID2);
+    assert_eq!(second.uuid.as_deref(), Some(UUID2));
     assert_eq!(second.kind, LineKind::Truncated);
 }
 
@@ -114,7 +114,7 @@ fn system_line_no_uuid() {
     )];
     let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].uuid, "");
+    assert_eq!(entries[0].uuid, None);
     assert_eq!(entries[0].kind, LineKind::System);
 }
 
@@ -217,10 +217,10 @@ fn uuid_continuation_different_uuid_yields() {
     ];
     let mut stream = LogStream::new(lines.into_iter());
     let first = stream.next().unwrap();
-    assert_eq!(first.uuid, UUID1);
+    assert_eq!(first.uuid.as_deref(), Some(UUID1));
     assert_eq!(first.attached.len(), 1);
     let second = stream.next().unwrap();
-    assert_eq!(second.uuid, UUID2);
+    assert_eq!(second.uuid.as_deref(), Some(UUID2));
     assert_eq!(
         second.message,
         "Dialplan: sofia/internal/+15550001234@192.0.2.1 parsing [public]"
@@ -241,8 +241,8 @@ fn system_line_uuid_continuation_not_absorbed() {
         2,
         "UUID continuation should not be absorbed by system entry"
     );
-    assert_eq!(entries[0].uuid, "");
-    assert_eq!(entries[1].uuid, UUID1);
+    assert_eq!(entries[0].uuid, None);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID1));
 }
 
 #[test]
@@ -262,16 +262,16 @@ fn system_line_with_embedded_uuid_gets_entry_uuid() {
 
     assert_eq!(entries.len(), 3);
     // Both System lines should have the UUID extracted from the message
-    assert_eq!(entries[0].uuid, UUID1);
+    assert_eq!(entries[0].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[0].kind, LineKind::System);
     assert_eq!(entries[0].message, "DAA-LOG WaveManager originate");
 
-    assert_eq!(entries[1].uuid, UUID1);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[1].kind, LineKind::System);
     assert_eq!(entries[1].message, "DAA-LOG Failed to create session");
 
     // Full line still works normally
-    assert_eq!(entries[2].uuid, UUID1);
+    assert_eq!(entries[2].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[2].kind, LineKind::Full);
     assert_accounting(&stream);
 }

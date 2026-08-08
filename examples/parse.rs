@@ -11,11 +11,7 @@ fn main() {
     for enriched in tracker.by_ref() {
         count += 1;
         let entry = &enriched.entry;
-        let uuid = if entry.uuid.is_empty() {
-            "-"
-        } else {
-            &entry.uuid
-        };
+        let uuid = entry.uuid.as_deref().unwrap_or("-");
         let level = entry
             .level
             .map(|l| l.to_string())

@@ -308,7 +308,7 @@ fn timestamp_not_contaminated_across_file_segments() {
     // file's last line.
     let cd_entry = entries
         .iter()
-        .find(|e| e.uuid == uuid)
+        .find(|e| e.uuid.as_deref() == Some(uuid))
         .expect("should find entry for test UUID");
 
     assert_ne!(

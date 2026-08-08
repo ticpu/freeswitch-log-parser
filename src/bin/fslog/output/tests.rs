@@ -1,6 +1,6 @@
 //! Behavioral tests for entry rendering and filtering.
 
-use freeswitch_log_parser::{AttachedLines, Block, LineKind, LogEntry, LogLevel, MessageKind};
+use freeswitch_log_parser::{AttachedLines, Block, LogEntry, LogLevel, MessageKind};
 
 use super::color::{uuid_truecolor, BRIGHT_GREEN, RED, RESET};
 use super::*;
@@ -11,18 +11,9 @@ fn entry(uuid: &str, message: &str, attached: &[&str]) -> LogEntry {
         a.push(l).expect("fits");
     }
     LogEntry {
-        uuid: uuid.to_string(),
-        timestamp: String::new(),
-        level: None,
-        idle_pct: None,
-        source: None,
-        message: message.to_string(),
-        kind: LineKind::Full,
-        message_kind: MessageKind::General,
-        block: None,
+        uuid: (!uuid.is_empty()).then(|| uuid.to_string()),
         attached: a,
-        line_number: 0,
-        warnings: Vec::new(),
+        ..LogEntry::synthetic(message)
     }
 }
 

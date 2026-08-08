@@ -122,25 +122,15 @@ pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attached::AttachedLines;
-    use crate::line::LineKind;
 
     const PEER: &str = "11111111-2222-3333-4444-555555555555";
 
     fn entry(message_kind: MessageKind, block: Option<Block>) -> LogEntry {
         LogEntry {
-            uuid: "self".to_string(),
-            timestamp: String::new(),
-            level: None,
-            idle_pct: None,
-            source: None,
-            message: String::new(),
-            kind: LineKind::Full,
+            uuid: Some("self".to_string()),
             message_kind,
             block,
-            attached: AttachedLines::new(),
-            line_number: 0,
-            warnings: Vec::new(),
+            ..LogEntry::synthetic(String::new())
         }
     }
 

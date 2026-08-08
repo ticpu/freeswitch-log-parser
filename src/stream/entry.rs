@@ -216,8 +216,8 @@ impl fmt::Display for ParseWarning {
 /// multi-line blocks reassembled.
 #[derive(Debug)]
 pub struct LogEntry {
-    /// Session UUID, or empty string for system lines.
-    pub uuid: String,
+    /// Session UUID; `None` for system lines (no channel context).
+    pub uuid: Option<String>,
     /// Timestamp with microsecond precision; inherited from the previous entry for continuations.
     pub timestamp: String,
     /// `None` for continuation and truncated lines.
@@ -240,4 +240,27 @@ pub struct LogEntry {
     pub line_number: u64,
     /// Per-entry warnings about parsing anomalies.
     pub warnings: Vec<ParseWarning>,
+}
+
+impl LogEntry {
+    /// An entry for output the parser never produced — a separator line
+    /// between files or dates, or a hand-built test fixture. Carries no
+    /// uuid, timestamp, level, source or block; override individual fields
+    /// with struct-update syntax for callers that need one set.
+    pub fn synthetic(message: impl Into<String>) -> LogEntry {
+        LogEntry {
+            uuid: None,
+            timestamp: String::new(),
+            level: None,
+            idle_pct: None,
+            source: None,
+            message: message.into(),
+            kind: LineKind::Full,
+            message_kind: MessageKind::General,
+            block: None,
+            attached: AttachedLines::new(),
+            line_number: 0,
+            warnings: Vec::new(),
+        }
+    }
 }

@@ -18,14 +18,15 @@ use std::process;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use freeswitch_log_parser::{
-    AttachedLines, LineKind, LogEntry, LogLevel, LogStream, MessageKind, ParseStats,
-    SessionTracker, TrackedChain, UnclassifiedTracking,
+    LogEntry, LogLevel, LogStream, MessageKind, ParseStats, SessionTracker, TrackedChain,
+    UnclassifiedTracking,
 };
 
 use context::{Emitter, FieldCounts, HiddenCounts};
 use files::{
-    discover_log_files, filter_files_by_date, format_size, lazy_log_reader, lossy_line_iter,
-    normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader, resolve_log_path,
+    discover_log_files, display_name, filter_files_by_date, format_size, lazy_log_reader,
+    lossy_line_iter, normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader,
+    resolve_log_path,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig, FilterParams};
 use pager::{is_broken_pipe, PagedWriter};
@@ -435,18 +436,8 @@ fn cmd_list(dir: &Path, out: &mut dyn Write) -> io::Result<()> {
 
 pub(crate) fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
     LogEntry {
-        uuid: String::new(),
-        timestamp: String::new(),
-        level: None,
-        idle_pct: None,
-        source: None,
-        message: msg,
-        kind: LineKind::Full,
         message_kind: kind,
-        block: None,
-        attached: AttachedLines::new(),
-        line_number: 0,
-        warnings: Vec::new(),
+        ..LogEntry::synthetic(msg)
     }
 }
 
@@ -502,14 +493,7 @@ fn resolve_search_files(
         let v = args
             .files
             .iter()
-            .map(|p| {
-                let name = p
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                (name, p.clone())
-            })
+            .map(|p| (display_name(p), p.clone()))
             .collect();
         return Ok(Some(v));
     }
@@ -540,14 +524,7 @@ fn resolve_search_files(
     }
     let v = selected
         .iter()
-        .map(|f| {
-            let name = f
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (name, f.path.clone())
-        })
+        .map(|f| (display_name(&f.path), f.path.clone()))
         .collect();
     Ok(Some(v))
 }
@@ -728,21 +705,11 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
             } else {
                 dir.join(&p)
             };
-            let name = p
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            (name, open_log_reader(&p)?)
+            (display_name(&p), open_log_reader(&p)?)
         }
         None => {
             let p = resolve_log_path(dir, None);
-            let name = p
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            (name, open_log_reader(&p)?)
+            (display_name(&p), open_log_reader(&p)?)
         }
     };
 

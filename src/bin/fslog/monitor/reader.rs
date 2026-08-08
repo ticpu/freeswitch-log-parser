@@ -14,7 +14,7 @@ use freeswitch_log_parser::{
     SessionState, SessionTracker, SofiaVariable, TrackedChain,
 };
 
-use crate::files::{discover_log_files, open_full_tail_reader, open_log_reader};
+use crate::files::{discover_log_files, display_name, open_full_tail_reader, open_log_reader};
 
 use super::model::{AppState, CallEnd, CallEvent, CallFields, CallRow, ReaderMsg};
 
@@ -22,8 +22,8 @@ pub(super) fn build_update(
     enriched: &EnrichedEntry,
     sessions: &std::collections::HashMap<String, SessionState>,
 ) -> Option<ReaderMsg> {
-    let uuid = enriched.entry.uuid.clone();
-    if uuid.is_empty() || enriched.entry.timestamp.is_empty() {
+    let uuid = enriched.entry.uuid.clone()?;
+    if enriched.entry.timestamp.is_empty() {
         return None;
     }
 
@@ -127,13 +127,7 @@ pub(super) fn build_segments(
             if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
                 match open_log_reader(&prev.path) {
                     Ok(reader) => {
-                        let name = prev
-                            .path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned();
-                        segments.push((name, reader));
+                        segments.push((display_name(&prev.path), reader));
                     }
                     Err(e) => warn!(
                         "skipping rotated history {}: open failed: {e}",
@@ -149,12 +143,7 @@ pub(super) fn build_segments(
     }
 
     let current = open_current(path)?;
-    let current_name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    segments.push((current_name, current));
+    segments.push((display_name(path), current));
     Ok(segments)
 }
 

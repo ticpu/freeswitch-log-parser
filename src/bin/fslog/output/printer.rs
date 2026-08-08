@@ -55,14 +55,14 @@ impl EntryPrinter {
             return writeln!(w, "{dim}── {}{reset}", entry.message);
         }
 
-        let uuid = if entry.uuid.is_empty() {
-            format!("{dim}-{reset}")
-        } else if use_color {
-            let mut s = String::new();
-            write_uuid(&mut s, &entry.uuid);
-            s
-        } else {
-            entry.uuid.clone()
+        let uuid = match &entry.uuid {
+            None => format!("{dim}-{reset}"),
+            Some(u) if use_color => {
+                let mut s = String::new();
+                write_uuid(&mut s, u);
+                s
+            }
+            Some(u) => u.clone(),
         };
 
         // Continuation lines print inline only when nothing else carries the
@@ -132,7 +132,7 @@ impl EntryPrinter {
             // Collapsing those to a count leaves nothing readable behind.
             if inline {
                 for line in head_data.into_iter().chain(&entry.attached) {
-                    let line = strip_repeated_prefix(line, &entry.uuid);
+                    let line = strip_repeated_prefix(line, entry.uuid.as_deref().unwrap_or(""));
                     let rendered = if use_color {
                         // Chained through Cow so a line neither pass touches —
                         // the common case — is never copied.

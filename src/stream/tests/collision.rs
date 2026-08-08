@@ -41,7 +41,7 @@ fn continuation_lines_at_file_boundary_must_not_inherit_previous_timestamp() {
 
     let b_entry = entries
         .iter()
-        .find(|e| e.uuid == uuid_b)
+        .find(|e| e.uuid.as_deref() == Some(uuid_b))
         .expect("should find entry for uuid_b");
 
     // The CHANNEL_DATA entry for uuid_b must NOT have the timestamp from
@@ -148,7 +148,7 @@ fn timestamp_collision_with_uuid_prefix() {
     let entries: Vec<_> = stream.by_ref().collect();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].message, "first");
-    assert_eq!(entries[1].uuid, UUID1);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[1].message, "second");
     assert_eq!(stream.stats().lines_split, 1);
     assert_accounting(&stream);
@@ -187,12 +187,12 @@ fn timestamp_collision_no_idle_pct_uuid_suffix() {
     let mut stream = LogStream::new(std::iter::once(line));
     let entries: Vec<_> = stream.by_ref().collect();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].uuid, "");
+    assert_eq!(entries[0].uuid, None);
     assert_eq!(
         entries[0].message,
         "Session does not exist, aborting REFER."
     );
-    assert_eq!(entries[1].uuid, UUID1);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[1].level, Some(LogLevel::Notice));
     assert_eq!(
         entries[1].message,
@@ -287,7 +287,7 @@ fn truncated_collision_in_channel_data_variable() {
     );
 
     // Entry 1: the split EXECUTE line
-    assert_eq!(entries[1].uuid, UUID1);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID1));
     assert!(
         entries[1].message.starts_with("EXECUTE "),
         "split entry should be EXECUTE, got: {}",
@@ -452,7 +452,7 @@ fn channel_data_bare_variable_collision_with_execute() {
     }
 
     // Entry 1: EXECUTE recovered from the Truncated classification
-    assert_eq!(entries[1].uuid, UUID1);
+    assert_eq!(entries[1].uuid.as_deref(), Some(UUID1));
     assert_eq!(entries[1].kind, LineKind::Truncated);
     assert!(
         entries[1].message.starts_with("EXECUTE "),

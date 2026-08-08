@@ -16,7 +16,7 @@ use super::SessionHook;
 #[derive(Debug)]
 pub struct EnrichedEntry {
     pub entry: LogEntry,
-    /// `None` for system lines (entries with an empty UUID).
+    /// `None` exactly when `entry.uuid` is `None` — system lines carry no session.
     pub session: Option<SessionSnapshot>,
 }
 
@@ -314,14 +314,13 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
     fn next(&mut self) -> Option<EnrichedEntry> {
         let mut entry = self.inner.next()?;
 
-        if entry.uuid.is_empty() {
+        let Some(uuid) = entry.uuid.clone() else {
             return Some(EnrichedEntry {
                 entry,
                 session: None,
             });
-        }
+        };
 
-        let uuid = entry.uuid.clone();
         let state = self.sessions.entry(uuid.clone()).or_default();
 
         // Snapshot indexed fields before the pre-hook and diff after the

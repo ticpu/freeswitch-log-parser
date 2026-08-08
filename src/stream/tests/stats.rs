@@ -246,7 +246,7 @@ fn accounting_long_line_collision_split() {
     assert_eq!(entries[0].message, "CHANNEL_DATA:");
 
     // The collision should have been split out as a separate entry
-    let split_entry = entries.iter().find(|e| e.uuid == UUID2);
+    let split_entry = entries.iter().find(|e| e.uuid.as_deref() == Some(UUID2));
     assert!(
         split_entry.is_some(),
         "collision UUID should produce a separate entry"

@@ -458,7 +458,7 @@ fn system_lines_with_embedded_uuid_extracted() {
             for entry in LogStream::new(lines_from_file(file)) {
                 if entry.kind == LineKind::System {
                     total_system += 1;
-                    if !entry.uuid.is_empty() {
+                    if entry.uuid.is_some() {
                         system_with_uuid += 1;
                     }
                 }
@@ -551,7 +551,9 @@ fn conference_and_loopback_link_ra221_fixture() {
             .as_ref()
             .and_then(|s| s.conference.as_ref())
         {
-            instances.insert(enriched.entry.uuid.clone(), conf.instance.clone());
+            if let Some(uuid) = &enriched.entry.uuid {
+                instances.insert(uuid.clone(), conf.instance.clone());
+            }
         }
     }
 

@@ -36,11 +36,11 @@ pub fn discover(
             .and_then(|s| s.conference.as_ref())
             .map(|c| c.instance.clone());
         if let Some(instance) = &instance {
-            if !enriched.entry.uuid.is_empty() {
+            if let Some(uuid) = &enriched.entry.uuid {
                 members
                     .entry(instance.clone())
                     .or_default()
-                    .insert(enriched.entry.uuid.clone());
+                    .insert(uuid.clone());
             }
         }
         if !filter.matches(&enriched.entry) {
@@ -49,8 +49,8 @@ pub fn discover(
         if let Some(instance) = instance {
             wanted_instances.insert(instance);
         }
-        if !enriched.entry.uuid.is_empty() {
-            uuids.insert(enriched.entry.uuid.clone());
+        if let Some(uuid) = &enriched.entry.uuid {
+            uuids.insert(uuid.clone());
         }
         for_each_peer_uuid_with(&enriched.entry, extra_peer_var, |uuid| {
             uuids.insert(uuid.to_string());
@@ -82,7 +82,7 @@ pub fn discover(
 mod tests {
     use super::*;
     use crate::output::FilterParams;
-    use freeswitch_log_parser::{AttachedLines, LineKind, LogEntry, MessageKind};
+    use freeswitch_log_parser::{LogEntry, MessageKind};
 
     const PEER: &str = "11111111-2222-3333-4444-555555555555";
     const A_LEG: &str = "aaaaaaaa-1111-2222-3333-444444444444";
@@ -90,23 +90,14 @@ mod tests {
 
     fn set_entry(name: &str, value: &str) -> LogEntry {
         LogEntry {
-            uuid: "self".to_string(),
-            timestamp: String::new(),
-            level: None,
-            idle_pct: None,
-            source: None,
-            message: String::new(),
-            kind: LineKind::Full,
+            uuid: Some("self".to_string()),
             message_kind: MessageKind::Execute {
                 depth: 0,
                 channel: "sofia/internal/1001".to_string(),
                 application: "set".to_string(),
                 arguments: format!("{name}={value}"),
             },
-            block: None,
-            attached: AttachedLines::new(),
-            line_number: 0,
-            warnings: Vec::new(),
+            ..LogEntry::synthetic(String::new())
         }
     }
 

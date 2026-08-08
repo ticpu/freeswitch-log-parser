@@ -150,7 +150,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         let Some(open_media) = pending.block.codec_media() else {
             return false;
         };
-        if pending.entry.uuid != uuid {
+        if pending.entry.uuid.as_deref().unwrap_or("") != uuid {
             return false;
         }
         let MessageKind::CodecNegotiation { media } = classify_message(parsed.message) else {
@@ -201,7 +201,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         let opening_warning = block.push_codec_trace(parsed.message);
 
         let entry = LogEntry {
-            uuid,
+            uuid: if uuid.is_empty() { None } else { Some(uuid) },
             timestamp,
             message: parsed.message.to_string(),
             kind: parsed.kind,
@@ -406,7 +406,10 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     // An EXECUTE trace is its own entry even mid-block, and a
                     // different UUID means a different session's output.
                     let continues = !parsed.message.starts_with("EXECUTE ")
-                        && self.pending.as_ref().is_some_and(|p| p.entry.uuid == uuid);
+                        && self
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.entry.uuid.as_deref() == Some(uuid.as_str()));
 
                     if continues {
                         self.accumulate_continuation(parsed.message, &line);

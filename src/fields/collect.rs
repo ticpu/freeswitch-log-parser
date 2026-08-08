@@ -8,8 +8,8 @@ use std::str::FromStr;
 use freeswitch_types::ChannelVariable;
 
 use crate::message::{
-    classify_message, dialplan_parts, execute_parts, hangup_channel,
-    is_channel_variable_narration, new_channel_name, paren_channel, parse_bracketed_value,
+    classify_message, dialplan_parts, execute_parts, hangup_channel, is_channel_variable_narration,
+    new_channel_name, paren_channel, parse_bracketed_value, regex_condition_parts,
     set_export_parts, sip_invite_direction, strip_channel_prefix, MessageKind, SipInviteDirection,
 };
 use crate::uuid::find_uuids;
@@ -273,7 +273,15 @@ fn collect_channel_prefixed(msg: &str, out: &mut Vec<Field>) -> bool {
 
 fn collect_dialplan(msg: &str, out: &mut Vec<Field>) {
     if msg.starts_with("Dialplan: ") || msg.starts_with("Chatplan: ") {
-        push_channel(out, msg, dialplan_parts(msg).0);
+        let (channel, detail) = dialplan_parts(msg);
+        push_channel(out, msg, channel);
+        // A head the slicer cannot read yields no span: guessing at one is what
+        // the backstop is for.
+        if let Some((field, value)) = regex_condition_parts(detail) {
+            if let Some(range) = subslice_range(msg, value) {
+                push(out, variable_value_kind(field), range);
+            }
+        }
         return;
     }
     // The bracketless `from->to` shape names no display name, so `head` stays

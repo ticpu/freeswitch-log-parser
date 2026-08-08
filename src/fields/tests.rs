@@ -181,6 +181,48 @@ fn set_emits_channel_but_export_does_not() {
 }
 
 #[test]
+fn a_regex_condition_spans_the_value_it_tested() {
+    let msg = "Dialplan: sofia/internal/1263@192.0.2.1 Regex (PASS) [routing] \
+               caller_id_name(Pat Doe) =~ /^(.*)$/ break=on-false";
+    assert_eq!(
+        spans(msg),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+            (FieldKind::CallerIdName, "Pat Doe"),
+        ]
+    );
+}
+
+/// The logged field is the dialplan's raw attribute, so an API call brings its
+/// own parentheses — the value's opening one is the last unmatched, not the first.
+#[test]
+fn an_api_call_field_does_not_shift_the_value_span() {
+    let msg = "Dialplan: sofia/internal/1263@192.0.2.1 Regex (FAIL) [routing] \
+               ${regex(${sip_h_X-Src}|^(.*)$|%1)}(15555550100) =~ /^911$/ match=all";
+    assert_eq!(
+        spans(msg),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+            (FieldKind::VariableValue, "15555550100"),
+        ]
+    );
+}
+
+#[test]
+fn a_condition_with_no_regex_head_spans_only_the_channel() {
+    let msg = "Dialplan: sofia/internal/1263@192.0.2.1 Absolute Condition [routing]";
+    assert_eq!(
+        spans(msg),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+        ]
+    );
+}
+
+#[test]
 fn a_variable_named_in_the_identity_vocabulary_gets_its_own_kind() {
     assert_eq!(
         spans("EXPORT (export_vars) [effective_caller_id_name]=[Pat Doe]"),

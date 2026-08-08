@@ -79,6 +79,38 @@ pub(crate) fn dialplan_parts(msg: &str) -> (&str, &str) {
         None => (rest, ""),
     }
 }
+/// The condition's field and the expanded value it was tested against, in a
+/// `Regex (PASS|FAIL) [exten] field(value) =~ /expr/ tail` trace.
+///
+/// The field is the dialplan's raw attribute, so it may be a `${…}` API call
+/// carrying parentheses of its own: the value's opening paren is matched from
+/// the right, never taken as the first one in the head.
+pub(crate) fn regex_condition_parts(detail: &str) -> Option<(&str, &str)> {
+    let after_exten = detail.strip_prefix("Regex (")?.split_once(") [")?.1;
+    let head = &after_exten[after_exten.find("] ")? + 2..];
+    // A value can carry the separator; an expression realistically cannot.
+    let head = &head[..head.rfind(" =~ /")?];
+    let close = head.strip_suffix(')')?.len();
+
+    let bytes = head.as_bytes();
+    let mut depth = 1u32;
+    let mut i = close;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&head[..i], &head[i + 1..close]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(crate) fn parse_bracketed_value(s: &str, prefix_len: usize) -> Option<(&str, &str)> {
     let after_prefix = &s[prefix_len..];
     let colon = after_prefix.find(": ")?;

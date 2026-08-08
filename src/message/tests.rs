@@ -344,6 +344,16 @@ fn export_simple_variable() {
     }
 }
 
+#[test]
+fn a_regex_condition_value_keeps_its_own_parentheses() {
+    assert_eq!(
+        regex_condition_parts(
+            "Regex (PASS) [routing] caller_id_name(Doe (Mobile)) =~ /^.*$/ break=on-false"
+        ),
+        Some(("caller_id_name", "Doe (Mobile)"))
+    );
+}
+
 fn variable_parts(msg: &str) -> (String, String) {
     match classify_message(msg) {
         MessageKind::Variable { name, value } => (name, value),

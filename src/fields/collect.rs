@@ -15,15 +15,23 @@ use super::kind::{kind_rank, Field, FieldKind, FieldLocation};
 use super::processing::processing_parts;
 use super::subslice_range;
 
+/// The address inside a `[...]`-bracketed literal, when valid. Shared by
+/// `channel_host_ip` and `invite_source_addr`, whose unbracketed fallbacks
+/// differ (see their doc comments) and stay separate.
+fn bracketed_ip(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix('[')?;
+    let close = inner.find(']')?;
+    let addr = &inner[..close];
+    addr.parse::<IpAddr>().ok().map(|_| addr)
+}
+
 /// The host of a channel name, when it is a literal address rather than a
 /// hostname. Handles the bracketed IPv6 form and a trailing port.
 fn channel_host_ip(channel: &str) -> Option<&str> {
     let host = channel.rsplit_once('@')?.1;
 
-    if let Some(inner) = host.strip_prefix('[') {
-        let close = inner.find(']')?;
-        let addr = &inner[..close];
-        return addr.parse::<IpAddr>().ok().map(|_| addr);
+    if host.starts_with('[') {
+        return bracketed_ip(host);
     }
 
     if host.parse::<IpAddr>().is_ok() {
@@ -37,14 +45,16 @@ fn channel_host_ip(channel: &str) -> Option<&str> {
 }
 
 /// The source address of a `receiving invite from <addr>:<port>` line.
+///
+/// Unlike `channel_host_ip`, the unbracketed form always strips a trailing
+/// `:port` before parsing (SIP always logs source as `addr:port`), so a bare
+/// unbracketed IPv6 host — all colons, no port to strip — is not accepted here.
 fn invite_source_addr(rest: &str) -> Option<&str> {
     let after = rest.split_once("receiving invite from ")?.1;
     let token = after.split_whitespace().next()?;
 
-    if let Some(inner) = token.strip_prefix('[') {
-        let close = inner.find(']')?;
-        let addr = &inner[..close];
-        return addr.parse::<IpAddr>().ok().map(|_| addr);
+    if token.starts_with('[') {
+        return bracketed_ip(token);
     }
 
     let addr = token.rsplit_once(':').map(|(a, _)| a).unwrap_or(token);
@@ -72,7 +82,14 @@ pub fn message_fields(msg: &str) -> Vec<Field> {
         }
     }
 
-    out.sort_by(|a, b| {
+    sort_spans(&mut out);
+    out
+}
+
+/// Order by start ascending then width descending, so a containing span
+/// always precedes the spans inside it.
+fn sort_spans(fields: &mut [Field]) {
+    fields.sort_by(|a, b| {
         (
             a.range.start,
             std::cmp::Reverse(a.range.end),
@@ -84,7 +101,6 @@ pub fn message_fields(msg: &str) -> Vec<Field> {
                 kind_rank(b.kind),
             ))
     });
-    out
 }
 
 fn intersects(a: &Range<usize>, b: &Range<usize>) -> bool {
@@ -120,18 +136,7 @@ pub(super) fn raw_line_fields(line: &str, at: FieldLocation) -> Vec<Field> {
         });
     }
 
-    out.sort_by(|a, b| {
-        (
-            a.range.start,
-            std::cmp::Reverse(a.range.end),
-            kind_rank(a.kind),
-        )
-            .cmp(&(
-                b.range.start,
-                std::cmp::Reverse(b.range.end),
-                kind_rank(b.kind),
-            ))
-    });
+    sort_spans(&mut out);
     out
 }
 fn push(out: &mut Vec<Field>, kind: FieldKind, range: Range<usize>) {

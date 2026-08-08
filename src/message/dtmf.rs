@@ -6,18 +6,24 @@ fn is_valid_dtmf_digit(c: char) -> bool {
     matches!(c, '0'..='9' | '*' | '#' | 'A'..='D' | 'F')
 }
 
+/// Parse the `x:y` digit/duration pair shared by the RTP and channel DTMF shapes.
+fn parse_digit_duration(rest: &str) -> Option<(char, u32)> {
+    let colon = rest.find(':')?;
+    if colon != 1 {
+        return None;
+    }
+    let digit = rest.chars().next()?;
+    if !is_valid_dtmf_digit(digit) {
+        return None;
+    }
+    let duration_ms = rest[colon + 1..].parse::<u32>().ok()?;
+    Some((digit, duration_ms))
+}
+
 pub(super) fn parse_dtmf(msg: &str) -> Option<MessageKind> {
     // RTP RECV DTMF x:y
     if let Some(rest) = msg.strip_prefix("RTP RECV DTMF ") {
-        let colon = rest.find(':')?;
-        if colon != 1 {
-            return None;
-        }
-        let digit = rest.chars().next()?;
-        if !is_valid_dtmf_digit(digit) {
-            return None;
-        }
-        let duration_ms = rest[colon + 1..].parse::<u32>().ok()?;
+        let (digit, duration_ms) = parse_digit_duration(rest)?;
         return Some(MessageKind::Dtmf {
             source: DtmfSource::Rtp,
             digit,
@@ -27,15 +33,7 @@ pub(super) fn parse_dtmf(msg: &str) -> Option<MessageKind> {
 
     // RECV DTMF x:y
     if let Some(rest) = msg.strip_prefix("RECV DTMF ") {
-        let colon = rest.find(':')?;
-        if colon != 1 {
-            return None;
-        }
-        let digit = rest.chars().next()?;
-        if !is_valid_dtmf_digit(digit) {
-            return None;
-        }
-        let duration_ms = rest[colon + 1..].parse::<u32>().ok()?;
+        let (digit, duration_ms) = parse_digit_duration(rest)?;
         return Some(MessageKind::Dtmf {
             source: DtmfSource::Channel,
             digit,

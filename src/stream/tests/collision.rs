@@ -464,3 +464,30 @@ fn channel_data_bare_variable_collision_with_execute() {
     assert_eq!(entries[2].message_kind.label(), "variable");
     assert_accounting(&stream);
 }
+
+/// An oversize line that starts its own entry belongs to that entry, not to
+/// whichever entry happened to be open when it arrived.
+#[test]
+fn oversize_primary_line_warns_on_its_own_entry() {
+    let long_args = "x".repeat(MAX_LINE_PAYLOAD);
+    let lines = vec![
+        full_line(UUID1, TS1, "an ordinary earlier entry"),
+        full_line(UUID2, TS2, &format!("Ring-Ready {long_args}")),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries[0].warnings.is_empty(),
+        "the earlier entry did not produce the oversize line, got: {:?}",
+        entries[0].warnings
+    );
+    assert!(
+        entries[1]
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ParseWarning::OversizeLine { .. })),
+        "expected the oversize warning on the entry the line opened, got: {:?}",
+        entries[1].warnings
+    );
+}

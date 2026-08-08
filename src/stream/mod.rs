@@ -49,7 +49,11 @@ pub struct LogStream<I> {
     tracking: UnclassifiedTracking,
     line_number: u64,
     split_pending: VecDeque<String>,
-    deferred_warning: Option<ParseWarning>,
+    /// A warning about the line currently being dispatched, claimed by whichever
+    /// of `open_entry`/`attach` ends up owning it. Emitting it on arrival would
+    /// pin it on the pending entry, which for a line that starts a new one is
+    /// the wrong entry entirely.
+    line_warning: Option<ParseWarning>,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -64,7 +68,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
             split_pending: VecDeque::new(),
-            deferred_warning: None,
+            line_warning: None,
         }
     }
 
@@ -117,15 +121,6 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         Some(pending.entry)
     }
 
-    /// Attach a warning to the pending entry, or hold it for the entry the
-    /// current line is about to open.
-    fn warn(&mut self, warning: ParseWarning) {
-        match self.pending {
-            Some(ref mut pending) => pending.entry.warnings.push(warning),
-            None => self.deferred_warning = Some(warning),
-        }
-    }
-
     /// Store a raw line on the pending entry, or record that the entry has no
     /// room left for it. Every attach goes through here so a dropped line is
     /// counted once and the accounting invariant still balances.
@@ -139,6 +134,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             });
             self.stats.lines_dropped += 1;
         }
+        pending.entry.warnings.extend(self.line_warning.take());
     }
 
     /// Absorb a codec trace line into the run the pending entry already owns,
@@ -217,7 +213,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             attached: AttachedLines::new(),
             line_number: self.line_number,
             warnings: self
-                .deferred_warning
+                .line_warning
                 .take()
                 .into_iter()
                 .chain(opening_warning)
@@ -247,7 +243,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     /// iteration. Recursive: split suffixes pass through this function again.
     fn detect_collision(&mut self, line: String) -> String {
         if line.len() > MAX_LINE_PAYLOAD {
-            self.warn(ParseWarning::OversizeLine {
+            self.line_warning = Some(ParseWarning::OversizeLine {
                 bytes: line.len() + UUID_PREFIX_LEN + 1,
             });
         }

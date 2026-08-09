@@ -346,12 +346,12 @@ fn export_simple_variable() {
 
 #[test]
 fn a_regex_condition_value_keeps_its_own_parentheses() {
-    assert_eq!(
-        regex_condition_parts(
-            "Regex (PASS) [routing] caller_id_name(Doe (Mobile)) =~ /^.*$/ break=on-false"
-        ),
-        Some(("caller_id_name", "Doe (Mobile)"))
-    );
+    let cond = regex_condition_parts(
+        "Regex (PASS) [routing] caller_id_name(Doe (Mobile)) =~ /^.*$/ break=on-false",
+    )
+    .expect("readable condition trace");
+    assert_eq!(cond.field, "caller_id_name");
+    assert_eq!(cond.value, "Doe (Mobile)");
 }
 
 fn variable_parts(msg: &str) -> (String, String) {

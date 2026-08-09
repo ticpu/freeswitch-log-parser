@@ -259,7 +259,7 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`, `RegexCondition`
 - `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests. `SessionState`/`SessionSnapshot` are the same: build one from a tracker, or from `Default` plus field assignment. Hooks still get plain `&mut` field access
 - `LogEntry` is not marked, but `LogEntry::synthetic` exists so a consumer needing one does not spell out every field
 - NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)

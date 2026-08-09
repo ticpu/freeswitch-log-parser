@@ -79,7 +79,10 @@ pub use freeswitch_types::{
 };
 pub use level::{LogLevel, ParseLevelError};
 pub use line::{parse_line, LineKind, RawLine};
-pub use message::{classify_message, DtmfSource, MessageKind, SdpDirection, SipInviteDirection};
+pub use message::{
+    classify_message, regex_condition_parts, DtmfSource, MessageKind, RegexCondition, SdpDirection,
+    SipInviteDirection,
+};
 pub use peer::{
     for_each_peer_uuid, for_each_peer_uuid_with, is_peer_uuid_var, LOOPBACK_PEER_UUID_VARS,
     PEER_UUID_VARS,

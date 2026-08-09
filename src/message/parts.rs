@@ -79,13 +79,24 @@ pub(crate) fn dialplan_parts(msg: &str) -> (&str, &str) {
         None => (rest, ""),
     }
 }
-/// The condition's field and the expanded value it was tested against, in a
-/// `Regex (PASS|FAIL) [exten] field(value) =~ /expr/ tail` trace.
+/// The parts of a dialplan `Regex` condition trace, from [`regex_condition_parts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegexCondition<'a> {
+    /// The condition's raw `field` attribute, as the dialplan spelled it.
+    pub field: &'a str,
+    /// The expanded value the condition was tested against.
+    pub value: &'a str,
+}
+
+/// The parts of a `Regex (PASS|FAIL) [exten] field(value) =~ /expr/ tail`
+/// trace — [`MessageKind::Dialplan`](crate::MessageKind::Dialplan)'s `detail`
+/// payload; `None` on any other text.
 ///
 /// The field is the dialplan's raw attribute, so it may be a `${…}` API call
 /// carrying parentheses of its own: the value's opening paren is matched from
 /// the right, never taken as the first one in the head.
-pub(crate) fn regex_condition_parts(detail: &str) -> Option<(&str, &str)> {
+pub fn regex_condition_parts(detail: &str) -> Option<RegexCondition<'_>> {
     let after_exten = detail.strip_prefix("Regex (")?.split_once(") [")?.1;
     let head = &after_exten[after_exten.find("] ")? + 2..];
     // A value can carry the separator; an expression realistically cannot.
@@ -102,7 +113,10 @@ pub(crate) fn regex_condition_parts(detail: &str) -> Option<(&str, &str)> {
             b'(' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some((&head[..i], &head[i + 1..close]));
+                    return Some(RegexCondition {
+                        field: &head[..i],
+                        value: &head[i + 1..close],
+                    });
                 }
             }
             _ => {}

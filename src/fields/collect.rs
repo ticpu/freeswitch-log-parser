@@ -277,9 +277,9 @@ fn collect_dialplan(msg: &str, out: &mut Vec<Field>) {
         push_channel(out, msg, channel);
         // A head the slicer cannot read yields no span: guessing at one is what
         // the backstop is for.
-        if let Some((field, value)) = regex_condition_parts(detail) {
-            if let Some(range) = subslice_range(msg, value) {
-                push(out, variable_value_kind(field), range);
+        if let Some(cond) = regex_condition_parts(detail) {
+            if let Some(range) = subslice_range(msg, cond.value) {
+                push(out, variable_value_kind(cond.field), range);
             }
         }
         return;

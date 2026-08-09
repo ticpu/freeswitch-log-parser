@@ -308,6 +308,18 @@ fn core_session_set_variable_spans_its_value() {
 }
 
 #[test]
+fn a_channel_field_outside_the_identity_mapping_spans_its_value() {
+    assert_eq!(
+        spans("Caller-ANI: [15555550100]"),
+        [(FieldKind::VariableValue, "15555550100")]
+    );
+    assert_eq!(
+        spans("Channel-State: [CS_EXECUTE]"),
+        [(FieldKind::VariableValue, "CS_EXECUTE")]
+    );
+}
+
+#[test]
 fn a_uuid_nests_inside_a_value_slot() {
     let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     assert_eq!(
@@ -443,16 +455,11 @@ fn channel_data_caller_fields_map_to_their_kinds() {
 }
 
 #[test]
-fn unmapped_channel_field_emits_nothing() {
-    assert_eq!(spans("Channel-State: [CS_EXECUTE]"), []);
-}
-
-#[test]
 fn unique_id_value_keeps_its_uuid_span() {
-    let msg = "Unique-ID: [00112233-4455-6677-8899-aabbccddeeff]";
+    let uuid = "00112233-4455-6677-8899-aabbccddeeff";
     assert_eq!(
-        spans(msg),
-        [(FieldKind::Uuid, "00112233-4455-6677-8899-aabbccddeeff")]
+        spans(&format!("Unique-ID: [{uuid}]")),
+        [(FieldKind::VariableValue, uuid), (FieldKind::Uuid, uuid)]
     );
 }
 

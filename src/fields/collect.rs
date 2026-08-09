@@ -303,7 +303,7 @@ fn collect_channel_field(msg: &str, name: &str, out: &mut Vec<Field>) {
         "Caller-Caller-ID-Name" => FieldKind::CallerIdName,
         "Caller-Caller-ID-Number" => FieldKind::CallerIdNumber,
         "Caller-Destination-Number" => FieldKind::DestinationNumber,
-        _ => return,
+        _ => FieldKind::VariableValue,
     };
     let Some((_, value)) = parse_bracketed_value(msg, 0) else {
         return;

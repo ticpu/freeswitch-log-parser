@@ -78,7 +78,8 @@ pub enum MessageKind {
     ChannelData,
     /// A `Channel-*` or similar hyphenated field from a CHANNEL_DATA dump.
     ChannelField { name: String, value: String },
-    /// A `variable_*` field — from dumps, `SET`, `EXPORT`, `set()`, or `CoreSession::setVariable`.
+    /// A channel variable named with its value, whichever narration logged it.
+    /// `name` always carries the `variable_` prefix.
     Variable { name: String, value: String },
     /// Start of an SDP body block (`Local SDP:`, `Remote SDP:`).
     SdpMarker { direction: SdpDirection },

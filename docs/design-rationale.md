@@ -241,4 +241,8 @@ it consumes that variable silently, where closing early costs one warned value. 
 stream's own line split is the evidence — one of its two split mechanisms recognises
 the cut exactly and the other is a heuristic, and only the exact one can reach an open
 value, since a chunk the heuristic produces begins with a log header and dispatches as
-a primary line.
+a primary line. That evidence is kept per text the entry owns, so a consumer holding a
+span asks whether it ends where its text does rather than matching the span against the
+warning naming the variable — a name no span carries, and one that cannot separate two
+variables a single entry narrated. A closed value's span stops before its `]`, so the
+test admits only what the cut left unterminated.

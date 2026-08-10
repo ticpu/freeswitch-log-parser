@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use freeswitch_log_parser::{
     classify_message, is_uuid, parse_line, read_log_lines, truncate_at_char_boundary, Block,
     CodecMedia, Field, FieldKind, FieldLocation, LineKind, LogEntry, LogStream, MessageKind,
-    SessionTracker, UnclassifiedTracking,
+    ParseWarning, SessionTracker, UnclassifiedTracking,
 };
 use xz2::read::XzDecoder;
 
@@ -772,6 +772,57 @@ fn field_spans_are_well_formed_across_the_corpus() {
     eprintln!("checked {total} field spans");
     assert!(total > 0, "corpus should yield field spans");
     assert_no_violations(violations, "malformed field spans");
+}
+
+/// Every cut text must be one the entry has, a warned variable must have left one
+/// behind, and real logs must exercise the span answer at all. The converse does
+/// not hold: the warning covers a value open inside a dump, the span every cut
+/// text, and the report prints how far apart the two reach.
+#[test]
+fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
+    if skip_if_no_fixtures() {
+        return;
+    }
+    let mut truncated_spans: u64 = 0;
+    let mut warned_spans: u64 = 0;
+    let mut cut_entries: u64 = 0;
+    let violations = for_each_fixture(|corpus, name, _, entry| {
+        let mut bad = Vec::new();
+        let at = format!("{corpus}/{name} L{}", entry.line_number);
+
+        for loc in &entry.cut_texts {
+            if let FieldLocation::Attached(i) = loc {
+                if entry.attached.get(*i).is_none() {
+                    bad.push(format!("{at}: cut text names missing attached line {i}"));
+                }
+            }
+        }
+        if !entry.cut_texts.is_empty() {
+            cut_entries += 1;
+        }
+
+        let warned = entry
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ParseWarning::TruncatedVariable { .. }));
+        if warned && entry.cut_texts.is_empty() {
+            bad.push(format!("{at}: variable cut but no text recorded as cut"));
+        }
+
+        for _ in entry.fields().iter().filter(|f| entry.is_truncated(f)) {
+            truncated_spans += 1;
+            if warned {
+                warned_spans += 1;
+            }
+        }
+        bad
+    });
+    eprintln!(
+        "{cut_entries} entries with cut text, {truncated_spans} truncated spans \
+         ({warned_spans} on entries the warning list also names)"
+    );
+    assert!(truncated_spans > 0, "corpus should carry cut spans");
+    assert_no_violations(violations, "cut span disagreements");
 }
 
 /// The applier must survive the whole corpus in both directions: replacing

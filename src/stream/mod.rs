@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 
 use crate::attached::AttachedLines;
 use crate::chain::SEGMENT_BOUNDARY;
+use crate::fields::FieldLocation;
 use crate::line::{
     is_date_at, is_log_header_at, is_uuid_at, parse_line, LineKind, RawLine, UUID_PREFIX_LEN,
 };
@@ -52,6 +53,9 @@ pub struct LogStream<I> {
     /// Whether the line dispatched before the current one ended at a split
     /// rather than at its own newline — the logger cut it short.
     prev_line_cut: bool,
+    /// The same verdict about the line currently being dispatched, claimed by
+    /// whichever of `open_entry`/`attach` ends up owning it.
+    line_cut: bool,
     /// A warning about the line currently being dispatched, claimed by whichever
     /// of `open_entry`/`attach` ends up owning it. Emitting it on arrival would
     /// pin it on the pending entry, which for a line that starts a new one is
@@ -72,6 +76,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             line_number: 0,
             split_pending: VecDeque::new(),
             prev_line_cut: false,
+            line_cut: false,
             line_warning: None,
         }
     }
@@ -137,6 +142,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 line: ParseWarning::excerpt(line),
             });
             self.stats.lines_dropped += 1;
+        } else if self.line_cut {
+            let i = pending.entry.attached.len() - 1;
+            pending.entry.cut_texts.push(FieldLocation::Attached(i));
         }
         pending.entry.warnings.extend(self.line_warning.take());
     }
@@ -226,6 +234,11 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 .into_iter()
                 .chain(opening_warning)
                 .collect(),
+            cut_texts: if self.line_cut {
+                vec![FieldLocation::Message]
+            } else {
+                Vec::new()
+            },
         };
         self.pending = Some(Pending { entry, block });
     }
@@ -386,8 +399,8 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
             // A non-empty queue means this chunk ended at a split, not a newline.
             // Recomputed every line: a stale flag would close a multi-line value.
-            let prev_cut =
-                std::mem::replace(&mut self.prev_line_cut, !self.split_pending.is_empty());
+            self.line_cut = !self.split_pending.is_empty();
+            let prev_cut = std::mem::replace(&mut self.prev_line_cut, self.line_cut);
 
             let parsed = parse_line(&line);
 

@@ -572,6 +572,35 @@ fn bare_continuation_has_no_prefix_to_skip() {
     assert_eq!(text_at(&entry, &f), "1263");
 }
 
+/// A closed value is spanned inside its brackets, so it stops before the end of
+/// its line and cannot be mistaken for one the buffer cut.
+#[test]
+fn a_whole_value_span_is_not_truncated() {
+    let lines = vec![
+        format!(
+            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
+        ),
+        format!("{UUID1} variable_sip_h_X-Trace: [<http://192.0.2.9/t?id=7>]"),
+    ];
+    let entry = entry_from(&lines);
+    assert!(entry.cut_texts.is_empty());
+    for f in entry.fields() {
+        assert!(!entry.is_truncated(&f), "{f:?} reported truncated");
+    }
+}
+
+#[test]
+fn a_span_at_a_location_the_entry_lacks_is_not_truncated() {
+    let mut entry = crate::stream::LogEntry::synthetic("CHANNEL_DATA:");
+    entry.cut_texts.push(FieldLocation::Attached(99));
+    let f = Field {
+        kind: FieldKind::VariableValue,
+        at: FieldLocation::Attached(99),
+        range: 0..1,
+    };
+    assert!(!entry.is_truncated(&f));
+}
+
 fn field(kind: FieldKind, range: Range<usize>) -> Field {
     Field {
         kind,

@@ -6,6 +6,7 @@ use std::fmt;
 use crate::attached::AttachedLines;
 use crate::codec::{CodecMedia, CodecOffer, CodecParseError};
 use crate::decode::truncate_at_char_boundary;
+use crate::fields::FieldLocation;
 use crate::level::LogLevel;
 use crate::line::LineKind;
 use crate::message::{MessageKind, SdpDirection};
@@ -254,6 +255,10 @@ pub struct LogEntry {
     pub line_number: u64,
     /// Per-entry warnings about parsing anomalies.
     pub warnings: Vec<ParseWarning>,
+    /// The entry's own texts that ended at a split rather than at their own
+    /// newline, because the logger's write buffer cut the record short.
+    /// [`is_truncated`](LogEntry::is_truncated) is how a span asks about them.
+    pub cut_texts: Vec<FieldLocation>,
 }
 
 impl LogEntry {
@@ -275,6 +280,7 @@ impl LogEntry {
             attached: AttachedLines::new(),
             line_number: 0,
             warnings: Vec::new(),
+            cut_texts: Vec::new(),
         }
     }
 }

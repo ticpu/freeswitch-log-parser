@@ -97,6 +97,28 @@ impl crate::stream::LogEntry {
         out
     }
 
+    /// Whether the logger's write buffer cut short the text this span indexes,
+    /// leaving the span itself incomplete.
+    ///
+    /// The cut always falls at the end of the text, so a span that stops before
+    /// it survived whole. A closed `[value]` is spanned inside its brackets and
+    /// so can never reach the end of its line; only a value the cut left
+    /// unterminated can. A span at a location this entry does not have is not
+    /// truncated — it indexes nothing here.
+    pub fn is_truncated(&self, field: &Field) -> bool {
+        if !self.cut_texts.contains(&field.at) {
+            return false;
+        }
+        let len = match field.at {
+            FieldLocation::Message => self.message.len(),
+            FieldLocation::Attached(i) => match self.attached.get(i) {
+                Some(line) => line.len(),
+                None => return false,
+            },
+        };
+        field.range.end == len
+    }
+
     /// Rewrite this entry's fields, returning one string per render unit.
     ///
     /// `f` is called with each field and the text it covers; `None` leaves it

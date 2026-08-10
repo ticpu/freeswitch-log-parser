@@ -262,6 +262,102 @@ fn a_cut_value_does_not_swallow_the_next_variable() {
         }));
 }
 
+/// A value the buffer cut has to be recognisable from the span a redactor is
+/// about to rewrite, without matching the warning list by variable name.
+#[test]
+fn a_cut_value_span_reports_truncated() {
+    use crate::fields::{FieldKind, FieldLocation};
+
+    let head = format!("{UUID1} variable_sip_h_X-Trace: [<http://192.0.2.9/t?id=");
+    let padding = "x".repeat(MAX_LINE_PAYLOAD - head.len());
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
+        format!("{head}{padding}{UUID1} variable_direction: [inbound]"),
+        full_line(UUID1, TS2, "Next log entry"),
+    ];
+    let entry = LogStream::new(lines.into_iter()).next().expect("entry");
+
+    assert_eq!(entry.cut_texts, vec![FieldLocation::Attached(1)]);
+
+    let fields = entry.fields();
+    let cut = fields
+        .iter()
+        .find(|f| f.at == FieldLocation::Attached(1) && f.kind == FieldKind::VariableValue)
+        .expect("the cut value is spanned");
+    assert!(entry.is_truncated(cut));
+
+    // Every other span survived whole — including the session UUID sharing the
+    // cut line, which stops long before the cut.
+    for f in fields.iter().filter(|f| *f != cut) {
+        assert!(!entry.is_truncated(f), "{f:?} reported truncated");
+    }
+}
+
+/// Two variables cut in one entry — the case a name-keyed correlation cannot
+/// separate, since both warnings and both spans belong to the same entry.
+#[test]
+fn each_cut_line_of_an_entry_answers_for_itself() {
+    use crate::fields::{FieldKind, FieldLocation};
+
+    let cut_line = |name: &str| {
+        let head = format!("{UUID1} variable_{name}: [");
+        let padding = "x".repeat(MAX_LINE_PAYLOAD - head.len());
+        format!("{head}{padding}{UUID1} variable_direction: [inbound]")
+    };
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        cut_line("sip_h_X-First"),
+        cut_line("sip_h_X-Second"),
+        full_line(UUID1, TS2, "Next log entry"),
+    ];
+    let entry = LogStream::new(lines.into_iter()).next().expect("entry");
+
+    assert_eq!(
+        entry.cut_texts,
+        vec![FieldLocation::Attached(0), FieldLocation::Attached(2)]
+    );
+
+    let truncated: Vec<_> = entry
+        .fields()
+        .into_iter()
+        .filter(|f| entry.is_truncated(f))
+        .collect();
+    assert_eq!(truncated.len(), 2);
+    for f in &truncated {
+        assert_eq!(f.kind, FieldKind::VariableValue);
+    }
+}
+
+/// The cut chunk carries another session's UUID, so it opens an entry instead of
+/// joining one and the cut lands on the message rather than an attached line.
+#[test]
+fn a_cut_primary_line_reports_its_message_truncated() {
+    use crate::fields::{FieldKind, FieldLocation};
+
+    let head = format!("{UUID2} variable_sip_h_X-Trace: [<http://192.0.2.9/t?id=");
+    let padding = "x".repeat(MAX_LINE_PAYLOAD - head.len());
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
+        format!("{head}{padding}{UUID2} variable_direction: [inbound]"),
+        full_line(UUID1, TS2, "Next log entry"),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+
+    let cut_entry = &entries[1];
+    assert_eq!(cut_entry.uuid.as_deref(), Some(UUID2));
+    assert_eq!(cut_entry.cut_texts, vec![FieldLocation::Message]);
+
+    let value = cut_entry
+        .fields()
+        .into_iter()
+        .find(|f| f.at == FieldLocation::Message && f.kind == FieldKind::VariableValue)
+        .expect("the cut value is spanned");
+    assert!(cut_entry.is_truncated(&value));
+    assert!(entries[0].cut_texts.is_empty());
+}
+
 #[test]
 fn truncated_collision_in_channel_data_variable() {
     // A CHANNEL_DATA block where a variable value exceeds the 2048-byte

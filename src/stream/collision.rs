@@ -12,6 +12,11 @@ pub(super) const MOD_LOGFILE_BUF_SIZE: usize = 2048;
 /// `mod_logfile` prepends, minus the trailing newline).
 pub(super) const MAX_LINE_PAYLOAD: usize = MOD_LOGFILE_BUF_SIZE - UUID_PREFIX_LEN - 1;
 
+/// Physical length of a line the buffer cut: every byte `snprintf` could write
+/// short of its NUL, the trailing newline lost to the cut. An intact prepended
+/// line is at most one byte shorter, so this length is the cut itself.
+pub(super) const CUT_LINE_LEN: usize = MOD_LOGFILE_BUF_SIZE - 1;
+
 /// Tolerance around the expected truncation boundary when scanning oversize
 /// lines for Format E collisions. The boundary is deterministic
 /// (`MAX_LINE_PAYLOAD` from the start of the truncated chunk) but a few bytes

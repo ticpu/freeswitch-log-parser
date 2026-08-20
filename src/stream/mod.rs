@@ -20,7 +20,7 @@ use crate::line::{
 use crate::message::{classify_message, MessageKind};
 
 use block::BlockBuilder;
-use collision::{COLLISION_SCAN_SLACK, MAX_LINE_PAYLOAD};
+use collision::{COLLISION_SCAN_SLACK, CUT_LINE_LEN, MAX_LINE_PAYLOAD};
 
 pub use entry::{Block, LogEntry, ParseWarning, SessionReading};
 pub use stats::{ParseStats, UnclassifiedLine, UnclassifiedReason, UnclassifiedTracking};
@@ -263,15 +263,17 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     /// the suffix is stored in `split_pending` for processing in the next
     /// iteration. Recursive: split suffixes pass through this function again.
     fn detect_collision(&mut self, line: String) -> String {
-        if line.len() > MAX_LINE_PAYLOAD {
-            self.line_warning = Some(ParseWarning::OversizeLine {
-                bytes: line.len() + UUID_PREFIX_LEN + 1,
-            });
+        let bytes = line.as_bytes();
+        let prepended = is_uuid_at(bytes, 0);
+
+        // Only the prepend path formats through the fixed buffer, so a record
+        // written verbatim carries no cut however long it runs.
+        if prepended && line.len() >= CUT_LINE_LEN {
+            self.line_warning = Some(ParseWarning::OversizeLine { bytes: line.len() });
         }
 
         // Skip past the line's own header to avoid matching itself.
-        let bytes = line.as_bytes();
-        let min_scan = if is_uuid_at(bytes, 0) {
+        let min_scan = if prepended {
             if bytes.len() > UUID_PREFIX_LEN && bytes[UUID_PREFIX_LEN].is_ascii_digit() {
                 64 // Full line: UUID + timestamp
             } else {

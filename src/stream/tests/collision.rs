@@ -625,3 +625,59 @@ fn oversize_primary_line_warns_on_its_own_entry() {
         entries[1].warnings
     );
 }
+
+/// `mod_logfile` formats through its fixed buffer only when it prepends a
+/// session UUID. A record written verbatim is intact however long it runs, so
+/// its length is not evidence of anything.
+#[test]
+fn a_verbatim_line_past_the_buffer_is_not_a_cut() {
+    let body = "x".repeat(11_000);
+    let lines = vec![format!(
+        "{TS1} 95.97% [DEBUG] mod_oreka.c:121 Oreka SIP Packet {body}"
+    )];
+    let mut stream = LogStream::new(lines.into_iter());
+    let entries: Vec<_> = stream.by_ref().collect();
+
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0].warnings.is_empty(),
+        "a verbatim record has no write buffer to overrun, got: {:?}",
+        entries[0].warnings
+    );
+    assert_eq!(stream.stats().lines_split, 0);
+    assert_accounting(&stream);
+}
+
+/// The longest line the prepend path can write intact, one byte short of the
+/// buffer's reach. Anything at or past `CUT_LINE_LEN` lost its newline.
+#[test]
+fn a_prepended_line_at_the_intact_maximum_is_not_a_cut() {
+    let overhead = full_line(UUID1, TS1, "").len();
+    let line = full_line(UUID1, TS1, &"x".repeat(CUT_LINE_LEN - 1 - overhead));
+    assert_eq!(line.len(), CUT_LINE_LEN - 1);
+
+    let entries: Vec<_> = LogStream::new(vec![line].into_iter()).collect();
+    assert!(
+        entries[0].warnings.is_empty(),
+        "an intact record must not be reported as cut, got: {:?}",
+        entries[0].warnings
+    );
+}
+
+/// One byte further the newline no longer fits, which is the cut itself.
+#[test]
+fn a_prepended_line_filling_the_buffer_is_a_cut() {
+    let overhead = full_line(UUID1, TS1, "").len();
+    let line = full_line(UUID1, TS1, &"x".repeat(CUT_LINE_LEN - overhead));
+    assert_eq!(line.len(), CUT_LINE_LEN);
+
+    let entries: Vec<_> = LogStream::new(vec![line].into_iter()).collect();
+    assert!(
+        entries[0]
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ParseWarning::OversizeLine { bytes } if *bytes == CUT_LINE_LEN)),
+        "expected the cut reported at its physical length, got: {:?}",
+        entries[0].warnings
+    );
+}

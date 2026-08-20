@@ -163,9 +163,9 @@ pub enum ParseWarning {
     /// A continuation line arrived while a codec negotiation block was open.
     /// The trace has no continuations, so the line belongs to nothing.
     UnexpectedCodecContinuation { line: String },
-    /// The formatted line exceeded `mod_logfile`'s write buffer, so the record
-    /// was cut short and lost its trailing newline. `bytes` is the formatted
-    /// length, prefix included.
+    /// A prepended record filled `mod_logfile`'s write buffer, so it lost its
+    /// trailing newline and was cut short. `bytes` is the physical line length,
+    /// anything that collided onto it included.
     OversizeLine { bytes: usize },
     /// The entry's attached lines outgrew the offsets addressing them, so this
     /// line could not be stored. Counted in
@@ -211,8 +211,8 @@ impl fmt::Display for ParseWarning {
             }
             ParseWarning::OversizeLine { bytes } => write!(
                 f,
-                "line exceeds mod_logfile {MOD_LOGFILE_BUF_SIZE}-byte buffer \
-                 ({bytes} bytes), data may be truncated"
+                "record cut by mod_logfile's {MOD_LOGFILE_BUF_SIZE}-byte buffer \
+                 ({bytes} bytes on the line)"
             ),
             ParseWarning::UnreadableValue { reading, value } => {
                 write!(f, "unreadable {reading}: {value}")

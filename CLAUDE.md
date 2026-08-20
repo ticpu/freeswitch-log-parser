@@ -73,24 +73,50 @@ UUID variable_sip_call_id: [value]
 
 Inherits timestamp from the last full log line.
 
-**Format D — Bare continuation (no UUID, no timestamp).** When multi-line values exceed the per-line UUID prefix budget. Occurs in CHANNEL_DATA dumps when `switch_event_serialize()` produces multi-line output (e.g., embedded SDP in a variable value). `mod_logfile` splits `node->data` by newlines and prepends the session UUID to each line — when the UUID prepend is disabled or the line lacks session context, the UUID is absent. Inherits both UUID and timestamp from context.
+**Format D — Bare continuation (no UUID, no timestamp).** Two producers, both structural:
 
-**Format E — Truncated buffer collision.** `mod_logfile` uses a fixed 2048-byte buffer (`mod_logfile.c:299`) for UUID prepend:
+1. **The 100-element split cap.** `switch_split(dup, '\n', lines)` with `char *lines[100]` (`mod_logfile.c:301`) stops the moment it has filled the array, so element 99 keeps the *entire unsplit remainder* of `node->data` with its newlines intact. That element is written by one `snprintf`, so it lands as a UUID-prefixed line followed by bare ones, and the dump never resumes prefixed output. Confirmed on a live 1.10.13 build: a CHANNEL_DATA dump with 100+ variables ends after exactly 99 prefixed lines — the last one closing its `[value]` normally — then continues bare.
+2. **A verbatim multi-line node.** With no session context (`zstr(node->userdata)`) or `log_uuid=false`, `mod_logfile` writes `node->data` whole, so every line of it lacks a prefix, the first included.
+
+Inherits both UUID and timestamp from context.
+
+**Format E — Truncated buffer collision.** `mod_logfile` formats through a fixed 2048-byte buffer *only* when it prepends a session UUID (`mod_logfile.c:298-308`):
 
 ```c
-char buf[2048];
-switch_snprintf(buf, sizeof(buf), "%s %s\n", node->userdata, lines[i]);
+if (profile->log_uuid && !zstr(node->userdata)) {
+    char buf[2048];
+    argc = switch_split(dup, '\n', lines);
+    for (i = 0; i < argc; i++) {
+        switch_snprintf(buf, sizeof(buf), "%s %s\n", node->userdata, lines[i]);
+        mod_logfile_raw_write(profile, buf);
+    }
+} else {
+    mod_logfile_raw_write(profile, node->data);
+}
 ```
 
-Effective payload ~2010 bytes (2048 minus 36 UUID, 1 space, 1 newline). When exceeded, `snprintf` truncates and the trailing `\n` is lost, so the next log entry collides on the same physical line:
+The `else` branch has no buffer, so a record with no UUID prefix is intact at any length — production logs carry verbatim lines past 11 KB. Never read a length alone as evidence of truncation.
+
+One `snprintf` puts at most 2047 bytes on disk. The terminating `\n` is the first thing that no longer fits, so **the longest intact physical line is 2046 bytes and a cut write is exactly 2047 with no newline** — the next write then collides on the same physical line, starting at offset 2047. Measured across 49 M writes in the fixture corpus: no intact write ever reaches 2047.
 
 ```
 varia3231989a-c8fb-42c3-9078-b9d6b1482fa7 EXECUTE [depth=0] ...
 ```
 
-Garbage prefix length varies (`var`, `varia`, `variab`, `variable`). For long values (e.g., PIDF XML), the collision UUID can appear hundreds of bytes in.
+The cut lands mid-token, so the fragment before the collision UUID varies in length. Because a write can span several physical lines (Format D case 1), the cut frequently lands on a *short* bare line rather than a long one — its physical length says nothing.
 
 Note: truncation happens exclusively in `mod_logfile`'s UUID prepend stage, not in the core logging pipeline which uses `switch_vasprintf()` (dynamic allocation, no size limit).
+
+### The prepend stage re-encodes every line it writes
+
+Each element passes through `cleanup_separated_string()` (`switch_utils.c:2687`) before it is written, so a prefixed line is a rendering of the value, not the value. Verified on a live build by setting channel variables and dumping them:
+
+- **Apostrophes pair and vanish within a line.** A value with two is logged with none; with one, the odd one survives. Across 1.9 M prefixed production lines, every line containing an apostrophe contains exactly one.
+- **Backslash escapes are consumed and applied** before `'`, `"`, a newline, another backslash, or any character `unescape_char()` maps. A backslash before anything else survives.
+- **Leading and trailing spaces are trimmed.**
+- **Lines glue.** In the tokenizer (`switch_utils.c:2774-2778`), a backslash skips the next character and an apostrophe opens a quoted region — in both cases a newline stops being a delimiter, so two records are written as one element.
+
+None of this is recoverable downstream. A consumer reconstructing an exact string — a caller name, a SIP header — must treat a prefixed line as lossy; only the verbatim path carries the bytes as they were.
 
 ### Log output taxonomy
 
@@ -181,7 +207,9 @@ The iterator always yields entries one behind the current parse position. Final 
 
 ### UUID tracking across truncated lines
 
-Layer 1 scans the first 50 bytes for a UUID pattern — catches common short-prefix collisions. For long collisions (UUID hundreds of bytes in), Layer 1 classifies as BareContinuation. Layer 2 detects these by checking message length against the ~2010-byte payload limit and scanning the overflow for an embedded UUID. When found, the line is split: prefix stays as continuation data, UUID+suffix becomes a separate entry, `lines_split` incremented.
+Layer 1 scans the first 50 bytes for a UUID pattern — catches common short-prefix collisions. For long collisions (UUID hundreds of bytes in), Layer 1 classifies as BareContinuation. Layer 2 scans oversize lines for an embedded UUID near the expected boundary and splits there: prefix stays as continuation data, UUID+suffix becomes a separate entry, `lines_split` incremented.
+
+That scan is a heuristic windowed on the wrong quantity — a payload budget compared against physical lengths that already carry the 37-byte prefix — and it only looks at lines long enough to trip it. The real boundary is 2047 bytes from the start of the *write*, which is exact and also reaches the common case the length test cannot see: a write spanning a prefixed line plus bare ones, cut on one of the short bare lines.
 
 Both detected and split truncated lines are treated as primary lines — they start a new entry and update `last_uuid`.
 
@@ -201,7 +229,7 @@ lines_processed + lines_split == lines_in_entries + lines_empty_orphan + lines_d
 
 `ParseStats::unaccounted_lines()` returns the difference — non-zero indicates a parser bug.
 
-Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in entries: 1 primary + N attached), `lines_empty_orphan` (empty lines with no pending entry), `lines_split` (truncated collisions split into multiple entries), `lines_dropped` (continuation lines an entry's attached buffer had no room for), `lines_unclassified` (orthogonal anomaly counter).
+Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in entries: 1 primary + N attached), `lines_empty_orphan` (empty lines with no pending entry), `lines_split` (extra chunks from splitting a physical line that held more than one record — a cut write's successor, or write contention), `lines_dropped` (continuation lines an entry's attached buffer had no room for), `lines_unclassified` (orthogonal anomaly counter).
 
 ### Per-session state propagation
 

@@ -44,8 +44,9 @@ pub struct ParseStats {
     pub lines_in_entries: u64,
     /// Empty lines that arrived with no pending entry to attach to.
     pub lines_empty_orphan: u64,
-    /// Physical lines that were split into multiple logical entries due to
-    /// mod_logfile's 2048-byte snprintf truncation causing same-line collisions.
+    /// Extra chunks produced by splitting physical lines that held more than
+    /// one record: a cut write's successor glued on, or write contention
+    /// interleaving two records. One line yielding N chunks counts N - 1.
     pub lines_split: u64,
     /// Continuation lines an entry could not store because its attached buffer
     /// outgrew the offsets addressing it. The entry carries a

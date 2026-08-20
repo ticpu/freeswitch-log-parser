@@ -233,6 +233,14 @@ instead of aborting the parse. The line accounting carries that count as its own
 term, so a line the parser knowingly could not keep still balances rather than
 reading as one it silently lost.
 
+## Damage is claimed from the write path, never from a length
+
+`mod_logfile` re-encodes a session-bound record through a fixed buffer and writes
+everything else verbatim, so the parser calls a record cut, reflowed or altered
+only where the line shows it took the re-encoding path. A length is not that
+evidence — a verbatim record is intact however long it runs — and the buffer's
+budget bounds one write, not the physical line a reader is holding.
+
 ## A value the logger cut is closed, not joined
 
 Reassembly of a multi-line channel-variable value stops when the write buffer cut the

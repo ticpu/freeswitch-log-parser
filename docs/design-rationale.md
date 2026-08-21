@@ -243,10 +243,6 @@ budget bounds one write, not the physical line a reader is holding. Where that
 evidence is absent — a write whose start the stream never saw — detection
 switches off rather than assume one.
 
-Which path carried a record is reported rather than kept internal: text the
-re-encoding produced is a rendering of the value, and nothing downstream can
-recover that from the text alone.
-
 ## A value the logger cut is closed, not joined
 
 Reassembly of a multi-line channel-variable value stops when the write buffer cut the

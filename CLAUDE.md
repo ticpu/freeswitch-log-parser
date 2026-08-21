@@ -37,7 +37,7 @@ check it *before* evaluating the request's mechanics.
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
 - `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`; `parts.rs` holds the positional slicers `fields/` reuses
 - `src/fields/` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
-- `src/stream/` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`, `LineEncoding`; `collision.rs` holds the write budget and `WriteCursor`
+- `src/stream/` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`; `collision.rs` holds the write budget and `WriteCursor`
 - `src/session/` — `SessionTracker` (`tracker.rs`), `SessionState` (`state.rs`), the secondary indexes (`index.rs`), line shapes (`parse.rs`)
 - `src/codec.rs` — `CodecOffer`/`CodecMedia`, the bracketed token in codec-negotiation traces
 - `src/session/conference.rs` — `ConferenceMembership`, conference join/leave detection
@@ -291,7 +291,7 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`, `RegexCondition`, `LineEncoding`
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`, `RegexCondition`
 - `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests. `SessionState`/`SessionSnapshot` are the same: build one from a tracker, or from `Default` plus field assignment. Hooks still get plain `&mut` field access
 - `LogEntry` is not marked, but `LogEntry::synthetic` exists so a consumer needing one does not spell out every field
 - NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)

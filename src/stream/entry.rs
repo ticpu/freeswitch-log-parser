@@ -223,28 +223,6 @@ impl fmt::Display for ParseWarning {
     }
 }
 
-/// Which `mod_logfile` write path put an entry's text on disk.
-///
-/// Most consumers can ignore this. One rebuilding an exact string from a log —
-/// a caller name, a SIP header — cannot: only [`Verbatim`](LineEncoding::Verbatim)
-/// text is the value as it was.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum LineEncoding {
-    /// Written through the per-line prepend stage, which re-encodes on the way:
-    /// paired apostrophes are deleted, backslash escapes consumed and applied,
-    /// surrounding whitespace trimmed, and a quoted region or an escaped
-    /// newline can glue two records into one line. None of it is recoverable
-    /// from the text.
-    Prepended,
-    /// Written whole, byte for byte.
-    Verbatim,
-    /// The stream never saw where this text's write began, so neither can be
-    /// claimed — a log opened mid-write, or a segment starting on a
-    /// continuation.
-    Unknown,
-}
-
 /// A complete parsed log entry with all context resolved.
 ///
 /// Produced by [`LogStream`](super::LogStream). Continuation lines have been
@@ -280,9 +258,6 @@ pub struct LogEntry {
     /// newline, because the logger's write buffer cut the record short.
     /// [`is_truncated`](LogEntry::is_truncated) is how a span asks about them.
     pub cut_texts: Vec<FieldLocation>,
-    /// Which write path produced this entry's primary line. Its continuations
-    /// belong to that same write, so the verdict covers the whole entry.
-    pub encoding: LineEncoding,
 }
 
 impl LogEntry {
@@ -305,7 +280,6 @@ impl LogEntry {
             line_number: 0,
             warnings: Vec::new(),
             cut_texts: Vec::new(),
-            encoding: LineEncoding::Unknown,
         }
     }
 }

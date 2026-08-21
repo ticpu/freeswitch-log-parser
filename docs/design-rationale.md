@@ -239,7 +239,13 @@ reading as one it silently lost.
 everything else verbatim, so the parser calls a record cut, reflowed or altered
 only where the line shows it took the re-encoding path. A length is not that
 evidence — a verbatim record is intact however long it runs — and the buffer's
-budget bounds one write, not the physical line a reader is holding.
+budget bounds one write, not the physical line a reader is holding. Where that
+evidence is absent — a write whose start the stream never saw — detection
+switches off rather than assume one.
+
+Which path carried a record is reported rather than kept internal: text the
+re-encoding produced is a rendering of the value, and nothing downstream can
+recover that from the text alone.
 
 ## A value the logger cut is closed, not joined
 

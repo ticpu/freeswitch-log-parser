@@ -232,13 +232,15 @@ fn accounting_truncated_line() {
 
 #[test]
 fn accounting_long_line_collision_split() {
-    // Simulate a long variable value exceeding mod_logfile's 2048-byte buffer,
-    // followed by a collision UUID on the same physical line.
-    let long_value = "x".repeat(MAX_LINE_PAYLOAD + 10);
-    let line = format!(
-        "variable_sip_multipart: [{long_value}]{UUID2} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(foo=bar)"
+    // One write spanning the CHANNEL_DATA line and the bare continuation under
+    // it, cut on the continuation with the next record glued on.
+    let opener = full_line(UUID1, TS1, "CHANNEL_DATA:");
+    let line = cut_write_after(
+        opener.len() + 1,
+        "variable_sip_multipart: [",
+        &format!("{UUID2} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(foo=bar)"),
     );
-    let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), line];
+    let lines = vec![opener, line];
     let mut stream = LogStream::new(lines.into_iter());
     let entries: Vec<_> = stream.by_ref().collect();
 

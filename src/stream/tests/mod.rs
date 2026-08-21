@@ -21,6 +21,20 @@ fn full_line(uuid: &str, ts: &str, msg: &str) -> String {
     format!("{uuid} {ts} 95.97% [DEBUG] sofia.c:100 {msg}")
 }
 
+/// A physical line holding a write that spent its budget: `head` padded to
+/// exactly what the write had left, with `successor` glued where the newline no
+/// longer fit. No fixture should spell this arithmetic out for itself.
+fn cut_write(head: &str, successor: &str) -> String {
+    cut_write_after(0, head, successor)
+}
+
+/// The same, for a line the write reached after `spent` bytes of earlier ones —
+/// a write spanning a prefixed line and the bare continuations under it.
+fn cut_write_after(spent: usize, head: &str, successor: &str) -> String {
+    let padding = "x".repeat(WRITE_LIMIT - spent - head.len());
+    format!("{head}{padding}{successor}")
+}
+
 const TS1: &str = "2025-01-15 10:30:45.123456";
 const TS2: &str = "2025-01-15 10:30:46.234567";
 

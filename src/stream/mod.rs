@@ -20,10 +20,16 @@ use crate::line::{
 use crate::message::{classify_message, MessageKind};
 
 use block::BlockBuilder;
-use collision::{COLLISION_SCAN_SLACK, CUT_LINE_LEN, MAX_LINE_PAYLOAD};
+use collision::{WriteCursor, DECODE_DRIFT, WRITE_LIMIT};
 
 pub use entry::{Block, LogEntry, ParseWarning, SessionReading};
 pub use stats::{ParseStats, UnclassifiedLine, UnclassifiedReason, UnclassifiedTracking};
+
+/// Where the next cut would fall after a split at `at`, if the chunk starting
+/// there is a prepend write that can reach its budget inside this line.
+fn arm_boundary(prepended: bool, at: usize, line_len: usize) -> Option<usize> {
+    (prepended && at + WRITE_LIMIT <= line_len).then_some(at + WRITE_LIMIT)
+}
 
 /// The entry being assembled, together with the block it owns. Pairing them
 /// is what keeps a block from outliving or preceding its entry.
@@ -61,6 +67,11 @@ pub struct LogStream<I> {
     /// pin it on the pending entry, which for a line that starts a new one is
     /// the wrong entry entirely.
     line_warning: Option<ParseWarning>,
+    /// How much of its budget the `mod_logfile` write in progress has spent.
+    cursor: WriteCursor,
+    /// The last chunk of the current line ended at a cut whose remainder was
+    /// lost — no successor followed it to split to.
+    tail_cut: bool,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -78,6 +89,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             prev_line_cut: false,
             line_cut: false,
             line_warning: None,
+            cursor: WriteCursor::default(),
+            tail_cut: false,
         }
     }
 
@@ -250,25 +263,39 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     ///
     /// Two collision mechanisms exist in production:
     ///
-    /// 1. **Buffer truncation** (Format E): `mod_logfile`'s 2048-byte `snprintf`
-    ///    buffer truncates a long line, losing the trailing `\n`. The next entry
-    ///    from the log queue collides on the same physical line. These lines
-    ///    always exceed `MAX_LINE_PAYLOAD`.
+    /// 1. **Buffer truncation** (Format E): a `mod_logfile` write spends the
+    ///    whole 2047-byte budget, so the `\n` it still owed never fits and the
+    ///    next write lands on the same physical line. The offset is exact —
+    ///    `WriteCursor` tracks how much of the budget the write in progress has
+    ///    spent — and a write may span a prefixed line plus the bare ones after
+    ///    it, so the cut often falls on a short line.
     ///
     /// 2. **Write contention**: multiple threads writing to the log file can
     ///    interleave output, producing concatenated entries at any line length.
     ///    Common with system lines (Format B) that lack UUID prefixes.
     ///
+    /// A UUID splits only at the exact boundary; a full timestamp header splits
+    /// anywhere, since contention answers to no budget.
+    ///
     /// Returns the (possibly truncated) line. If a collision is detected,
     /// the suffix is stored in `split_pending` for processing in the next
     /// iteration. Recursive: split suffixes pass through this function again.
-    fn detect_collision(&mut self, line: String) -> String {
+    fn detect_collision(&mut self, line: String, on_disk_len: usize) -> String {
         let bytes = line.as_bytes();
         let prepended = is_uuid_at(bytes, 0);
 
+        // A write starts at every prefixed line and is extended by the bare
+        // lines after it; anything else came off the verbatim path, which has
+        // no budget to spend and no start to carry forward.
+        if prepended {
+            self.cursor.begin();
+        } else if bytes.is_empty() || is_date_at(bytes, 0) {
+            self.cursor.lose();
+        }
+
         // Only the prepend path formats through the fixed buffer, so a record
         // written verbatim carries no cut however long it runs.
-        if prepended && line.len() >= CUT_LINE_LEN {
+        if prepended && line.len() >= WRITE_LIMIT {
             self.line_warning = Some(ParseWarning::OversizeLine { bytes: line.len() });
         }
 
@@ -285,33 +312,45 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             0
         };
 
-        let end = bytes.len().saturating_sub(28);
-        let oversize = bytes.len() > MAX_LINE_PAYLOAD;
+        let end = bytes.len();
 
         // Single linear pass collecting every split point. Two collision
         // mechanisms handled in one walk:
+        //
+        //   * the write budget (Format E), checked only in the few bytes
+        //     the cursor points at. A bare UUID is the parser's weakest
+        //     signature; the boundary is what earns it the right to split,
+        //     which is also why this check runs first at a shared offset.
         //
         //   * `is_log_header_at`: timestamp header (Format B write
         //     contention, Full/System line collisions). Fast-fails after
         //     one byte for non-digit input, so the per-offset cost stays
         //     low even on hundreds-of-KB lines.
         //
-        //   * `is_uuid_at` within a ±64-byte window around the next
-        //     expected mod_logfile truncation boundary (Format E). The
-        //     boundary is `MAX_LINE_PAYLOAD` bytes past the start of the
-        //     current chunk; we advance it as splits are found. Bounding
-        //     this check is what kept the previous optimization fast on
-        //     60 KB embedded-SDP lines — a 36-byte hex pattern check at
-        //     every offset would dominate the scan.
-        //
         // Collecting all splits in one pass (rather than splitting,
         // re-feeding the suffix, and re-scanning from scratch) is the
         // structural fix for the prior O(n²) behavior.
+        let mut next_boundary = self.cursor.boundary_in(end);
         let mut splits: Vec<usize> = Vec::new();
         let mut chunk_start = 0usize;
-        let mut offset = min_scan;
+        let mut offset = 0usize;
         while offset <= end {
-            if is_log_header_at(bytes, offset) {
+            if let Some(boundary) = next_boundary {
+                if offset >= boundary && offset <= boundary + DECODE_DRIFT {
+                    let uuid = is_uuid_at(bytes, offset);
+                    if uuid || is_log_header_at(bytes, offset) {
+                        splits.push(offset);
+                        chunk_start = offset;
+                        next_boundary = arm_boundary(uuid, offset, end);
+                        offset += UUID_PREFIX_LEN;
+                        continue;
+                    }
+                }
+            }
+            // `min_scan` guards only the heuristic: on the second and later
+            // lines of one write the boundary sits early, often inside the
+            // header the heuristic has to skip.
+            if offset >= min_scan && is_log_header_at(bytes, offset) {
                 let split_at = if offset >= chunk_start + UUID_PREFIX_LEN
                     && is_uuid_at(bytes, offset - UUID_PREFIX_LEN)
                 {
@@ -322,6 +361,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 if split_at > chunk_start {
                     splits.push(split_at);
                     chunk_start = split_at;
+                    next_boundary = arm_boundary(is_uuid_at(bytes, split_at), split_at, end);
                     offset += 27;
                 } else {
                     // Header at current chunk's own start — already
@@ -332,20 +372,26 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 }
                 continue;
             }
-            if oversize {
-                let boundary = chunk_start + MAX_LINE_PAYLOAD;
-                if offset + COLLISION_SCAN_SLACK >= boundary
-                    && offset <= boundary + COLLISION_SCAN_SLACK
-                    && is_uuid_at(bytes, offset)
-                {
-                    splits.push(offset);
-                    chunk_start = offset;
-                    offset += UUID_PREFIX_LEN;
-                    continue;
-                }
-            }
             offset += 1;
         }
+
+        // A boundary still armed is one the walk passed with nothing
+        // recognisable on it: the write was cut and its remainder lost rather
+        // than glued to a successor we could name.
+        self.tail_cut = next_boundary.is_some();
+
+        // The trailing chunk carries the write state into the next line.
+        let last_start = splits.last().copied().unwrap_or(0);
+        if last_start > 0 {
+            if is_uuid_at(bytes, last_start) {
+                self.cursor.begin();
+            } else {
+                self.cursor.lose();
+            }
+        }
+        // On-disk cost of the trailing chunk, newline included — which is what
+        // `advance` adds back, and which the trimmed `end` no longer carries.
+        self.cursor.advance(on_disk_len - last_start - 1);
 
         if splits.is_empty() {
             return line;
@@ -388,6 +434,12 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     let yielded = self.take_pending();
                     self.last_uuid.clear();
                     self.last_timestamp.clear();
+                    // A write cannot continue across files, and the cut
+                    // verdicts describe lines the next segment never saw.
+                    self.cursor.lose();
+                    self.tail_cut = false;
+                    self.prev_line_cut = false;
+                    self.line_cut = false;
                     if yielded.is_some() {
                         return yielded;
                     }
@@ -397,17 +449,25 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 self.line_number += 1;
                 self.stats.lines_processed += 1;
 
-                // Trimmed here rather than at decode so the byte is still on
-                // the line where the write budget is counted against it.
+                // Trimmed here rather than at decode so the CR is still on the
+                // line when its cost is counted. Split offsets are computed
+                // against the trimmed text; only the budget sees the byte.
+                let on_disk_len = line.len() + 1;
                 if line.ends_with('\r') {
                     line.pop();
                 }
-                self.detect_collision(line)
+                self.detect_collision(line, on_disk_len)
             };
 
             // A non-empty queue means this chunk ended at a split, not a newline.
             // Recomputed every line: a stale flag would close a multi-line value.
-            self.line_cut = !self.split_pending.is_empty();
+            // `take` on the drained queue so a lost remainder lands on the last
+            // chunk of the line, which is the one that ended at the cut.
+            self.line_cut = if self.split_pending.is_empty() {
+                std::mem::take(&mut self.tail_cut)
+            } else {
+                true
+            };
             let prev_cut = std::mem::replace(&mut self.prev_line_cut, self.line_cut);
 
             let parsed = parse_line(&line);

@@ -107,10 +107,10 @@ fn timestamp_collision_splits_three_entries() {
 #[test]
 fn timestamp_collision_oversize_write_contention() {
     // Production case: write contention concatenates dozens of short
-    // Event Socket entries into a single physical line whose total
-    // length exceeds MAX_LINE_PAYLOAD. Timestamps appear at offsets
-    // ~150 bytes apart — none aligned with the 2010-byte buffer
-    // boundary. All entries must still split out.
+    // Event Socket entries into one physical line. Timestamps appear at
+    // offsets ~150 bytes apart, none of them on a write boundary — these
+    // are verbatim-path records, which answer to no budget. All must
+    // still split out.
     let entry = |n: usize| {
         format!(
             "{TS1} 98.77% [INFO] mod_event_socket.c:1754 Event Socket Command from ::1:42864: api db select/ngcs_sip_call_id/entry-{n:04}"
@@ -119,8 +119,8 @@ fn timestamp_collision_oversize_write_contention() {
     let count: u64 = 20;
     let line: String = (0..count).map(|n| entry(n as usize)).collect();
     assert!(
-        line.len() > super::MAX_LINE_PAYLOAD,
-        "test fixture should exceed MAX_LINE_PAYLOAD, got {}",
+        line.len() > super::WRITE_LIMIT,
+        "the fixture should outrun a write's whole budget, got {}",
         line.len()
     );
 
@@ -228,9 +228,10 @@ fn timestamp_collision_no_idle_pct_run_on() {
 /// reassembly must stop rather than join it — a join loses that variable.
 #[test]
 fn a_cut_value_does_not_swallow_the_next_variable() {
-    let padding = "x".repeat(2000);
-    let collision_line =
-        format!("{UUID1} variable_long_xml: [{padding}{UUID1} variable_direction: [inbound]");
+    let collision_line = cut_write(
+        &format!("{UUID1} variable_long_xml: ["),
+        &format!("{UUID1} variable_direction: [inbound]"),
+    );
 
     let lines = vec![
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
@@ -269,11 +270,10 @@ fn a_cut_value_span_reports_truncated() {
     use crate::fields::{FieldKind, FieldLocation};
 
     let head = format!("{UUID1} variable_sip_h_X-Trace: [<http://192.0.2.9/t?id=");
-    let padding = "x".repeat(MAX_LINE_PAYLOAD - head.len());
     let lines = vec![
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
         format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
-        format!("{head}{padding}{UUID1} variable_direction: [inbound]"),
+        cut_write(&head, &format!("{UUID1} variable_direction: [inbound]")),
         full_line(UUID1, TS2, "Next log entry"),
     ];
     let entry = LogStream::new(lines.into_iter()).next().expect("entry");
@@ -301,9 +301,10 @@ fn each_cut_line_of_an_entry_answers_for_itself() {
     use crate::fields::{FieldKind, FieldLocation};
 
     let cut_line = |name: &str| {
-        let head = format!("{UUID1} variable_{name}: [");
-        let padding = "x".repeat(MAX_LINE_PAYLOAD - head.len());
-        format!("{head}{padding}{UUID1} variable_direction: [inbound]")
+        cut_write(
+            &format!("{UUID1} variable_{name}: ["),
+            &format!("{UUID1} variable_direction: [inbound]"),
+        )
     };
     let lines = vec![
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
@@ -336,11 +337,10 @@ fn a_cut_primary_line_reports_its_message_truncated() {
     use crate::fields::{FieldKind, FieldLocation};
 
     let head = format!("{UUID2} variable_sip_h_X-Trace: [<http://192.0.2.9/t?id=");
-    let padding = "x".repeat(MAX_LINE_PAYLOAD - head.len());
     let lines = vec![
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
         format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
-        format!("{head}{padding}{UUID2} variable_direction: [inbound]"),
+        cut_write(&head, &format!("{UUID2} variable_direction: [inbound]")),
         full_line(UUID1, TS2, "Next log entry"),
     ];
     let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
@@ -365,14 +365,9 @@ fn truncated_collision_in_channel_data_variable() {
     // The variable_long_xml value opens with [ but the buffer truncation
     // causes a UUID+EXECUTE to collide on the same physical line before
     // the closing ].
-    let padding = "x".repeat(2000);
-    let collision_line = format!(
-        "{UUID1} variable_long_xml: [{padding}{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 export(foo=bar)"
-    );
-    assert!(
-        collision_line.len() > super::MAX_LINE_PAYLOAD,
-        "test line must exceed buffer limit, got {}",
-        collision_line.len()
+    let collision_line = cut_write(
+        &format!("{UUID1} variable_long_xml: ["),
+        &format!("{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 export(foo=bar)"),
     );
 
     let lines = vec![
@@ -599,14 +594,15 @@ fn channel_data_bare_variable_collision_with_execute() {
     assert_accounting(&stream);
 }
 
-/// An oversize line that starts its own entry belongs to that entry, not to
-/// whichever entry happened to be open when it arrived.
+/// A cut line that starts its own entry belongs to that entry, not to whichever
+/// entry happened to be open when it arrived.
 #[test]
-fn oversize_primary_line_warns_on_its_own_entry() {
-    let long_args = "x".repeat(MAX_LINE_PAYLOAD);
+fn a_cut_primary_line_warns_on_its_own_entry() {
+    // Nothing recognisable after the boundary, so the write is cut with its
+    // remainder lost and the line stays whole.
     let lines = vec![
         full_line(UUID1, TS1, "an ordinary earlier entry"),
-        full_line(UUID2, TS2, &format!("Ring-Ready {long_args}")),
+        cut_write(&full_line(UUID2, TS2, "Ring-Ready "), ""),
     ];
     let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
 
@@ -649,12 +645,12 @@ fn a_verbatim_line_past_the_buffer_is_not_a_cut() {
 }
 
 /// The longest line the prepend path can write intact, one byte short of the
-/// buffer's reach. Anything at or past `CUT_LINE_LEN` lost its newline.
+/// buffer's reach. Anything at or past `WRITE_LIMIT` lost its newline.
 #[test]
 fn a_prepended_line_at_the_intact_maximum_is_not_a_cut() {
     let overhead = full_line(UUID1, TS1, "").len();
-    let line = full_line(UUID1, TS1, &"x".repeat(CUT_LINE_LEN - 1 - overhead));
-    assert_eq!(line.len(), CUT_LINE_LEN - 1);
+    let line = full_line(UUID1, TS1, &"x".repeat(WRITE_LIMIT - 1 - overhead));
+    assert_eq!(line.len(), WRITE_LIMIT - 1);
 
     let entries: Vec<_> = LogStream::new(vec![line].into_iter()).collect();
     assert!(
@@ -668,15 +664,15 @@ fn a_prepended_line_at_the_intact_maximum_is_not_a_cut() {
 #[test]
 fn a_prepended_line_filling_the_buffer_is_a_cut() {
     let overhead = full_line(UUID1, TS1, "").len();
-    let line = full_line(UUID1, TS1, &"x".repeat(CUT_LINE_LEN - overhead));
-    assert_eq!(line.len(), CUT_LINE_LEN);
+    let line = full_line(UUID1, TS1, &"x".repeat(WRITE_LIMIT - overhead));
+    assert_eq!(line.len(), WRITE_LIMIT);
 
     let entries: Vec<_> = LogStream::new(vec![line].into_iter()).collect();
     assert!(
         entries[0]
             .warnings
             .iter()
-            .any(|w| matches!(w, ParseWarning::OversizeLine { bytes } if *bytes == CUT_LINE_LEN)),
+            .any(|w| matches!(w, ParseWarning::OversizeLine { bytes } if *bytes == WRITE_LIMIT)),
         "expected the cut reported at its physical length, got: {:?}",
         entries[0].warnings
     );

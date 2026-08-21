@@ -402,7 +402,7 @@ fn truncated_collision_in_channel_data_variable() {
         entries[0]
             .warnings
             .iter()
-            .any(|w| matches!(w, ParseWarning::OversizeLine { .. })),
+            .any(|w| matches!(w, ParseWarning::CutLine)),
         "expected buffer overflow warning, got: {:?}",
         entries[0].warnings
     );
@@ -616,7 +616,7 @@ fn a_cut_primary_line_warns_on_its_own_entry() {
         entries[1]
             .warnings
             .iter()
-            .any(|w| matches!(w, ParseWarning::OversizeLine { .. })),
+            .any(|w| matches!(w, ParseWarning::CutLine)),
         "expected the oversize warning on the entry the line opened, got: {:?}",
         entries[1].warnings
     );
@@ -672,7 +672,7 @@ fn a_prepended_line_filling_the_buffer_is_a_cut() {
         entries[0]
             .warnings
             .iter()
-            .any(|w| matches!(w, ParseWarning::OversizeLine { bytes } if *bytes == WRITE_LIMIT)),
+            .any(|w| matches!(w, ParseWarning::CutLine)),
         "expected the cut reported at its physical length, got: {:?}",
         entries[0].warnings
     );
@@ -821,8 +821,17 @@ fn a_cascaded_cut_splits_twice_in_one_line() {
 
     let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), line];
     let mut stream = LogStream::new(lines.into_iter());
-    let _: Vec<_> = stream.by_ref().collect();
+    let entries: Vec<_> = stream.by_ref().collect();
     assert_eq!(stream.stats().lines_split, 2);
+
+    // Each cut is the record it ends, so both are reported — one slot for the
+    // whole physical line would name only the first.
+    let cuts = entries
+        .iter()
+        .flat_map(|e| &e.warnings)
+        .filter(|w| matches!(w, ParseWarning::CutLine))
+        .count();
+    assert_eq!(cuts, 2, "both cut records must be reported");
     assert_accounting(&stream);
 }
 

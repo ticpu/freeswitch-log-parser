@@ -163,10 +163,10 @@ pub enum ParseWarning {
     /// A continuation line arrived while a codec negotiation block was open.
     /// The trace has no continuations, so the line belongs to nothing.
     UnexpectedCodecContinuation { line: String },
-    /// A prepended record filled `mod_logfile`'s write buffer, so it lost its
-    /// trailing newline and was cut short. `bytes` is the physical line length,
-    /// anything that collided onto it included.
-    OversizeLine { bytes: usize },
+    /// The record ends where `mod_logfile`'s write spent its whole budget, so
+    /// the trailing newline never fit and the text was cut short. Whatever
+    /// followed is either the next record, split out, or lost.
+    CutLine,
     /// The entry's attached lines outgrew the offsets addressing them, so this
     /// line could not be stored. Counted in
     /// [`ParseStats::lines_dropped`](super::ParseStats::lines_dropped).
@@ -209,10 +209,9 @@ impl fmt::Display for ParseWarning {
             ParseWarning::UnexpectedCodecContinuation { line } => {
                 write!(f, "unexpected codec negotiation continuation: {line}")
             }
-            ParseWarning::OversizeLine { bytes } => write!(
+            ParseWarning::CutLine => write!(
                 f,
-                "record cut by mod_logfile's {MOD_LOGFILE_BUF_SIZE}-byte buffer \
-                 ({bytes} bytes on the line)"
+                "record cut by mod_logfile's {MOD_LOGFILE_BUF_SIZE}-byte write buffer"
             ),
             ParseWarning::UnreadableValue { reading, value } => {
                 write!(f, "unreadable {reading}: {value}")

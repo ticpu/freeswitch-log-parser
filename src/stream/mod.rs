@@ -69,9 +69,10 @@ pub struct LogStream<I> {
     line_warning: Option<ParseWarning>,
     /// How much of its budget the `mod_logfile` write in progress has spent.
     cursor: WriteCursor,
-    /// The last chunk of the current line ended at a cut whose remainder was
-    /// lost — no successor followed it to split to.
-    tail_cut: bool,
+    /// Per chunk of the physical line being dispatched, whether it ends at the
+    /// write's spent budget. One physical line can hold several such cuts, and
+    /// each is the record it ends, so a single slot would report only the first.
+    cut_verdicts: VecDeque<bool>,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -90,7 +91,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             line_cut: false,
             line_warning: None,
             cursor: WriteCursor::default(),
-            tail_cut: false,
+            cut_verdicts: VecDeque::new(),
         }
     }
 
@@ -293,12 +294,6 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             self.cursor.lose();
         }
 
-        // Only the prepend path formats through the fixed buffer, so a record
-        // written verbatim carries no cut however long it runs.
-        if prepended && line.len() >= WRITE_LIMIT {
-            self.line_warning = Some(ParseWarning::OversizeLine { bytes: line.len() });
-        }
-
         // Skip past the line's own header to avoid matching itself.
         let min_scan = if prepended {
             if bytes.len() > UUID_PREFIX_LEN && bytes[UUID_PREFIX_LEN].is_ascii_digit() {
@@ -332,6 +327,9 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         // structural fix for the prior O(n²) behavior.
         let mut next_boundary = self.cursor.boundary_in(end);
         let mut splits: Vec<usize> = Vec::new();
+        // Per chunk, whether it ends where the write spent its budget rather
+        // than at a header the heuristic found. Only the first is a cut.
+        let mut cut_verdicts: Vec<bool> = Vec::new();
         let mut chunk_start = 0usize;
         let mut offset = 0usize;
         while offset <= end {
@@ -340,6 +338,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                     let uuid = is_uuid_at(bytes, offset);
                     if uuid || is_log_header_at(bytes, offset) {
                         splits.push(offset);
+                        cut_verdicts.push(true);
                         chunk_start = offset;
                         next_boundary = arm_boundary(uuid, offset, end);
                         offset += UUID_PREFIX_LEN;
@@ -360,6 +359,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 };
                 if split_at > chunk_start {
                     splits.push(split_at);
+                    cut_verdicts.push(false);
                     chunk_start = split_at;
                     next_boundary = arm_boundary(is_uuid_at(bytes, split_at), split_at, end);
                     offset += 27;
@@ -378,7 +378,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         // A boundary still armed is one the walk passed with nothing
         // recognisable on it: the write was cut and its remainder lost rather
         // than glued to a successor we could name.
-        self.tail_cut = next_boundary.is_some();
+        cut_verdicts.push(next_boundary.is_some());
+        self.cut_verdicts = cut_verdicts.into();
 
         // The trailing chunk carries the write state into the next line.
         let last_start = splits.last().copied().unwrap_or(0);
@@ -437,7 +438,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                     // A write cannot continue across files, and the cut
                     // verdicts describe lines the next segment never saw.
                     self.cursor.lose();
-                    self.tail_cut = false;
+                    self.cut_verdicts.clear();
                     self.prev_line_cut = false;
                     self.line_cut = false;
                     if yielded.is_some() {
@@ -461,13 +462,11 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
             // A non-empty queue means this chunk ended at a split, not a newline.
             // Recomputed every line: a stale flag would close a multi-line value.
-            // `take` on the drained queue so a lost remainder lands on the last
-            // chunk of the line, which is the one that ended at the cut.
-            self.line_cut = if self.split_pending.is_empty() {
-                std::mem::take(&mut self.tail_cut)
-            } else {
-                true
-            };
+            let chunk_cut = self.cut_verdicts.pop_front().unwrap_or(false);
+            self.line_cut = chunk_cut || !self.split_pending.is_empty();
+            if chunk_cut {
+                self.line_warning = Some(ParseWarning::CutLine);
+            }
             let prev_cut = std::mem::replace(&mut self.prev_line_cut, self.line_cut);
 
             let parsed = parse_line(&line);

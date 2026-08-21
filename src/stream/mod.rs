@@ -460,10 +460,10 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 self.detect_collision(line, on_disk_len)
             };
 
-            // A non-empty queue means this chunk ended at a split, not a newline.
-            // Recomputed every line: a stale flag would close a multi-line value.
+            // Only the boundary mechanism's verdict: a contention split
+            // concatenated records that were each written whole.
             let chunk_cut = self.cut_verdicts.pop_front().unwrap_or(false);
-            self.line_cut = chunk_cut || !self.split_pending.is_empty();
+            self.line_cut = chunk_cut;
             if chunk_cut {
                 self.line_warning = Some(ParseWarning::CutLine);
             }

@@ -136,6 +136,12 @@ fn timestamp_collision_oversize_write_contention() {
         );
     }
     assert_eq!(stream.stats().lines_split, count - 1);
+    // Contention is not truncation: nothing here answers to the write budget,
+    // so no text may claim the buffer cut it.
+    for e in &entries {
+        assert!(e.cut_texts.is_empty(), "{:?}", e.cut_texts);
+        assert!(!e.warnings.contains(&ParseWarning::CutLine));
+    }
     assert_accounting(&stream);
 }
 

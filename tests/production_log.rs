@@ -774,10 +774,11 @@ fn field_spans_are_well_formed_across_the_corpus() {
     assert_no_violations(violations, "malformed field spans");
 }
 
-/// Every cut text must be one the entry has, a warned variable must have left one
-/// behind, and real logs must exercise the span answer at all. The converse does
-/// not hold: the warning covers a value open inside a dump, the span every cut
-/// text, and the report prints how far apart the two reach.
+/// Every cut text must be one the entry has, must answer to a warning naming a
+/// cut, and a warned variable must have left one behind; real logs must exercise
+/// the span answer at all. Warning and span still do not agree span for span: the
+/// variable warning covers a value open inside a dump, the span every cut text,
+/// and the report prints how far apart the two reach.
 #[test]
 fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
     if skip_if_no_fixtures() {
@@ -807,6 +808,17 @@ fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
             .any(|w| matches!(w, ParseWarning::TruncatedVariable { .. }));
         if warned && entry.cut_texts.is_empty() {
             bad.push(format!("{at}: variable cut but no text recorded as cut"));
+        }
+        // Contention splits a line without truncating anything, so a cut text
+        // with no warning naming a cut is the flag reaching past its evidence.
+        let cut_warned = entry.warnings.iter().any(|w| {
+            matches!(
+                w,
+                ParseWarning::CutLine | ParseWarning::TruncatedVariable { .. }
+            )
+        });
+        if !entry.cut_texts.is_empty() && !cut_warned {
+            bad.push(format!("{at}: text recorded as cut but nothing warned"));
         }
 
         for _ in entry.fields().iter().filter(|f| entry.is_truncated(f)) {

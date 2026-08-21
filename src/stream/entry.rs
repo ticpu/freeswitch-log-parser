@@ -152,7 +152,8 @@ pub enum ParseWarning {
     /// value is recorded up to the cut; the line after it opens the next variable.
     TruncatedVariable { name: String },
     /// A line inside a CHANNEL_DATA block matched neither the field nor the
-    /// variable shape, so it contributed nothing to the block.
+    /// variable shape, so it contributed nothing to the block. Most often a
+    /// name the write buffer cut mid-token, not a shape the parser cannot read.
     UnparseableChannelData { line: String },
     /// A codec negotiation line matched no known trace shape, or its bracketed
     /// token would not parse. That codec is missing from the block.
@@ -197,7 +198,7 @@ impl fmt::Display for ParseWarning {
                 write!(f, "multi-line variable cut by the log buffer: {name}")
             }
             ParseWarning::UnparseableChannelData { line } => {
-                write!(f, "unparseable CHANNEL_DATA line: {line}")
+                write!(f, "CHANNEL_DATA line is neither a field nor a variable, possibly a fragment left by a cut: {line}")
             }
             ParseWarning::UnrecognizedCodecLine {
                 line,

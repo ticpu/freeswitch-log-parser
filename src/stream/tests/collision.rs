@@ -677,3 +677,206 @@ fn a_prepended_line_filling_the_buffer_is_a_cut() {
         entries[0].warnings
     );
 }
+
+/// The case a length test cannot reach: one write spans the prefixed line and
+/// the bare lines under it, and the budget runs out on a short one.
+#[test]
+fn a_multi_line_write_cut_on_a_short_line_splits() {
+    let opener = format!("{UUID1} variable_switch_r_sdp: [v=0");
+    let filler = "a=rtpmap:0 PCMU/8000";
+    let mut spent = opener.len() + 1;
+    let mut lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), opener];
+    while spent + filler.len() + 1 < WRITE_LIMIT - 60 {
+        lines.push(filler.to_string());
+        spent += filler.len() + 1;
+    }
+    let cut = cut_write_after(
+        spent,
+        "a=ptime:",
+        &format!("{UUID1} variable_direction: [inbound]"),
+    );
+    assert!(
+        cut.len() < 200,
+        "the cut has to land on a line no length test would look at, got {}",
+        cut.len()
+    );
+    lines.push(cut);
+    lines.push(full_line(UUID1, TS2, "Next log entry"));
+
+    let mut stream = LogStream::new(lines.into_iter());
+    let entries: Vec<_> = stream.by_ref().collect();
+
+    assert_eq!(stream.stats().lines_split, 1);
+    match entries[0].block.as_ref().expect("block") {
+        Block::ChannelData { variables, .. } => {
+            assert_eq!(variables[0].0, "variable_switch_r_sdp");
+            assert!(
+                !variables[0].1.contains("variable_direction"),
+                "the cut value swallowed the record after it"
+            );
+            assert_eq!(variables[1].0, "variable_direction");
+        }
+        other => panic!("expected ChannelData, got {other:?}"),
+    }
+    assert_accounting(&stream);
+}
+
+/// The largest write that still fits keeps its newline, so a UUID sitting at
+/// the very end of one is content and not a successor.
+#[test]
+fn an_uncut_write_at_its_maximum_is_never_split() {
+    let head = format!("{UUID1} variable_peer_note: [");
+    let tail = format!("{UUID2} ");
+    let padding = "x".repeat(WRITE_LIMIT - 1 - head.len() - tail.len());
+    let line = format!("{head}{padding}{tail}");
+    assert_eq!(line.len(), WRITE_LIMIT - 1);
+
+    let mut stream = LogStream::new(std::iter::once(line));
+    let entries: Vec<_> = stream.by_ref().collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(stream.stats().lines_split, 0);
+    assert!(entries[0].warnings.is_empty(), "{:?}", entries[0].warnings);
+}
+
+/// A UUID short of the boundary is a value's content, not a record.
+#[test]
+fn a_uuid_below_the_boundary_is_never_split() {
+    let head = format!("{UUID1} variable_peer_note: [");
+    let successor = format!("{UUID2} variable_direction: [inbound]");
+    let padding = "x".repeat(WRITE_LIMIT - 100 - head.len());
+    let line = format!("{head}{padding}{successor}");
+
+    let mut stream = LogStream::new(std::iter::once(line));
+    let _: Vec<_> = stream.by_ref().collect();
+    assert_eq!(stream.stats().lines_split, 0);
+}
+
+/// The write spent its budget with nothing recognisable after it: the record
+/// is cut and its remainder lost, so there is no successor to split to.
+#[test]
+fn a_cut_with_no_successor_marks_the_text_cut() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        cut_write(&format!("{UUID1} variable_long_xml: ["), ""),
+        full_line(UUID1, TS2, "Next log entry"),
+    ];
+    let mut stream = LogStream::new(lines.into_iter());
+    let entries: Vec<_> = stream.by_ref().collect();
+
+    assert_eq!(stream.stats().lines_split, 0);
+    assert!(
+        !entries[0].cut_texts.is_empty(),
+        "the cut line must be marked even with nothing to split to"
+    );
+    assert_accounting(&stream);
+}
+
+/// Nothing said where this write began, so no offset in it is a boundary.
+#[test]
+fn a_bare_line_with_no_known_write_start_is_never_split() {
+    let successor = format!("{UUID2} variable_direction: [inbound]");
+    let padding = "x".repeat(WRITE_LIMIT);
+    let lines = vec![format!("variable_orphan: [{padding}{successor}")];
+
+    let mut stream = LogStream::new(lines.into_iter());
+    let _: Vec<_> = stream.by_ref().collect();
+    assert_eq!(stream.stats().lines_split, 0);
+}
+
+/// A verbatim multi-line body has no budget to spend. Letting its bare lines
+/// extend a prepend write would invent a boundary inside intact text.
+#[test]
+fn a_verbatim_body_does_not_extend_a_prepend_write() {
+    let mut lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{TS2} 95.97% [DEBUG] mod_oreka.c:121 Oreka SIP Packet:"),
+    ];
+    let filler = "a=rtpmap:0 PCMU/8000";
+    let mut spent = 0;
+    while spent < WRITE_LIMIT {
+        lines.push(filler.to_string());
+        spent += filler.len() + 1;
+    }
+    lines.push(format!("o=- {UUID2} IN IP4 192.0.2.1"));
+
+    let mut stream = LogStream::new(lines.into_iter());
+    let entries: Vec<_> = stream.by_ref().collect();
+    assert_eq!(stream.stats().lines_split, 0);
+    assert!(
+        entries.iter().all(|e| e.warnings.is_empty()),
+        "intact verbatim output must not be reported as cut"
+    );
+    assert_accounting(&stream);
+}
+
+/// One physical line can hold two cut writes; the second boundary is measured
+/// from the first successor, not from the line's start.
+#[test]
+fn a_cascaded_cut_splits_twice_in_one_line() {
+    let inner = cut_write(
+        &format!("{UUID2} variable_second: ["),
+        &format!("{UUID1} variable_third: [three]"),
+    );
+    let line = cut_write(&format!("{UUID1} variable_first: ["), &inner);
+
+    let lines = vec![full_line(UUID1, TS1, "CHANNEL_DATA:"), line];
+    let mut stream = LogStream::new(lines.into_iter());
+    let _: Vec<_> = stream.by_ref().collect();
+    assert_eq!(stream.stats().lines_split, 2);
+    assert_accounting(&stream);
+}
+
+/// A write cannot carry across files, so the next segment's first line must
+/// not be measured against a budget the previous one was spending.
+#[test]
+fn a_segment_boundary_forgets_the_write_in_progress() {
+    use crate::TrackedChain;
+
+    let seg1: Vec<String> = vec![format!("{UUID1} variable_open: [v=0")];
+    let successor = format!("{UUID2} variable_direction: [inbound]");
+    let padding = "x".repeat(WRITE_LIMIT);
+    let seg2: Vec<String> = vec![format!("a=x{padding}{successor}")];
+
+    let segments: Vec<(String, Box<dyn Iterator<Item = String>>)> = vec![
+        ("rotated.log".to_string(), Box::new(seg1.into_iter())),
+        ("freeswitch.log".to_string(), Box::new(seg2.into_iter())),
+    ];
+    let (chain, _) = TrackedChain::new(segments);
+    let mut stream = LogStream::new(chain);
+    let _: Vec<_> = stream.by_ref().collect();
+    assert_eq!(stream.stats().lines_split, 0);
+}
+
+/// The whole model is two adjacent integers: a write with `len + 1` left still
+/// affords its newline, one with `len` does not.
+#[test]
+fn the_boundary_separates_the_last_intact_write_from_the_first_cut_one() {
+    let mut cursor = WriteCursor::default();
+    assert_eq!(cursor.boundary_in(10), None, "no start, no boundary");
+
+    cursor.begin();
+    assert_eq!(cursor.boundary_in(WRITE_LIMIT - 1), None);
+    assert_eq!(cursor.boundary_in(WRITE_LIMIT), Some(WRITE_LIMIT));
+}
+
+#[test]
+fn a_cursor_counts_a_line_and_the_newline_after_it() {
+    let mut cursor = WriteCursor::default();
+    cursor.begin();
+    cursor.advance(99);
+    assert_eq!(cursor.boundary_in(WRITE_LIMIT), Some(WRITE_LIMIT - 100));
+}
+
+/// A write cannot outlive its own budget, so a cursor claiming to is
+/// desynchronised — it drops rather than clamping to something plausible.
+#[test]
+fn a_cursor_past_the_budget_drops_rather_than_clamps() {
+    let mut cursor = WriteCursor::default();
+    cursor.begin();
+    cursor.advance(WRITE_LIMIT);
+    assert_eq!(cursor.boundary_in(WRITE_LIMIT), None);
+
+    cursor.begin();
+    cursor.lose();
+    assert_eq!(cursor.boundary_in(WRITE_LIMIT), None);
+}

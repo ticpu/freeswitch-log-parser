@@ -29,6 +29,7 @@ pub enum Utf8Decode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedLine {
     /// Lossy-recovered text (U+FFFD for invalid bytes) so the record is preserved.
+    /// The newline is gone; a CR before it is not.
     pub text: String,
     pub decode: Utf8Decode,
 }
@@ -105,18 +106,19 @@ pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Decode one raw log line: strip the terminator, classify, lossy-recover.
+/// Decode one raw log line: drop the newline, classify, lossy-recover.
 ///
 /// For readers that own their read loop. A `tail -f` follower cannot use
 /// [`read_log_lines`], which ends at EOF rather than waiting for more bytes, but
 /// must classify identically instead of re-deriving this decision.
+///
+/// A CR before the newline is kept. [`LogStream`](crate::LogStream) counts a
+/// line's bytes against `mod_logfile`'s write budget, so a byte dropped here is
+/// one it cannot count; it trims the CR itself, after counting.
 pub fn decode_log_line(bytes: &[u8]) -> DecodedLine {
     let mut buf = bytes;
     if let Some((&b'\n', rest)) = buf.split_last() {
-        buf = match rest.split_last() {
-            Some((&b'\r', rest)) => rest,
-            _ => rest,
-        };
+        buf = rest;
     }
     DecodedLine {
         text: String::from_utf8_lossy(buf).into_owned(),
@@ -200,6 +202,14 @@ mod tests {
     fn clean_line_is_clean() {
         assert_eq!(classify_utf8("héllo wörld".as_bytes()), Utf8Decode::Clean);
         assert_eq!(classify_utf8(b"plain ascii"), Utf8Decode::Clean);
+    }
+
+    #[test]
+    fn a_cr_before_the_newline_survives_the_decode() {
+        // LogStream counts these bytes against the write budget, then trims.
+        let decoded = decode_log_line(b"v=0\r\n");
+        assert_eq!(decoded.text, "v=0\r");
+        assert_eq!(decoded.decode, Utf8Decode::Clean);
     }
 
     #[test]

@@ -524,11 +524,11 @@ fn channel_data_uuid_drops_with_multiline_variable() {
             assert_eq!(variables[2].0, "variable_switch_r_sdp");
             let sdp = &variables[2].1;
             assert!(
-                sdp.starts_with("v=0\r\n"),
-                "SDP should start with v=0\\r\\n, got: {sdp:?}"
+                sdp.starts_with("v=0\n"),
+                "each line's CR is trimmed before reassembly, got: {sdp:?}"
             );
-            assert!(sdp.contains("m=audio 9952 RTP/AVP 102 101 13\r"));
-            assert!(sdp.contains("a=ptime:20\r"));
+            assert!(sdp.contains("m=audio 9952 RTP/AVP 102 101 13\n"));
+            assert!(sdp.contains("a=ptime:20\n"));
             assert!(!sdp.ends_with(']'), "closing bracket should be stripped");
             // Post-SDP bare variables
             assert_eq!(variables[3].0, "variable_ep_codec_string");

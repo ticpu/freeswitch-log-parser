@@ -361,7 +361,7 @@ fn a_markerless_body_opens_on_its_version_line() {
         Block::Sdp { direction, body } => {
             assert_eq!(*direction, SdpDirection::Unknown);
             assert_eq!(body.len(), 2, "the SIP headers ahead of it are not body");
-            assert_eq!(body[0], "v=0\r");
+            assert_eq!(body[0], "v=0", "the stream trims the CR the wire put there");
         }
         other => panic!("expected Sdp block, got {other:?}"),
     }

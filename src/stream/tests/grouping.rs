@@ -275,3 +275,24 @@ fn system_line_with_embedded_uuid_gets_entry_uuid() {
     assert_eq!(entries[2].kind, LineKind::Full);
     assert_accounting(&stream);
 }
+
+/// `decode_log_line` hands the CR through so the write budget can count it;
+/// the stream is what drops it, and no consumer should see one.
+#[test]
+fn a_cr_before_the_newline_does_not_reach_an_entry() {
+    let lines = vec![
+        format!("{}\r", full_line(UUID1, TS1, "Local SDP:")),
+        "v=0\r".to_string(),
+        "a=sendrecv\r".to_string(),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+
+    assert_eq!(entries.len(), 1);
+    assert!(
+        !entries[0].message.ends_with('\r'),
+        "{:?}",
+        entries[0].message
+    );
+    assert_eq!(entries[0].attached.get(0), Some("v=0"));
+    assert_eq!(entries[0].attached.get(1), Some("a=sendrecv"));
+}

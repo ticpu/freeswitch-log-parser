@@ -390,9 +390,11 @@ mod tests {
     }
 
     #[test]
-    fn tail_strips_crlf() {
+    fn tail_hands_the_cr_on_to_the_stream() {
+        // LogStream counts a line's bytes against mod_logfile's write budget
+        // before trimming, so the reader must not drop one.
         let lines: Vec<String> = tail_over(cursor(b"one\r\ntwo\n")).take(2).collect();
-        assert_eq!(lines, vec!["one", "two"]);
+        assert_eq!(lines, vec!["one\r", "two"]);
     }
 
     #[test]

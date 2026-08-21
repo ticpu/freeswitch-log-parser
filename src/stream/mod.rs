@@ -376,7 +376,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 // and find nothing.
                 split
             } else {
-                let Some(line) = self.lines.next() else {
+                let Some(mut line) = self.lines.next() else {
                     return self.take_pending();
                 };
 
@@ -396,6 +396,12 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
 
                 self.line_number += 1;
                 self.stats.lines_processed += 1;
+
+                // Trimmed here rather than at decode so the byte is still on
+                // the line where the write budget is counted against it.
+                if line.ends_with('\r') {
+                    line.pop();
+                }
                 self.detect_collision(line)
             };
 

@@ -278,9 +278,8 @@ fn timestamp_not_contaminated_across_file_segments() {
     let uuid = "f2cb66d4-aaaa-bbbb-cccc-dddddddddddd";
     // Segment 1 (rotated file): ends with a timestamped line for a different UUID
     let seg1_lines: Vec<String> = vec![
-        format!(
-            "eeeeeeee-1111-2222-3333-444444444444 2025-01-15 23:58:03.000000 95.00% [DEBUG] test.c:1 Last line in rotated file"
-        ),
+        "eeeeeeee-1111-2222-3333-444444444444 2025-01-15 23:58:03.000000 95.00% [DEBUG] test.c:1 Last line in rotated file"
+            .to_string(),
     ];
     // Segment 2 (current file): starts with UUID-continuation lines (no timestamp)
     // followed by a full timestamped line

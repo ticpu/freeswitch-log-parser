@@ -37,7 +37,7 @@ check it *before* evaluating the request's mechanics.
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
 - `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`; `parts.rs` holds the positional slicers `fields/` reuses
 - `src/fields/` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
-- `src/stream/` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`
+- `src/stream/` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`, `LineEncoding`; `collision.rs` holds the write budget and `WriteCursor`
 - `src/session/` — `SessionTracker` (`tracker.rs`), `SessionState` (`state.rs`), the secondary indexes (`index.rs`), line shapes (`parse.rs`)
 - `src/codec.rs` — `CodecOffer`/`CodecMedia`, the bracketed token in codec-negotiation traces
 - `src/session/conference.rs` — `ConferenceMembership`, conference join/leave detection
@@ -207,9 +207,13 @@ The iterator always yields entries one behind the current parse position. Final 
 
 ### UUID tracking across truncated lines
 
-Layer 1 scans the first 50 bytes for a UUID pattern — catches common short-prefix collisions. For long collisions (UUID hundreds of bytes in), Layer 1 classifies as BareContinuation. Layer 2 scans oversize lines for an embedded UUID near the expected boundary and splits there: prefix stays as continuation data, UUID+suffix becomes a separate entry, `lines_split` incremented.
+Layer 1 scans the first 50 bytes for a UUID pattern — catches common short-prefix collisions. For long collisions (UUID hundreds of bytes in), Layer 1 classifies as BareContinuation.
 
-That scan is a heuristic windowed on the wrong quantity — a payload budget compared against physical lengths that already carry the 37-byte prefix — and it only looks at lines long enough to trip it. The real boundary is 2047 bytes from the start of the *write*, which is exact and also reaches the common case the length test cannot see: a write spanning a prefixed line plus bare ones, cut on one of the short bare lines.
+Layer 2 finds the cut exactly. `WriteCursor` (`src/stream/collision.rs`) counts what the write in progress has spent: a UUID-prefixed line starts a write, a bare line extends it, anything else clears the cursor. At the offset where the write reaches 2047 bytes — and only there, within a 2-byte tolerance for the lossy UTF-8 decode's U+FFFD — a UUID or a log header splits the line: prefix stays as continuation data, the successor becomes a separate entry, `lines_split` incremented. Nothing recognisable there means the remainder was lost, which is a cut with no successor.
+
+Because a write spans a prefixed line plus the bare lines under it, the cut usually falls on a *short* bare line — 27% of the cuts in the fixture corpus. A physical line's own length says nothing about it.
+
+Two rules keep this from inventing boundaries: where the write start is unknown the mechanism is off entirely, and a bare UUID splits only on the boundary. The full timestamp header is the exception — it splits anywhere, because write contention concatenates verbatim-path records at arbitrary offsets and those answer to no budget.
 
 Both detected and split truncated lines are treated as primary lines — they start a new entry and update `last_uuid`.
 

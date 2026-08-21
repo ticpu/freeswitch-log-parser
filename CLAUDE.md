@@ -62,7 +62,7 @@ UUID YYYY-MM-DD HH:MM:SS.UUUUUU CC.CC% [LEVEL] source:line message
 
 **Format B — System line (no UUID).** Lines logged outside any channel context — system events, event socket commands, module lifecycle. Same fields as Format A minus the UUID prefix.
 
-**Format C — UUID continuation (no timestamp).** Lines from subsystems that don't use timestamp/level format — dialplan processing, EXECUTE traces, CHANNEL_DATA variable dumps:
+**Format C — UUID continuation (no timestamp).** `SWITCH_CHANNEL_SESSION_LOG_CLEAN` (`switch_types.h:1349`) — header-free *and* session-bound, so these take the prepend path like any other session line: split, re-encoded, 2047-capped. Used by the EXECUTE trace (`switch_core_session.c:2910`) and every dialplan line (`mod_dialplan_xml.c:156` and on), which is why those turn up as cut successors:
 
 ```
 UUID Dialplan: channel parsing [context->extension] continue=true
@@ -115,8 +115,11 @@ Each element passes through `cleanup_separated_string()` (`switch_utils.c:2687`)
 - **Backslash escapes are consumed and applied** before `'`, `"`, a newline, another backslash, or any character `unescape_char()` maps. A backslash before anything else survives.
 - **Leading and trailing spaces are trimmed.**
 - **Lines glue.** In the tokenizer (`switch_utils.c:2774-2778`), a backslash skips the next character and an apostrophe opens a quoted region — in both cases a newline stops being a delimiter, so two records are written as one element.
+- **A record opening with `^^` is never split.** `switch_separate_string` (`switch_utils.c:2862-2869`) reads those two bytes as a delimiter override and takes the third as the delimiter. Unreachable for a header-bearing node, whose data starts with the timestamp; reachable for the `*_LOG_CLEAN` nodes, whose data starts with the message. No current format string opens that way — a line that ever arrives unsplit is this.
 
-None of this is recoverable downstream. A consumer reconstructing an exact string — a caller name, a SIP header — must treat a prefixed line as lossy; only the verbatim path carries the bytes as they were.
+None of this is recoverable downstream. A consumer reconstructing an exact string — a caller name, a SIP header — must treat a prefixed line as lossy; only the verbatim path carries the bytes as they were. Two verbatim paths worth knowing: mod_sofia's SIP traces log via `SWITCH_CHANNEL_LOG_CLEAN` (`sofia.c:3679`), whose userdata is `NULL`, so they are byte-exact in the file; and `mod_console` (`mod_console.c:337-345`) `fprintf`s `node->data` whole on every branch, so the console and ESL carry the bytes the file lost.
+
+Past the write budget, element 99's remainder never reaches disk — no warning, no marker, nothing in the text to recover it from. No parser can call a CHANNEL_DATA dump complete.
 
 ### Log output taxonomy
 
@@ -213,7 +216,7 @@ Layer 2 finds the cut exactly. `WriteCursor` (`src/stream/collision.rs`) counts 
 
 Because a write spans a prefixed line plus the bare lines under it, the cut usually falls on a *short* bare line — 27% of the cuts in the fixture corpus. A physical line's own length says nothing about it.
 
-Two rules keep this from inventing boundaries: where the write start is unknown the mechanism is off entirely, and a bare UUID splits only on the boundary. The full timestamp header is the exception — it splits anywhere, because write contention concatenates verbatim-path records at arbitrary offsets and those answer to no budget.
+Two rules keep this from inventing boundaries: where the write start is unknown the mechanism is off entirely, and a bare UUID splits only on the boundary. The full timestamp header is the exception — it splits anywhere, because write contention concatenates verbatim-path records at arbitrary offsets and those answer to no budget. That heuristic split says nothing about truncation: the records it separates were each written whole, so only the boundary mechanism raises `CutLine` or marks a text in `cut_texts`.
 
 Both detected and split truncated lines are treated as primary lines — they start a new entry and update `last_uuid`.
 

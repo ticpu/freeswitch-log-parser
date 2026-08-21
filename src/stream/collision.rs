@@ -41,6 +41,12 @@ impl WriteCursor {
         self.0 = None;
     }
 
+    /// Whether a write's start is known, and so whether the lines under it can
+    /// be said to have come off the prepend path at all.
+    pub(super) fn is_live(&self) -> bool {
+        self.0.is_some()
+    }
+
     /// Offset within a line of `line_len` bytes at which the write spends its
     /// budget, or `None` if it cannot reach it here.
     ///

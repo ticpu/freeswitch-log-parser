@@ -889,3 +889,28 @@ fn a_cursor_past_the_budget_drops_rather_than_clamps() {
     cursor.lose();
     assert_eq!(cursor.boundary_in(WRITE_LIMIT), None);
 }
+
+/// A consumer rebuilding an exact string needs to know which path carried it,
+/// and the parser is the only thing that still can tell.
+#[test]
+fn an_entry_reports_the_write_path_that_produced_it() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{TS2} 95.97% [DEBUG] mod_oreka.c:121 Oreka SIP Packet:"),
+        format!("{UUID2} EXECUTE [depth=0] sofia/internal/x export(a=b)"),
+    ];
+    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
+
+    assert_eq!(entries[0].encoding, LineEncoding::Prepended);
+    assert_eq!(entries[1].encoding, LineEncoding::Verbatim);
+    assert_eq!(entries[2].encoding, LineEncoding::Prepended);
+}
+
+/// A stream opening on a continuation cannot say which path wrote it, and says
+/// so rather than picking the likelier one.
+#[test]
+fn a_stream_opening_mid_write_reports_an_unknown_encoding() {
+    let entries: Vec<_> =
+        LogStream::new(std::iter::once("a=rtpmap:0 PCMU/8000".to_string())).collect();
+    assert_eq!(entries[0].encoding, LineEncoding::Unknown);
+}

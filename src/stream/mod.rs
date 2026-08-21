@@ -22,7 +22,7 @@ use crate::message::{classify_message, MessageKind};
 use block::BlockBuilder;
 use collision::{WriteCursor, DECODE_DRIFT, WRITE_LIMIT};
 
-pub use entry::{Block, LogEntry, ParseWarning, SessionReading};
+pub use entry::{Block, LineEncoding, LogEntry, ParseWarning, SessionReading};
 pub use stats::{ParseStats, UnclassifiedLine, UnclassifiedReason, UnclassifiedTracking};
 
 /// Where the next cut would fall after a split at `at`, if the chunk starting
@@ -69,6 +69,9 @@ pub struct LogStream<I> {
     line_warning: Option<ParseWarning>,
     /// How much of its budget the `mod_logfile` write in progress has spent.
     cursor: WriteCursor,
+    /// Which write path produced the line being dispatched, claimed by the
+    /// entry it opens.
+    line_encoding: LineEncoding,
     /// Per chunk of the physical line being dispatched, whether it ends at the
     /// write's spent budget. One physical line can hold several such cuts, and
     /// each is the record it ends, so a single slot would report only the first.
@@ -91,6 +94,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             line_cut: false,
             line_warning: None,
             cursor: WriteCursor::default(),
+            line_encoding: LineEncoding::Unknown,
             cut_verdicts: VecDeque::new(),
         }
     }
@@ -242,6 +246,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             block: None,
             attached: AttachedLines::new(),
             line_number: self.line_number,
+            encoding: self.line_encoding,
             warnings: self
                 .line_warning
                 .take()
@@ -293,6 +298,13 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         } else if bytes.is_empty() || is_date_at(bytes, 0) {
             self.cursor.lose();
         }
+        self.line_encoding = if prepended || self.cursor.is_live() {
+            LineEncoding::Prepended
+        } else if bytes.is_empty() || is_date_at(bytes, 0) {
+            LineEncoding::Verbatim
+        } else {
+            LineEncoding::Unknown
+        };
 
         // Skip past the line's own header to avoid matching itself.
         let min_scan = if prepended {
@@ -418,6 +430,13 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
         loop {
             let line = if let Some(split) = self.split_pending.pop_front() {
                 self.stats.lines_split += 1;
+                // A chunk only ever starts at a UUID or a log header, so its
+                // own first bytes settle which path wrote it.
+                self.line_encoding = if is_uuid_at(split.as_bytes(), 0) {
+                    LineEncoding::Prepended
+                } else {
+                    LineEncoding::Verbatim
+                };
                 // Already split out by a prior detect_collision pass —
                 // skip re-scanning, which would just walk the chunk again
                 // and find nothing.

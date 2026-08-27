@@ -149,7 +149,9 @@ pub enum ParseWarning {
     /// The value collected so far is still recorded.
     UnclosedVariable { name: String },
     /// A CHANNEL_DATA variable's value was cut by the logger's write buffer. The
-    /// value is recorded up to the cut; the line after it opens the next variable.
+    /// value is recorded with the lost middle missing: reassembly resumes after
+    /// the cut and runs to the value's `]` or to the next name, whichever comes
+    /// first.
     TruncatedVariable { name: String },
     /// A line inside a CHANNEL_DATA block matched neither the field nor the
     /// variable shape, so it contributed nothing to the block. Most often a

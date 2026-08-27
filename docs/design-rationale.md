@@ -243,15 +243,18 @@ budget bounds one write, not the physical line a reader is holding. Where that
 evidence is absent — a write whose start the stream never saw — detection
 switches off rather than assume one.
 
-## A value the logger cut is closed, not joined
+## A value the logger cut runs on until a name of its own
 
-Reassembly of a multi-line channel-variable value stops when the write buffer cut the
-preceding physical line, because the line after a cut opens the next variable: joining
-it consumes that variable silently, where closing early costs one warned value. The
-stream's own line split is the evidence — one of its two split mechanisms recognises
-the cut exactly and the other is a heuristic, and only the exact one can reach an open
-value, since a chunk the heuristic produces begins with a log header and dispatches as
-a primary line. That evidence is kept per text the entry owns, so a consumer holding a
+Reassembly of a multi-line channel-variable value continues past a write-buffer cut and
+ends at the first line opening a name of its own — the thing a runaway join would consume.
+A truncated write loses only its own tail, so the lines after it are still that value's,
+while the `]` that would close it may have died in that tail. The value is still reported
+cut, since what sat between is unrecoverable. The stream's own line split is the evidence
+— one of its two split mechanisms recognises the cut exactly and the other is a heuristic,
+and only the exact one can reach an open value, since a chunk the heuristic produces
+begins with a log header and dispatches as a primary line.
+
+That evidence is kept per text the entry owns, so a consumer holding a
 span asks whether it ends where its text does rather than matching the span against the
 warning naming the variable — a name no span carries, and one that cannot separate two
 variables a single entry narrated. A closed value's span stops before its `]`, so the

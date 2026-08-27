@@ -269,6 +269,50 @@ fn a_cut_value_does_not_swallow_the_next_variable() {
         }));
 }
 
+/// The cut lands mid-value and the lines after it are the rest of that value —
+/// an SDP part carried in a multipart variable. They belong to the variable,
+/// not to a warning apiece.
+#[test]
+fn a_cut_value_keeps_the_lines_that_follow_it() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        cut_write(
+            &format!("{UUID1} variable_sip_multipart: [ARRAY::application/sdp:v=0"),
+            &format!("{UUID1} o=FreeSWITCH 0 0 IN IP4 192.0.2.10"),
+        ),
+        format!("{UUID1} c=IN IP4 192.0.2.10"),
+        format!("{UUID1} a=rtpmap:102 opus/48000/2"),
+        format!("{UUID1} ]"),
+        format!("{UUID1} variable_max_forwards: [70]"),
+        full_line(UUID1, TS2, "Next log entry"),
+    ];
+    let entry = LogStream::new(lines.into_iter()).next().expect("entry");
+
+    match entry.block.as_ref().expect("should have block") {
+        Block::ChannelData { variables, .. } => {
+            assert_eq!(variables.len(), 2);
+            assert_eq!(variables[0].0, "variable_sip_multipart");
+            assert!(variables[0].1.ends_with("a=rtpmap:102 opus/48000/2\n"));
+            assert_eq!(
+                variables[1],
+                ("variable_max_forwards".to_string(), "70".to_string())
+            );
+        }
+        other => panic!("expected ChannelData block, got {other:?}"),
+    }
+    assert!(entry.warnings.contains(&ParseWarning::TruncatedVariable {
+        name: "variable_sip_multipart".to_string()
+    }));
+    assert!(
+        !entry
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ParseWarning::UnparseableChannelData { .. })),
+        "the value's own lines were reported unreadable: {:?}",
+        entry.warnings
+    );
+}
+
 /// A value the buffer cut has to be recognisable from the span a redactor is
 /// about to rewrite, without matching the warning list by variable name.
 #[test]

@@ -199,7 +199,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             return;
         };
         if prev_cut {
-            let warning = pending.block.close_cut_variable();
+            let warning = pending.block.mark_variable_cut();
             pending.entry.warnings.extend(warning);
         }
         let warning = pending.block.push_continuation(msg, has_uuid);

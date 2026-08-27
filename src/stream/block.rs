@@ -25,6 +25,25 @@ fn parse_field_line(msg: &str) -> Option<(String, String)> {
     Some((name.to_string(), value.to_string()))
 }
 
+/// A channel variable whose `[` has not been closed yet.
+pub(super) struct OpenVar {
+    name: String,
+    value: String,
+    /// The logger cut this value mid-write. Its `]` may have died in the lost
+    /// tail, so the join ends at the first line opening a name of its own.
+    cut: bool,
+}
+
+/// Whether a CHANNEL_DATA line opens a name of its own, which is what bounds
+/// the join after a cut. Only the bracketed shapes count — the looser
+/// [`parse_field_line`] fallback matches SDP and header lines inside a value.
+fn opens_own_name(msg: &str) -> bool {
+    matches!(
+        classify_message(msg),
+        MessageKind::ChannelField { .. } | MessageKind::Variable { .. }
+    )
+}
+
 /// A [`Block`] under construction. One variant per `Block` variant, plus the
 /// idle state for an entry that opens no block.
 pub(super) enum BlockBuilder {
@@ -32,9 +51,8 @@ pub(super) enum BlockBuilder {
     ChannelData {
         fields: Vec<(String, String)>,
         variables: Vec<(String, String)>,
-        // Name and accumulated value of a variable whose `[` has not been closed
-        // yet. One field, so a half-open variable cannot be represented.
-        open_var: Option<(String, String)>,
+        // One field, so a half-open variable cannot be represented.
+        open_var: Option<OpenVar>,
     },
     Sdp {
         direction: SdpDirection,
@@ -89,22 +107,36 @@ impl BlockBuilder {
                 variables,
                 open_var,
             } => {
-                if let Some((_, val)) = open_var {
-                    val.push('\n');
-                    val.push_str(msg);
-                    if msg.ends_with(']') {
-                        if let Some((name, val)) = open_var.take() {
-                            let closed = val.strip_suffix(']').unwrap_or(&val).to_string();
-                            variables.push((name, closed));
+                if let Some(open) = open_var.as_mut() {
+                    if !(open.cut && opens_own_name(msg)) {
+                        open.value.push('\n');
+                        open.value.push_str(msg);
+                        if msg.ends_with(']') {
+                            if let Some(open) = open_var.take() {
+                                let closed = open
+                                    .value
+                                    .strip_suffix(']')
+                                    .unwrap_or(&open.value)
+                                    .to_string();
+                                variables.push((open.name, closed));
+                            }
                         }
+                        return None;
                     }
-                    return None;
+                }
+                // The join a cut left running ends here, on a name of its own.
+                if let Some(open) = open_var.take() {
+                    variables.push((open.name, open.value));
                 }
                 match classify_message(msg) {
                     MessageKind::ChannelField { name, value } => fields.push((name, value)),
                     MessageKind::Variable { name, value } => {
                         if !msg.ends_with(']') && msg.contains(": [") {
-                            *open_var = Some((name, value));
+                            *open_var = Some(OpenVar {
+                                name,
+                                value,
+                                cut: false,
+                            });
                         } else {
                             variables.push((name, value));
                         }
@@ -146,22 +178,21 @@ impl BlockBuilder {
         }
     }
 
-    /// Close a variable whose value the logger cut, so the line after the cut
-    /// opens the next variable instead of being joined to this one — a join
-    /// consumes that variable entirely, where closing costs one warned value.
-    pub(super) fn close_cut_variable(&mut self) -> Option<ParseWarning> {
-        let BlockBuilder::ChannelData {
-            variables,
-            open_var,
-            ..
-        } = self
-        else {
+    /// Record that the logger cut the open variable's value. It stays open: the
+    /// lines after the cut are still its own, and [`Self::push_continuation`]
+    /// ends the join at the first name of its own.
+    pub(super) fn mark_variable_cut(&mut self) -> Option<ParseWarning> {
+        let BlockBuilder::ChannelData { open_var, .. } = self else {
             return None;
         };
-        let (name, value) = open_var.take()?;
-        let warning = ParseWarning::TruncatedVariable { name: name.clone() };
-        variables.push((name, value));
-        Some(warning)
+        let open = open_var.as_mut()?;
+        if open.cut {
+            return None;
+        }
+        open.cut = true;
+        Some(ParseWarning::TruncatedVariable {
+            name: open.name.clone(),
+        })
     }
 
     /// Absorb one line of a codec negotiation run. Unlike the other blocks
@@ -201,9 +232,14 @@ impl BlockBuilder {
                 mut variables,
                 open_var,
             } => {
-                if let Some((name, value)) = open_var {
-                    warnings.push(ParseWarning::UnclosedVariable { name: name.clone() });
-                    variables.push((name, value));
+                if let Some(open) = open_var {
+                    // A cut one already reported why its value is incomplete.
+                    if !open.cut {
+                        warnings.push(ParseWarning::UnclosedVariable {
+                            name: open.name.clone(),
+                        });
+                    }
+                    variables.push((open.name, open.value));
                 }
                 Some(Block::ChannelData { fields, variables })
             }

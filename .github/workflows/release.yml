@@ -76,6 +76,8 @@ jobs:
         cd assets
         sha256sum fslog-* *.deb *.tar.gz > SHA256SUMS
 
+    # Draft: sign-release.sh signs the assets and publishes it. A published
+    # release's assets can no longer be replaced once immutability is enabled.
     # The annotated tag's message is the changelog the release process writes.
     # `contents:body` drops the subject line (already the title) and, on a signed
     # tag, the PGP block that `contents` would paste into the release notes.
@@ -84,6 +86,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         gh release create "$GITHUB_REF_NAME" \
+          --draft \
           --title "$GITHUB_REF_NAME" \
           --notes "$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")" \
           assets/*

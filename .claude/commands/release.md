@@ -103,13 +103,31 @@ gh run watch "$(gh run list --workflow=release.yml -L1 --json databaseId --jq '.
 ```
 
    It builds the amd64/arm64 `.deb`s and binaries and creates the GitHub release
-   using the tag annotation as its body.
+   using the tag annotation as its body. The release is left a **draft** — step 7
+   signs its assets and publishes it.
 
    Red, or no run created: stop. Never retag — a fix is a new patch release. If
    the workflow never ran because Actions was down, dispatch it once Actions
    recovers (`gh workflow run release.yml --ref vX.Y.Z`) and wait for that run.
 
-7. Publish, from the tagged commit:
+7. Sign the assets and publish the release:
+
+```sh
+./sign-release.sh --dry-run
+./sign-release.sh
+```
+
+   It detach-signs every asset — `SHA256SUMS` included — with the key from
+   `git config user.signingkey`, verifies each signature, uploads the `.asc`
+   files, then clears the draft flag. `--dry-run` signs into
+   `scratch/release-sign-vX.Y.Z` and uploads nothing, which is how the key and
+   the asset list get checked before the real run.
+
+   Nothing may be published unsigned: apt.ticpu.net verifies each asset's
+   signature on ingest, and with release immutability enabled a published
+   release's assets can no longer be replaced.
+
+8. Publish, from the tagged commit:
 
 ```sh
 git checkout vX.Y.Z
@@ -120,7 +138,7 @@ git switch master
    `git switch master` deletes the working-tree `Cargo.lock` (untracked there);
    the next cargo command regenerates it.
 
-8. Report the tag, the changelog, the CI runs that gated the publish, and the
+9. Report the tag, the changelog, the CI runs that gated the publish, and the
    crates.io version.
 
 ## Important

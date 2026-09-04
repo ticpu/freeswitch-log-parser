@@ -51,8 +51,13 @@ pub struct MonitorArgs {
     file: Option<String>,
 }
 
-fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Result<AppState> {
-    let segments = build_segments(dir, path, open_log_reader)?;
+fn process_log(
+    dir: &Path,
+    path: &Path,
+    context_filter: ContextFilter,
+    max_line_bytes: usize,
+) -> io::Result<AppState> {
+    let segments = build_segments(dir, path, open_log_reader, max_line_bytes)?;
 
     let (chain, _) = TrackedChain::new(segments);
     let stream = LogStream::new(chain);
@@ -74,7 +79,7 @@ fn process_log(dir: &Path, path: &Path, context_filter: ContextFilter) -> io::Re
     Ok(state)
 }
 
-pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
+pub fn run_dump(dir: &Path, args: &MonitorArgs, max_line_bytes: usize) -> io::Result<()> {
     let path = resolve_log_path(dir, args.file.as_deref());
 
     let context_filter = args
@@ -83,7 +88,7 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
         .map(ContextFilter::parse)
         .unwrap_or(ContextFilter::None);
 
-    let state = process_log(dir, &path, context_filter)?;
+    let state = process_log(dir, &path, context_filter, max_line_bytes)?;
 
     // `println!` panics when the reader closes early; `fslog monitor --dump |
     // head` is exactly that.
@@ -99,9 +104,9 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs) -> io::Result<()> {
     Ok(())
 }
 
-pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
+pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> io::Result<()> {
     if args.dump {
-        return run_dump(dir, &args);
+        return run_dump(dir, &args, max_line_bytes);
     }
 
     let cfg = config::load_config(args.config.as_deref())
@@ -111,7 +116,7 @@ pub fn run(dir: &Path, args: MonitorArgs) -> io::Result<()> {
 
     let (tx, rx) = mpsc::channel();
     let (remove_tx, remove_rx) = mpsc::channel();
-    let _reader = spawn_reader(dir.to_path_buf(), path, tx, remove_rx)?;
+    let _reader = spawn_reader(dir.to_path_buf(), path, tx, remove_rx, max_line_bytes)?;
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;

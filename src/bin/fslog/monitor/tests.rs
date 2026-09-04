@@ -360,7 +360,7 @@ fn fixture_dump_all_calls_have_valid_timestamps() {
         return; // skip if fixtures not available
     }
 
-    let state = process_log(dir, &path, ContextFilter::None)
+    let state = process_log(dir, &path, ContextFilter::None, usize::MAX)
         .expect("process_log should succeed on fixtures");
 
     let bad: Vec<_> = state
@@ -388,7 +388,7 @@ fn fixture_no_cross_file_timestamp_inflation() {
         return;
     }
 
-    let state = process_log(dir, &path, ContextFilter::None)
+    let state = process_log(dir, &path, ContextFilter::None, usize::MAX)
         .expect("process_log should succeed on fixtures");
 
     let row = state.calls.iter().find(|r| r.uuid.starts_with("f2cb66d4"));
@@ -414,7 +414,7 @@ fn fixture_rotated_only_calls_bounded_duration() {
         return;
     }
 
-    let state = process_log(dir, &path, ContextFilter::None)
+    let state = process_log(dir, &path, ContextFilter::None, usize::MAX)
         .expect("process_log should succeed on fixtures");
 
     for prefix in &["031193dc", "0a962643"] {

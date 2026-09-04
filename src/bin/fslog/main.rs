@@ -26,7 +26,7 @@ use context::{Emitter, FieldCounts, HiddenCounts};
 use files::{
     discover_log_files, display_name, filter_files_by_date, format_size, lazy_log_reader,
     lossy_line_iter, normalize_date_from, normalize_date_until, open_log_reader, open_tail_reader,
-    resolve_log_path,
+    resolve_log_path, DEFAULT_MAX_LINE_BYTES,
 };
 use output::{ColorMode, EntryPrinter, FilterConfig, FilterParams};
 use pager::{is_broken_pipe, PagedWriter};
@@ -52,6 +52,10 @@ struct Cli {
     /// Pipe output through a pager (`$FSLOG_PAGER`, default `less -RFX`)
     #[arg(long, visible_alias = "less")]
     pager: bool,
+
+    /// Bytes of one physical line to read before dropping its remainder
+    #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MAX_LINE_BYTES)]
+    max_line_bytes: usize,
 
     #[command(subcommand)]
     command: Command,
@@ -399,9 +403,9 @@ fn run_with_output(cli: Cli, out: &mut dyn Write) -> io::Result<()> {
     let color = resolve_color(cli.color);
     match cli.command {
         Command::List => cmd_list(&cli.dir, out),
-        Command::Search(ref args) => cmd_search(&cli.dir, args, color, out),
-        Command::Read(ref args) => cmd_read(&cli.dir, args, color, out),
-        Command::Tail(ref args) => cmd_tail(&cli.dir, args, color, out),
+        Command::Search(ref args) => cmd_search(&cli.dir, args, color, out, cli.max_line_bytes),
+        Command::Read(ref args) => cmd_read(&cli.dir, args, color, out, cli.max_line_bytes),
+        Command::Tail(ref args) => cmd_tail(&cli.dir, args, color, out, cli.max_line_bytes),
         #[cfg(feature = "tui")]
         Command::Monitor(_) => unreachable!("handled in main()"),
         Command::Completions { shell } => {
@@ -529,10 +533,13 @@ fn resolve_search_files(
     Ok(Some(v))
 }
 
-fn build_segments(files: &[(String, PathBuf)]) -> Vec<(String, Box<dyn Iterator<Item = String>>)> {
+fn build_segments(
+    files: &[(String, PathBuf)],
+    max_line_bytes: usize,
+) -> Vec<(String, Box<dyn Iterator<Item = String>>)> {
     files
         .iter()
-        .map(|(name, path)| (name.clone(), lazy_log_reader(path.clone())))
+        .map(|(name, path)| (name.clone(), lazy_log_reader(path.clone(), max_line_bytes)))
         .collect()
 }
 
@@ -541,6 +548,7 @@ fn cmd_search(
     args: &SearchArgs,
     color: ColorMode,
     out: &mut dyn Write,
+    max_line_bytes: usize,
 ) -> io::Result<()> {
     if args.pattern.is_some() && args.filter.fgrep.is_some() {
         return Err(io::Error::other(
@@ -604,7 +612,10 @@ fn cmd_search(
     // the discovered peer legs, and a peer's own file need never mention the seed.
     let mut rendered = seeded;
     if args.related {
-        let discovered = related::discover(build_segments(&rendered), &filter.for_discovery());
+        let discovered = related::discover(
+            build_segments(&rendered, max_line_bytes),
+            &filter.for_discovery(),
+        );
         if discovered.is_empty() {
             return report_empty();
         }
@@ -616,7 +627,7 @@ fn cmd_search(
 
     let run = run_output(
         out,
-        build_segments(&rendered),
+        build_segments(&rendered, max_line_bytes),
         &filter,
         &printer,
         &args.filter,
@@ -690,13 +701,23 @@ fn run_output(
     })
 }
 
-fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
+fn cmd_read(
+    dir: &Path,
+    args: &ReadArgs,
+    color: ColorMode,
+    out: &mut dyn Write,
+    max_line_bytes: usize,
+) -> io::Result<()> {
     let filter = build_filter(&args.filter, None, None);
 
     let (name, lines): (String, Box<dyn Iterator<Item = String>>) = match args.file.as_deref() {
         Some("-") => (
             "-".to_string(),
-            lossy_line_iter(Box::new(io::stdin().lock())),
+            lossy_line_iter(
+                Box::new(io::stdin().lock()),
+                "-".to_string(),
+                max_line_bytes,
+            ),
         ),
         Some(path) => {
             let p = PathBuf::from(path);
@@ -705,11 +726,11 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
             } else {
                 dir.join(&p)
             };
-            (display_name(&p), open_log_reader(&p)?)
+            (display_name(&p), open_log_reader(&p, max_line_bytes)?)
         }
         None => {
             let p = resolve_log_path(dir, None);
-            (display_name(&p), open_log_reader(&p)?)
+            (display_name(&p), open_log_reader(&p, max_line_bytes)?)
         }
     };
 
@@ -733,11 +754,17 @@ fn cmd_read(dir: &Path, args: &ReadArgs, color: ColorMode, out: &mut dyn Write) 
     print_epilogue(&printer, &args.filter, &run)
 }
 
-fn cmd_tail(dir: &Path, args: &TailArgs, color: ColorMode, out: &mut dyn Write) -> io::Result<()> {
+fn cmd_tail(
+    dir: &Path,
+    args: &TailArgs,
+    color: ColorMode,
+    out: &mut dyn Write,
+    max_line_bytes: usize,
+) -> io::Result<()> {
     let filter = build_filter(&args.filter, None, None);
 
     let path = resolve_log_path(dir, args.file.as_deref());
-    let lines = open_tail_reader(&path, args.lines)?;
+    let lines = open_tail_reader(&path, args.lines, max_line_bytes)?;
 
     let printer = args.filter.printer(color);
     let stream = LogStream::new(lines).unclassified_tracking(args.filter.tracking());
@@ -768,7 +795,7 @@ fn main() {
 
     #[cfg(feature = "tui")]
     if let Command::Monitor(args) = cli.command {
-        if let Err(e) = monitor::run(&cli.dir, args) {
+        if let Err(e) = monitor::run(&cli.dir, args, cli.max_line_bytes) {
             eprintln!("fslog: {e}");
             process::exit(1);
         }

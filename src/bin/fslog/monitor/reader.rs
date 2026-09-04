@@ -118,14 +118,15 @@ pub(super) type LineIter = Box<dyn Iterator<Item = String>>;
 pub(super) fn build_segments(
     dir: &Path,
     path: &Path,
-    open_current: fn(&Path) -> io::Result<LineIter>,
+    open_current: fn(&Path, usize) -> io::Result<LineIter>,
+    max_line_bytes: usize,
 ) -> io::Result<Vec<(String, LineIter)>> {
     let mut segments: Vec<(String, LineIter)> = Vec::new();
 
     match discover_log_files(dir) {
         Ok(files) => {
             if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
-                match open_log_reader(&prev.path) {
+                match open_log_reader(&prev.path, max_line_bytes) {
                     Ok(reader) => {
                         segments.push((display_name(&prev.path), reader));
                     }
@@ -142,7 +143,7 @@ pub(super) fn build_segments(
         ),
     }
 
-    let current = open_current(path)?;
+    let current = open_current(path, max_line_bytes)?;
     segments.push((display_name(path), current));
     Ok(segments)
 }
@@ -152,6 +153,7 @@ pub(super) fn spawn_reader(
     path: PathBuf,
     tx: mpsc::Sender<ReaderMsg>,
     remove_rx: mpsc::Receiver<String>,
+    max_line_bytes: usize,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     if !path.exists() {
         return Err(io::Error::new(
@@ -160,7 +162,7 @@ pub(super) fn spawn_reader(
         ));
     }
     let handle = std::thread::spawn(move || {
-        let segments = match build_segments(&dir, &path, open_full_tail_reader) {
+        let segments = match build_segments(&dir, &path, open_full_tail_reader, max_line_bytes) {
             Ok(s) => s,
             Err(e) => {
                 error!("reader failed to open {}: {e}", path.display());

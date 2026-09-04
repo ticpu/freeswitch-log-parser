@@ -2,9 +2,57 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use freeswitch_log_parser::{decode_log_line, log_rotation_stamp, read_log_lines, Utf8Decode};
+use freeswitch_log_parser::{
+    decode_log_line, log_rotation_stamp, read_log_line_capped, read_log_lines_capped,
+    trim_capped_tail, OverCap, Utf8Decode,
+};
 use log::{error, warn};
 use xz2::read::XzDecoder;
+
+/// Bytes of one physical line a reader will materialize. A collided or verbatim
+/// write runs to megabytes, and every reader here is one of several running at
+/// once against a memory limit.
+pub const DEFAULT_MAX_LINE_BYTES: usize = 1 << 20;
+
+/// One file's over-cap lines: the first is reported as it happens, the rest
+/// counted into a single summary when the reader is dropped.
+struct CapReport {
+    name: String,
+    count: u64,
+    largest: usize,
+}
+
+impl CapReport {
+    fn new(name: String) -> Self {
+        CapReport {
+            name,
+            count: 0,
+            largest: 0,
+        }
+    }
+
+    fn record(&mut self, over: OverCap) {
+        self.count += 1;
+        self.largest = self.largest.max(over.line_bytes);
+        if self.count == 1 {
+            warn!(
+                "{}: line of {} bytes read only to {}, remainder dropped",
+                self.name, over.line_bytes, over.cap
+            );
+        }
+    }
+}
+
+impl Drop for CapReport {
+    fn drop(&mut self) {
+        if self.count > 1 {
+            warn!(
+                "{}: {} lines exceeded the read cap, largest {} bytes",
+                self.name, self.count, self.largest
+            );
+        }
+    }
+}
 
 pub struct LogFile {
     pub path: PathBuf,
@@ -156,37 +204,58 @@ pub fn open_log_file(path: &Path) -> io::Result<Box<dyn BufRead>> {
     }
 }
 
-pub fn open_log_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String>>> {
+pub fn open_log_reader(
+    path: &Path,
+    max_line_bytes: usize,
+) -> io::Result<Box<dyn Iterator<Item = String>>> {
     let reader = open_log_file(path)?;
-    Ok(lossy_line_iter(reader))
+    Ok(lossy_line_iter(reader, display_name(path), max_line_bytes))
 }
 
 /// Yield log lines as `String`, replacing invalid UTF-8 with U+FFFD instead of
 /// panicking. mod_logfile's 2 KiB buffer truncation can chop a multi-byte
 /// codepoint mid-character; that benign case is recovered silently. A byte that
 /// can't be part of any UTF-8 sequence is genuine corruption — warn, don't hide.
-pub fn lossy_line_iter(reader: Box<dyn BufRead>) -> Box<dyn Iterator<Item = String>> {
-    Box::new(read_log_lines(reader).map_while(|decoded| match decoded {
-        Ok(line) => {
-            if let Utf8Decode::InvalidBytes { at } = line.decode {
-                warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
+///
+/// A line past `max_line_bytes` is read only that far; what was dropped is
+/// reported, never silently missing.
+pub fn lossy_line_iter(
+    reader: Box<dyn BufRead>,
+    name: String,
+    max_line_bytes: usize,
+) -> Box<dyn Iterator<Item = String>> {
+    let mut cap_report = CapReport::new(name);
+    Box::new(read_log_lines_capped(reader, max_line_bytes).map_while(
+        move |decoded| match decoded {
+            Ok(capped) => {
+                if let Some(over) = capped.over_cap {
+                    cap_report.record(over);
+                }
+                if let Utf8Decode::InvalidBytes { at } = capped.line.decode {
+                    warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
+                }
+                Some(capped.line.text)
             }
-            Some(line.text)
-        }
-        Err(e) => {
-            error!("read error: {e}");
-            None
-        }
-    }))
+            Err(e) => {
+                error!("read error: {e}");
+                None
+            }
+        },
+    ))
 }
 
-pub fn lazy_log_reader(path: PathBuf) -> Box<dyn Iterator<Item = String>> {
-    Box::new(LazyLogReader { path, inner: None })
+pub fn lazy_log_reader(path: PathBuf, max_line_bytes: usize) -> Box<dyn Iterator<Item = String>> {
+    Box::new(LazyLogReader {
+        path,
+        inner: None,
+        max_line_bytes,
+    })
 }
 
 struct LazyLogReader {
     path: PathBuf,
     inner: Option<Box<dyn Iterator<Item = String>>>,
+    max_line_bytes: usize,
 }
 
 impl Iterator for LazyLogReader {
@@ -194,7 +263,7 @@ impl Iterator for LazyLogReader {
 
     fn next(&mut self) -> Option<String> {
         if self.inner.is_none() {
-            match open_log_reader(&self.path) {
+            match open_log_reader(&self.path, self.max_line_bytes) {
                 Ok(reader) => self.inner = Some(reader),
                 Err(e) => {
                     warn!("skipping {}: open failed: {e}", self.path.display());
@@ -215,15 +284,23 @@ struct TailLines<R: BufRead> {
     /// Bytes of a line the writer has not terminated yet. Emitting it would hand
     /// the parser half a record and the remainder as a bogus continuation.
     pending: Vec<u8>,
+    /// Length of that line as written, which past the cap outruns `pending`.
+    pending_bytes: usize,
     path: PathBuf,
+    max_line_bytes: usize,
+    cap_report: CapReport,
 }
 
 impl TailLines<BufReader<fs::File>> {
-    fn new(file: fs::File, path: PathBuf) -> Self {
+    fn new(file: fs::File, path: PathBuf, max_line_bytes: usize) -> Self {
+        let cap_report = CapReport::new(display_name(&path));
         TailLines {
             reader: BufReader::new(file),
             pending: Vec::new(),
+            pending_bytes: 0,
             path,
+            max_line_bytes,
+            cap_report,
         }
     }
 }
@@ -233,32 +310,49 @@ impl<R: BufRead> Iterator for TailLines<R> {
 
     fn next(&mut self) -> Option<String> {
         loop {
-            match self.reader.read_until(b'\n', &mut self.pending) {
-                Ok(0) => std::thread::sleep(std::time::Duration::from_millis(250)),
-                Ok(_) => {
-                    if self.pending.last() != Some(&b'\n') {
-                        continue;
-                    }
-                    let decoded = decode_log_line(&self.pending);
-                    self.pending.clear();
-                    if let Utf8Decode::InvalidBytes { at } = decoded.decode {
-                        warn!(
-                            "invalid UTF-8 byte at offset {at} while tailing {}, recovered with U+FFFD",
-                            self.path.display()
-                        );
-                    }
-                    return Some(decoded.text);
-                }
+            let read = match read_log_line_capped(
+                &mut self.reader,
+                self.max_line_bytes,
+                &mut self.pending,
+            ) {
+                Ok(read) => read,
                 Err(e) => {
                     error!("tail read error on {}, stopping: {e}", self.path.display());
                     return None;
                 }
+            };
+            let Some(read) = read else {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            };
+            self.pending_bytes += read.line_bytes;
+            if !read.terminated {
+                continue;
             }
+            if self.pending_bytes > self.max_line_bytes {
+                self.cap_report
+                    .record(OverCap::new(self.max_line_bytes, self.pending_bytes));
+                trim_capped_tail(&mut self.pending);
+            }
+            let decoded = decode_log_line(&self.pending);
+            self.pending.clear();
+            self.pending_bytes = 0;
+            if let Utf8Decode::InvalidBytes { at } = decoded.decode {
+                warn!(
+                    "invalid UTF-8 byte at offset {at} while tailing {}, recovered with U+FFFD",
+                    self.path.display()
+                );
+            }
+            return Some(decoded.text);
         }
     }
 }
 
-fn read_tail_context(path: &Path, n_lines: usize) -> io::Result<(Vec<String>, u64)> {
+fn read_tail_context(
+    path: &Path,
+    n_lines: usize,
+    max_line_bytes: usize,
+) -> io::Result<(Vec<String>, u64)> {
     use std::io::{Seek, SeekFrom};
 
     let mut file = fs::File::open(path)?;
@@ -276,13 +370,17 @@ fn read_tail_context(path: &Path, n_lines: usize) -> io::Result<(Vec<String>, u6
     }
 
     let reader = BufReader::new(file);
+    let mut cap_report = CapReport::new(display_name(path));
     let mut lines = Vec::new();
-    for decoded in read_log_lines(reader) {
-        let line = decoded?;
-        if let Utf8Decode::InvalidBytes { at } = line.decode {
+    for decoded in read_log_lines_capped(reader, max_line_bytes) {
+        let capped = decoded?;
+        if let Some(over) = capped.over_cap {
+            cap_report.record(over);
+        }
+        if let Utf8Decode::InvalidBytes { at } = capped.line.decode {
             warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
         }
-        lines.push(line.text);
+        lines.push(capped.line.text);
     }
 
     if seek_pos > 0 && !lines.is_empty() {
@@ -299,29 +397,33 @@ fn read_tail_context(path: &Path, n_lines: usize) -> io::Result<(Vec<String>, u6
 pub fn open_tail_reader(
     path: &Path,
     initial_lines: usize,
+    max_line_bytes: usize,
 ) -> io::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 
-    let (context, file_len) = read_tail_context(path, initial_lines)?;
+    let (context, file_len) = read_tail_context(path, initial_lines, max_line_bytes)?;
 
     let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(file_len))?;
-    let tail = TailLines::new(file, path.to_path_buf());
+    let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes);
 
     Ok(Box::new(context.into_iter().chain(tail)))
 }
 
 #[cfg(feature = "tui")]
-pub fn open_full_tail_reader(path: &Path) -> io::Result<Box<dyn Iterator<Item = String>>> {
+pub fn open_full_tail_reader(
+    path: &Path,
+    max_line_bytes: usize,
+) -> io::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 
     let reader = open_log_file(path)?;
     let end_pos = fs::File::open(path)?.metadata()?.len();
-    let lines = lossy_line_iter(reader);
+    let lines = lossy_line_iter(reader, display_name(path), max_line_bytes);
 
     let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(end_pos))?;
-    let tail = TailLines::new(file, path.to_path_buf());
+    let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes);
 
     Ok(Box::new(lines.chain(tail)))
 }
@@ -348,10 +450,17 @@ mod tests {
     /// Drive the follower over a fixed buffer. Every assertion below consumes
     /// only terminated lines, so the EOF sleep is never reached.
     fn tail_over<R: BufRead>(reader: R) -> TailLines<R> {
+        tail_over_capped(reader, usize::MAX)
+    }
+
+    fn tail_over_capped<R: BufRead>(reader: R, max_line_bytes: usize) -> TailLines<R> {
         TailLines {
             reader,
             pending: Vec::new(),
+            pending_bytes: 0,
             path: PathBuf::from("test.log"),
+            max_line_bytes,
+            cap_report: CapReport::new("test.log".to_string()),
         }
     }
 
@@ -395,6 +504,14 @@ mod tests {
         // before trimming, so the reader must not drop one.
         let lines: Vec<String> = tail_over(cursor(b"one\r\ntwo\n")).take(2).collect();
         assert_eq!(lines, vec!["one\r", "two"]);
+    }
+
+    #[test]
+    fn tail_caps_a_long_line_and_keeps_framing() {
+        let lines: Vec<String> = tail_over_capped(cursor(b"aaaaaaaaaa\nbb\n"), 4)
+            .take(2)
+            .collect();
+        assert_eq!(lines, vec!["aaaa", "bb"]);
     }
 
     #[test]

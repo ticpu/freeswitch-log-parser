@@ -74,6 +74,21 @@ pub fn classify_utf8(line: &[u8]) -> Utf8Decode {
     }
 }
 
+/// Length of the trailing incomplete UTF-8 sequence in `bytes`, if any.
+///
+/// A reader cutting at a byte bound must drop those bytes before decoding, or
+/// its own cut is reported as [`Utf8Decode::TruncatedCodepoint`] and reads as
+/// `mod_logfile` having chopped a character.
+fn incomplete_tail_len(bytes: &[u8]) -> usize {
+    for back in 1..=bytes.len().min(3) {
+        let tail = &bytes[bytes.len() - back..];
+        if is_incomplete_multibyte(tail) {
+            return back;
+        }
+    }
+    0
+}
+
 /// Valid lead byte followed only by valid continuations, shorter than the lead
 /// requires — i.e. a codepoint cut short rather than a malformed encoding.
 fn is_incomplete_multibyte(seq: &[u8]) -> bool {
@@ -126,18 +141,146 @@ pub fn decode_log_line(bytes: &[u8]) -> DecodedLine {
     }
 }
 
+/// How much of a physical line the reader's byte bound cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OverCap {
+    /// The bound the reader was given.
+    pub cap: usize,
+    /// Length of the whole physical line, newline excluded. What the consumer
+    /// lost is `line_bytes` minus the decoded text's byte length.
+    pub line_bytes: usize,
+}
+
+impl OverCap {
+    /// For a reader owning its read loop, which reaches the verdict itself.
+    pub fn new(cap: usize, line_bytes: usize) -> Self {
+        OverCap { cap, line_bytes }
+    }
+}
+
+/// A decoded line plus whether the reader's byte bound cut it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CappedLine {
+    pub line: DecodedLine,
+    /// `Some` when the physical line ran past the bound. The discarded tail may
+    /// be an intact record — a verbatim write carries no budget — so this is a
+    /// count, not a claim of damage.
+    pub over_cap: Option<OverCap>,
+}
+
 /// Read newline-delimited log lines, decoding each with the truncated-codepoint
 /// case typed distinctly from corruption.
 ///
 /// Real I/O errors stay terminal `io::Error`. UTF-8 invalidity is **not** an
 /// error — the line is lossy-recovered (U+FFFD) so the record survives, and the
 /// verdict is reported in [`DecodedLine::decode`].
-pub fn read_log_lines<R: BufRead>(mut r: R) -> impl Iterator<Item = io::Result<DecodedLine>> {
+///
+/// Peak memory is whatever the longest line in the input turns out to be.
+/// [`read_log_lines_capped`] takes a bound instead.
+pub fn read_log_lines<R: BufRead>(r: R) -> impl Iterator<Item = io::Result<DecodedLine>> {
+    read_lines(r, None).map(|res| res.map(|capped| capped.line))
+}
+
+/// Read newline-delimited log lines, never materializing more than `max_bytes`
+/// of any one of them.
+///
+/// A line past the bound is decoded up to it and the rest discarded while the
+/// reader scans on to the newline, so a consumer's peak memory is its own choice
+/// rather than the longest line the file happens to hold. Every discard is
+/// reported in [`CappedLine::over_cap`] with the physical line's full length.
+pub fn read_log_lines_capped<R: BufRead>(
+    r: R,
+    max_bytes: usize,
+) -> impl Iterator<Item = io::Result<CappedLine>> {
+    read_lines(r, Some(max_bytes))
+}
+
+/// What one [`read_log_line_capped`] call took from the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LineRead {
+    /// Bytes of line content this call passed, newline excluded — including any
+    /// the cap kept out of the buffer.
+    pub line_bytes: usize,
+    /// Whether a newline ended the line. `false` means the input ran out first,
+    /// which for a follower means the writer has not finished the record.
+    pub terminated: bool,
+}
+
+/// Append up to `max_bytes` of the next line to `buf`, consuming the rest of the
+/// line from `r` regardless. `None` when the reader was already at EOF.
+///
+/// For readers that own their read loop: a `tail -f` follower resumes an
+/// unterminated line by calling again with the same `buf`, so `max_bytes` is
+/// measured against what `buf` already holds. Everything else wants
+/// [`read_log_lines_capped`], which owns the loop.
+pub fn read_log_line_capped<R: BufRead>(
+    r: &mut R,
+    max_bytes: usize,
+    buf: &mut Vec<u8>,
+) -> io::Result<Option<LineRead>> {
+    let mut line_bytes = 0;
+    let mut saw_bytes = false;
+    let mut terminated = false;
+    loop {
+        let available = match r.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            break;
+        }
+        saw_bytes = true;
+        let (content, consumed, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(i) => (&available[..i], i + 1, true),
+            None => (available, available.len(), false),
+        };
+        let room = max_bytes.saturating_sub(buf.len()).min(content.len());
+        buf.extend_from_slice(&content[..room]);
+        line_bytes += content.len();
+        r.consume(consumed);
+        if done {
+            terminated = true;
+            break;
+        }
+    }
+    Ok(saw_bytes.then_some(LineRead {
+        line_bytes,
+        terminated,
+    }))
+}
+
+/// Drop a trailing sequence the caller's own byte cut left incomplete, so the
+/// decode verdict names only what the logger truncated.
+pub fn trim_capped_tail(buf: &mut Vec<u8>) {
+    buf.truncate(buf.len() - incomplete_tail_len(buf));
+}
+
+fn read_lines<R: BufRead>(
+    mut r: R,
+    cap: Option<usize>,
+) -> impl Iterator<Item = io::Result<CappedLine>> {
+    let max = cap.unwrap_or(usize::MAX);
+    let mut buf = Vec::new();
     std::iter::from_fn(move || {
-        let mut buf = Vec::new();
-        match r.read_until(b'\n', &mut buf) {
-            Ok(0) => None,
-            Ok(_) => Some(Ok(decode_log_line(&buf))),
+        buf.clear();
+        match read_log_line_capped(&mut r, max, &mut buf) {
+            Ok(None) => None,
+            Ok(Some(read)) => {
+                let over_cap = (read.line_bytes > max).then(|| {
+                    trim_capped_tail(&mut buf);
+                    OverCap {
+                        cap: max,
+                        line_bytes: read.line_bytes,
+                    }
+                });
+                Some(Ok(CappedLine {
+                    line: decode_log_line(&buf),
+                    over_cap,
+                }))
+            }
             Err(e) => Some(Err(e)),
         }
     })
@@ -257,5 +400,95 @@ mod tests {
         assert!(lines[1].text.starts_with("bad"));
         assert!(lines[1].text.contains('\u{fffd}'));
         assert!(lines[1].text.ends_with("stuff"));
+    }
+
+    fn capped(input: &'static [u8], max_bytes: usize) -> Vec<CappedLine> {
+        read_log_lines_capped(Cursor::new(input), max_bytes)
+            .map(|d| d.expect("no io error"))
+            .collect()
+    }
+
+    #[test]
+    fn a_line_exactly_at_the_cap_is_kept_whole() {
+        let lines = capped(b"abcde\nfg\n", 5);
+        assert_eq!(lines[0].line.text, "abcde");
+        assert_eq!(lines[0].over_cap, None);
+        assert_eq!(lines[1].line.text, "fg");
+        assert_eq!(lines[1].over_cap, None);
+    }
+
+    #[test]
+    fn a_line_past_the_cap_reports_the_full_physical_length() {
+        let lines = capped(b"abcdef\n", 5);
+        assert_eq!(lines[0].line.text, "abcde");
+        assert_eq!(
+            lines[0].over_cap,
+            Some(OverCap {
+                cap: 5,
+                line_bytes: 6
+            })
+        );
+    }
+
+    #[test]
+    fn the_readers_own_cut_never_reads_as_a_logger_truncation() {
+        // Cap lands between the two bytes of 'é'.
+        let lines = capped("abcéd\n".as_bytes(), 4);
+        assert_eq!(lines[0].line.text, "abc");
+        assert_eq!(lines[0].line.decode, Utf8Decode::Clean);
+        assert_eq!(lines[0].over_cap.expect("over cap").line_bytes, 6);
+    }
+
+    #[test]
+    fn a_logger_truncation_under_the_cap_is_still_reported() {
+        let lines = capped(b"bad\xe2\x80\n", 100);
+        assert_eq!(lines[0].over_cap, None);
+        assert!(matches!(
+            lines[0].line.decode,
+            Utf8Decode::TruncatedCodepoint { at: 3 }
+        ));
+    }
+
+    #[test]
+    fn consecutive_over_cap_lines_do_not_leak_bytes_into_each_other() {
+        let lines = capped(b"aaaaaaaa\nbbbbbbbb\ncc\n", 3);
+        assert_eq!(lines[0].line.text, "aaa");
+        assert_eq!(lines[1].line.text, "bbb");
+        assert_eq!(lines[2].line.text, "cc");
+        assert_eq!(lines[2].over_cap, None);
+    }
+
+    #[test]
+    fn a_final_line_without_a_newline_is_yielded() {
+        let lines = capped(b"first\nlast no newline", 3);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1].line.text, "las");
+        assert_eq!(lines[1].over_cap.expect("over cap").line_bytes, 15);
+    }
+
+    #[test]
+    fn a_zero_cap_keeps_the_framing_and_drops_every_byte() {
+        let lines = capped(b"abc\n\ndef\n", 0);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].line.text, "");
+        assert_eq!(lines[0].over_cap.expect("over cap").line_bytes, 3);
+        // An empty line has nothing to lose, so no cap verdict.
+        assert_eq!(lines[1].over_cap, None);
+    }
+
+    #[test]
+    fn a_line_spanning_several_reader_refills_counts_every_byte() {
+        // BufReader with a tiny buffer forces fill_buf to hand back fragments.
+        let input: Vec<u8> = {
+            let mut v = vec![b'x'; 500];
+            v.push(b'\n');
+            v
+        };
+        let reader = io::BufReader::with_capacity(16, Cursor::new(input));
+        let lines: Vec<CappedLine> = read_log_lines_capped(reader, 100)
+            .map(|d| d.expect("no io error"))
+            .collect();
+        assert_eq!(lines[0].line.text.len(), 100);
+        assert_eq!(lines[0].over_cap.expect("over cap").line_bytes, 500);
     }
 }

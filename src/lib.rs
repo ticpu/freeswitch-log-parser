@@ -67,7 +67,8 @@ pub use attached::{AttachedLines, AttachedLinesIter, AttachedOverflow};
 pub use chain::{SegmentTracker, TrackedChain};
 pub use codec::{CodecMedia, CodecOffer, CodecParseError};
 pub use decode::{
-    classify_utf8, decode_log_line, read_log_lines, truncate_at_char_boundary, DecodedLine,
+    classify_utf8, decode_log_line, read_log_line_capped, read_log_lines, read_log_lines_capped,
+    trim_capped_tail, truncate_at_char_boundary, CappedLine, DecodedLine, LineRead, OverCap,
     Utf8Decode,
 };
 pub use fields::{

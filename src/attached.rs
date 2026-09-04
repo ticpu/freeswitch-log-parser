@@ -53,13 +53,20 @@ impl AttachedLines {
         self.offsets.is_empty()
     }
 
+    /// Bytes the stored lines occupy, separators included.
+    pub fn byte_len(&self) -> usize {
+        self.buf.len()
+    }
+
     /// Append a line. The trailing `\n` separator is added internally and is
     /// not part of the line returned by [`Self::get`] or [`Self::iter`].
     ///
     /// Fails once the buffer would outgrow the `u32` offsets that address it.
     /// `mod_logfile`'s write budget bounds one physical line, not how many join
-    /// an entry, so nothing upstream caps this — the caller decides what to do,
-    /// and the line is not stored.
+    /// an entry, so that range is the only limit here — a caller wanting a
+    /// smaller one sets it on the stream
+    /// ([`LogStream::max_attached_bytes`](crate::LogStream::max_attached_bytes)).
+    /// A line that does not fit is not stored.
     pub fn push(&mut self, line: &str) -> Result<(), AttachedOverflow> {
         let start = u32::try_from(self.buf.len()).map_err(|_| AttachedOverflow)?;
         self.offsets.push(start);

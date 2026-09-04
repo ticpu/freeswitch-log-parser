@@ -257,3 +257,29 @@ fn accounting_long_line_collision_split() {
     assert_eq!(stream.stats().lines_split, 1);
     assert_accounting(&stream);
 }
+
+#[test]
+fn a_caller_set_attached_budget_drops_the_excess_and_still_balances() {
+    let lines = vec![
+        full_line(UUID1, TS1, "CHANNEL_DATA:"),
+        format!("{UUID1} variable_first: [kept]"),
+        format!("{UUID1} variable_second: [dropped]"),
+        format!("{UUID1} variable_third: [dropped]"),
+    ];
+    let budget = format!("{UUID1} variable_first: [kept]").len() + 1;
+    let mut stream = LogStream::new(lines.into_iter()).max_attached_bytes(budget);
+    let entries: Vec<_> = stream.by_ref().collect();
+
+    assert_eq!(stream.stats().lines_dropped, 2);
+    assert_accounting(&stream);
+    let entry = entries.last().expect("one entry");
+    assert_eq!(entry.attached.len(), 1);
+    assert_eq!(
+        entry
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, ParseWarning::AttachedOverflow { .. }))
+            .count(),
+        2
+    );
+}

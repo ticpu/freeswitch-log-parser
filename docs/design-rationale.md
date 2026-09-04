@@ -220,18 +220,31 @@ entry beside the stream's own, because a separate per-session channel would give
 a consumer two places to look for one question. The failed reading never
 regresses the state it was for: the last value that did resolve stands.
 
-## An entry's size is bounded by the log, not by the parser
+## An entry's size is bounded by the caller, not by the parser
 
-Continuation lines join the entry ahead of them under no per-entry limit, so a
-run that never presents a primary line grows a single entry for as long as the
-run lasts. `mod_logfile`'s write budget bounds one physical line, not how many
-of them a session emits before the next primary. The attached buffer addresses
-its lines with `u32` offsets, so exhausting that range is an outcome the stream
-has to report rather than an impossibility it may assume: appending is fallible,
-and a line that no longer fits is named in a warning and counted as dropped
-instead of aborting the parse. The line accounting carries that count as its own
-term, so a line the parser knowingly could not keep still balances rather than
-reading as one it silently lost.
+Continuation lines join the entry ahead of them under no limit of the parser's
+own, so a run that never presents a primary line grows a single entry for as long
+as the run lasts. `mod_logfile`'s write budget bounds one physical line, not how
+many of them a session emits before the next primary. The attached buffer
+addresses its lines with `u32` offsets, so exhausting that range is an outcome the
+stream has to report rather than an impossibility it may assume: appending is
+fallible, and a line that no longer fits is named in a warning and counted as
+dropped instead of aborting the parse. A caller affording less than that range
+says so, and the line it cannot keep leaves by the same path rather than by a
+vocabulary of its own. The line accounting carries the count as its own term, so a
+line the parser knowingly could not keep still balances rather than reading as one
+it silently lost.
+
+## Framing takes its bound from the caller
+
+A reader is told the byte length a line may reach; past it the line is decoded
+only that far and the remainder counted and discarded. `mod_logfile` writes an
+unprefixed record whole at any length, so otherwise the longest line a file
+happens to hold sets a reader's peak memory, and only the consumer knows what it
+can afford. The discarded length is reported as a count on that line and never as
+damage — the tail may be an intact record — and it is not re-split into further
+lines, which would invent records the file does not hold. The reader trims its own
+cut back off a codepoint, so a truncation verdict still names only the logger's.
 
 ## Damage is claimed from the write path, never from a length
 

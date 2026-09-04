@@ -73,6 +73,9 @@ pub struct LogStream<I> {
     /// write's spent budget. One physical line can hold several such cuts, and
     /// each is the record it ends, so a single slot would report only the first.
     cut_verdicts: VecDeque<bool>,
+    /// Bytes of attached lines one entry may hold before further ones are
+    /// dropped. The caller's budget, not a shape of the log.
+    max_attached: usize,
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
@@ -92,12 +95,24 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             line_warning: None,
             cursor: WriteCursor::default(),
             cut_verdicts: VecDeque::new(),
+            max_attached: usize::MAX,
         }
     }
 
     /// Set the unclassified line tracking level (builder pattern). Defaults to `CountOnly`.
     pub fn unclassified_tracking(mut self, level: UnclassifiedTracking) -> Self {
         self.tracking = level;
+        self
+    }
+
+    /// Cap the bytes of attached lines one entry may hold (builder pattern).
+    ///
+    /// Defaults to the 4 GiB the attached buffer's `u32` offsets address. A line
+    /// past the cap is reported as
+    /// [`ParseWarning::AttachedOverflow`] and counted in
+    /// [`ParseStats::lines_dropped`], exactly as one past the addressable range is.
+    pub fn max_attached_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_attached = max_bytes;
         self
     }
 
@@ -151,7 +166,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
-        if pending.entry.attached.push(line).is_err() {
+        let over_budget = pending.entry.attached.byte_len() + line.len() + 1 > self.max_attached;
+        if over_budget || pending.entry.attached.push(line).is_err() {
             pending.entry.warnings.push(ParseWarning::AttachedOverflow {
                 line: ParseWarning::excerpt(line),
             });

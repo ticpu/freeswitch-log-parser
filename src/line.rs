@@ -144,13 +144,27 @@ pub(crate) fn header_at(bytes: &[u8], offset: usize) -> Option<HeaderSpan> {
     })
 }
 
-/// Whether a full FreeSWITCH log header starts at `offset`.
+/// Longest name in the switch's `LEVELS[]`, `"CONSOLE"`.
+const MAX_LEVEL_LEN: usize = 7;
+
+/// Whether the `[` at `level` closes over a name the field can hold.
+fn level_field_closes(bytes: &[u8], level: usize) -> bool {
+    let end = (level + MAX_LEVEL_LEN + 2).min(bytes.len());
+    bytes
+        .get(level + 1..end)
+        .and_then(|w| w.iter().position(|&b| b == b']'))
+        .is_some_and(|p| p > 0)
+}
+
+/// Whether a complete FreeSWITCH log header starts at `offset`.
 ///
 /// Used by Layer 2 to detect same-line collisions where multiple log entries
 /// were concatenated without a newline (thread contention on file write, or a
-/// caller format string missing its trailing `\n`).
+/// caller format string missing its trailing `\n`). A record starts only at a
+/// header whose level field closes: an open bracket is a header the write
+/// budget cut, and splitting there invents a boundary the file does not hold.
 pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
-    header_at(bytes, offset).is_some()
+    header_at(bytes, offset).is_some_and(|h| level_field_closes(bytes, h.level))
 }
 
 /// The [`LogLevel`] inside a header's `[LEVEL]` field, or `None` when the
@@ -695,6 +709,21 @@ mod tests {
         let line = "2025-01-15 10:30:45.123456 95.97%";
         assert!(!is_log_header_at(line.as_bytes(), 0));
         assert_eq!(parse_line(line).idle_pct, None);
+    }
+
+    /// A cut that lands inside the level field leaves a bracket that never
+    /// closes; the reading of the fields before it still stands.
+    #[test]
+    fn a_header_cut_inside_the_level_starts_no_record() {
+        for line in [
+            "2025-01-15 10:30:45.123456 95.97% [",
+            "2025-01-15 10:30:45.123456 95.97% [DEB",
+            "2025-01-15 10:30:45.123456 [",
+        ] {
+            assert!(!is_log_header_at(line.as_bytes(), 0), "split on {line}");
+        }
+        let cut = "2025-01-15 10:30:45.123456 95.97% [";
+        assert_eq!(parse_line(cut).idle_pct, Some("95.97%"));
     }
 
     #[test]

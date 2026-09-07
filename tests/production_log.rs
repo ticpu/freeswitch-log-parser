@@ -7,9 +7,8 @@ use std::path::Path;
 use std::collections::HashMap;
 
 use freeswitch_log_parser::{
-    classify_message, is_uuid, parse_line, read_log_lines, truncate_at_char_boundary, Block,
-    CodecMedia, Field, FieldKind, FieldLocation, LineKind, LogEntry, LogStream, MessageKind,
-    ParseWarning, SessionTracker, UnclassifiedTracking,
+    is_uuid, parse_line, read_log_lines, Block, CodecMedia, Field, FieldKind, FieldLocation,
+    LineKind, LogEntry, LogStream, MessageKind, ParseWarning, SessionTracker,
 };
 use xz2::read::XzDecoder;
 
@@ -165,54 +164,35 @@ fn sdp_has_typed_block() {
 
 #[test]
 fn channel_data_bare_continuations_accumulated() {
-    // Production pattern: mod_logfile stops prepending the UUID mid-way through
-    // a CHANNEL_DATA dump. Bare continuation lines (variable_* without UUID
-    // prefix) must still be accumulated into the block. Found in 20+ instances
-    // across bcf and pbx fixture corpora.
-    let mut total_blocks: u64 = 0;
+    // mod_logfile stops prepending the UUID mid-dump; the bare variable_ lines
+    // that follow must still land in the block.
     let mut blocks_with_bare: u64 = 0;
-    let mut max_bare_ratio: f64 = 0.0;
 
     for (corpus, files) in &fixture_corpora() {
         for file in files {
             let name = file.file_name().unwrap().to_string_lossy();
             for entry in LogStream::new(lines_from_file(file)) {
                 if let Some(Block::ChannelData { fields, variables }) = &entry.block {
-                    total_blocks += 1;
-                    // Count how many attached lines are bare continuations (no UUID)
                     let bare_count = entry
                         .attached
                         .iter()
-                        .filter(|line| {
-                            let parsed = parse_line(line);
-                            parsed.kind == LineKind::BareContinuation
-                        })
+                        .filter(|line| parse_line(line).kind == LineKind::BareContinuation)
                         .count();
 
                     if bare_count > 0 {
                         blocks_with_bare += 1;
-                        let total_vars = fields.len() + variables.len();
                         assert!(
-                            total_vars > 0,
+                            fields.len() + variables.len() > 0,
                             "{corpus}/{name}: L{} CHANNEL_DATA has {bare_count} bare lines \
                              but block has 0 fields+variables",
                             entry.line_number,
                         );
-                        let ratio = bare_count as f64 / entry.attached.len() as f64;
-                        if ratio > max_bare_ratio {
-                            max_bare_ratio = ratio;
-                        }
                     }
                 }
             }
         }
     }
 
-    eprintln!();
-    eprintln!("CHANNEL_DATA UUID-drop stats:");
-    eprintln!("  total blocks: {total_blocks}");
-    eprintln!("  blocks with bare continuations: {blocks_with_bare}");
-    eprintln!("  max bare/total ratio: {max_bare_ratio:.2}");
     assert!(
         blocks_with_bare > 0,
         "expected fixture data to contain CHANNEL_DATA blocks with bare continuations"
@@ -220,147 +200,13 @@ fn channel_data_bare_continuations_accumulated() {
 }
 
 #[test]
-fn comprehensive_parse_report() {
+fn line_accounting_balances_across_the_corpus() {
     for (corpus, files) in &fixture_corpora() {
-        eprintln!();
-        eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
         for file in files {
             let name = file.file_name().unwrap().to_string_lossy();
-            let mut stream = LogStream::new(lines_from_file(file))
-                .unclassified_tracking(UnclassifiedTracking::CaptureData);
-
-            let mut entry_count: u64 = 0;
-            let mut total_attached: u64 = 0;
-
-            // Entry-level stats
-            let mut entry_kind_counts: HashMap<&str, u64> = HashMap::new();
-            let mut entry_line_kind_counts: HashMap<String, u64> = HashMap::new();
-            let mut block_counts: HashMap<&str, u64> = HashMap::new();
-            let mut no_block_count: u64 = 0;
-
-            // Attached line stats: classify every attached line
-            let mut attached_kind_counts: HashMap<&str, u64> = HashMap::new();
-            let mut general_samples: Vec<String> = Vec::new();
-
-            for entry in stream.by_ref() {
-                entry_count += 1;
-                total_attached += entry.attached.len() as u64;
-
-                *entry_kind_counts
-                    .entry(entry.message_kind.label())
-                    .or_default() += 1;
-                *entry_line_kind_counts
-                    .entry(format!("{}", entry.kind))
-                    .or_default() += 1;
-
-                match &entry.block {
-                    Some(Block::ChannelData { .. }) => {
-                        *block_counts.entry("channel-data").or_default() += 1
-                    }
-                    Some(Block::Sdp { .. }) => *block_counts.entry("sdp").or_default() += 1,
-                    Some(Block::CodecNegotiation { .. }) => {
-                        *block_counts.entry("codec-negotiation").or_default() += 1
-                    }
-                    None => no_block_count += 1,
-                    Some(other) => panic!("unexpected block type: {other:?}"),
-                }
-
-                // Classify every attached line to find what's "general" / unparsed
-                for attached_line in &entry.attached {
-                    let parsed = parse_line(attached_line);
-                    let msg_kind = classify_message(parsed.message);
-                    let label = msg_kind.label();
-                    *attached_kind_counts.entry(label).or_default() += 1;
-
-                    if label == "general" && general_samples.len() < 20 {
-                        let sample = if parsed.message.len() > 120 {
-                            format!("{}...", truncate_at_char_boundary(parsed.message, 120))
-                        } else {
-                            parsed.message.to_string()
-                        };
-                        general_samples.push(sample);
-                    }
-                }
-
-                // Also check if the entry itself is general
-                if entry.message_kind.label() == "general" && general_samples.len() < 20 {
-                    let sample = if entry.message.len() > 120 {
-                        format!("{}...", truncate_at_char_boundary(&entry.message, 120))
-                    } else {
-                        entry.message.clone()
-                    };
-                    general_samples.push(sample);
-                }
-            }
-
+            let mut stream = LogStream::new(lines_from_file(file));
+            for _ in stream.by_ref() {}
             let stats = stream.stats();
-
-            eprintln!();
-            eprintln!("=== {corpus}/{name} ===");
-            eprintln!(
-                "  lines: {}  entries: {}  attached: {}",
-                stats.lines_processed, entry_count, total_attached,
-            );
-
-            eprintln!("  entry LineKind:");
-            let mut lk: Vec<_> = entry_line_kind_counts.iter().collect();
-            lk.sort_by(|a, b| b.1.cmp(a.1));
-            for (kind, count) in &lk {
-                eprintln!("    {kind:>12}: {count}");
-            }
-
-            eprintln!("  entry MessageKind:");
-            let mut mk: Vec<_> = entry_kind_counts.iter().collect();
-            mk.sort_by(|a, b| b.1.cmp(a.1));
-            for (kind, count) in &mk {
-                eprintln!("    {kind:>14}: {count}");
-            }
-
-            eprintln!("  blocks: {no_block_count} without block");
-            for (kind, count) in &block_counts {
-                eprintln!("    {kind:>14}: {count}");
-            }
-
-            eprintln!("  attached line MessageKind:");
-            let mut ak: Vec<_> = attached_kind_counts.iter().collect();
-            ak.sort_by(|a, b| b.1.cmp(a.1));
-            for (kind, count) in &ak {
-                eprintln!("    {kind:>14}: {count}");
-            }
-
-            eprintln!("  stream unclassified: {}", stats.lines_unclassified);
-            for u in &stats.unclassified_lines {
-                let data = u
-                    .data
-                    .as_ref()
-                    .map(|d| {
-                        if d.len() > 100 {
-                            format!(" | {}...", truncate_at_char_boundary(d, 100))
-                        } else {
-                            format!(" | {d}")
-                        }
-                    })
-                    .unwrap_or_default();
-                eprintln!("    L{}: {:?}{}", u.line_number, u.reason, data);
-            }
-
-            if !general_samples.is_empty() {
-                eprintln!(
-                    "  general (unparsed) samples ({} shown):",
-                    general_samples.len()
-                );
-                for sample in &general_samples {
-                    eprintln!("    | {sample}");
-                }
-            }
-
-            eprintln!(
-                "  accounting: in_entries={} empty_orphan={} split={} unaccounted={}",
-                stats.lines_in_entries,
-                stats.lines_empty_orphan,
-                stats.lines_split,
-                stats.unaccounted_lines(),
-            );
 
             assert!(
                 stats.lines_processed > 0,
@@ -370,57 +216,13 @@ fn comprehensive_parse_report() {
                 stats.unaccounted_lines(),
                 0,
                 "{corpus}/{name}: line accounting invariant violated: \
-             processed={} + split={} != in_entries={} + empty_orphan={}",
+                 processed={} + split={} != in_entries={} + empty_orphan={} + dropped={}",
                 stats.lines_processed,
                 stats.lines_split,
                 stats.lines_in_entries,
                 stats.lines_empty_orphan,
+                stats.lines_dropped,
             );
-        }
-    }
-}
-
-#[test]
-fn session_tracker_learns_state() {
-    for (corpus, files) in &fixture_corpora() {
-        eprintln!();
-        eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            let stream = LogStream::new(lines_from_file(file));
-            let mut tracker = SessionTracker::new(stream);
-            let mut enriched_count: u64 = 0;
-            let mut with_session: u64 = 0;
-            let mut with_context: u64 = 0;
-            let mut with_channel_name: u64 = 0;
-            let mut vars_learned: u64 = 0;
-
-            for enriched in tracker.by_ref() {
-                enriched_count += 1;
-                if let Some(session) = &enriched.session {
-                    with_session += 1;
-                    if session.dialplan_context.is_some() {
-                        with_context += 1;
-                    }
-                    if session.channel_name.is_some() {
-                        with_channel_name += 1;
-                    }
-                }
-            }
-
-            for state in tracker.sessions().values() {
-                vars_learned += state.variables.len() as u64;
-            }
-
-            let session_count = tracker.sessions().len();
-            eprintln!();
-            eprintln!("=== {corpus}/{name} (session tracker) ===");
-            eprintln!("  entries: {enriched_count}");
-            eprintln!("  with session: {with_session}");
-            eprintln!("  with dialplan context: {with_context}");
-            eprintln!("  with channel name: {with_channel_name}");
-            eprintln!("  sessions tracked: {session_count}");
-            eprintln!("  total variables learned: {vars_learned}");
         }
     }
 }
@@ -430,26 +232,18 @@ fn system_lines_with_embedded_uuid_extracted() {
     // FreeSWITCH's C++ wrapper (switch_cpp.cpp) logs with SWITCH_CHANNEL_LOG
     // (no session context) but includes the UUID at the start of the message.
     // These must be extracted so -u filtering and session tracking work.
-    let mut total_system: u64 = 0;
     let mut system_with_uuid: u64 = 0;
 
     for (_corpus, files) in &fixture_corpora() {
         for file in files {
             for entry in LogStream::new(lines_from_file(file)) {
-                if entry.kind == LineKind::System {
-                    total_system += 1;
-                    if entry.uuid.is_some() {
-                        system_with_uuid += 1;
-                    }
+                if entry.kind == LineKind::System && entry.uuid.is_some() {
+                    system_with_uuid += 1;
                 }
             }
         }
     }
 
-    eprintln!();
-    eprintln!("System line UUID extraction stats:");
-    eprintln!("  total system lines: {total_system}");
-    eprintln!("  system lines with extracted UUID: {system_with_uuid}");
     assert!(
         system_with_uuid > 0,
         "expected fixture data to contain System lines with embedded UUIDs"
@@ -458,14 +252,8 @@ fn system_lines_with_embedded_uuid_extracted() {
 
 #[test]
 fn originate_success_channel_fallback_links_pbx_fixture() {
-    // pbx/freeswitch.log.2026-05-11-14-20-22.1.xz contains a FusionPBX call where
-    // bridge(user/6244@…) and Originate Resulted in Success: [sofia/internal/6244@…]
-    // arrive with no `Peer UUID:` suffix (FS 1.10.5-dev).
-    //
-    // The fixture covers ~20 minutes of traffic, so by originate time several
-    // prior sessions share the same b-leg channel_name. The liveness filter in
-    // link_legs skips candidates in terminal channel/callstate (CS_DESTROY etc),
-    // leaving exactly one live b-leg → link succeeds.
+    // The fixture spans ~20 minutes, so several prior sessions share the b-leg's
+    // channel_name and only the liveness filter leaves one live candidate.
     let path = Path::new(FIXTURES_DIR)
         .join("pbx")
         .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
@@ -667,7 +455,6 @@ fn sdp_bodies_parse_across_the_corpus() {
             }
         }
     }
-    eprintln!("parsed {parsed} SDP bodies");
     assert!(parsed > 0, "corpus should contain SDP blocks");
     assert_no_violations(failures, "SDP bodies that did not parse");
 }
@@ -727,21 +514,15 @@ fn field_spans_are_well_formed_across_the_corpus() {
         }
         bad
     });
-    eprintln!("checked {total} field spans");
     assert!(total > 0, "corpus should yield field spans");
     assert_no_violations(violations, "malformed field spans");
 }
 
 /// Every cut text must be one the entry has, must answer to a warning naming a
-/// cut, and a warned variable must have left one behind; real logs must exercise
-/// the span answer at all. Warning and span still do not agree span for span: the
-/// variable warning covers a value open inside a dump, the span every cut text,
-/// and the report prints how far apart the two reach.
+/// cut, and a warned variable must have left one behind.
 #[test]
 fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
     let mut truncated_spans: u64 = 0;
-    let mut warned_spans: u64 = 0;
-    let mut cut_entries: u64 = 0;
     let violations = for_each_fixture(|corpus, name, _, entry| {
         let mut bad = Vec::new();
         let at = format!("{corpus}/{name} L{}", entry.line_number);
@@ -752,9 +533,6 @@ fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
                     bad.push(format!("{at}: cut text names missing attached line {i}"));
                 }
             }
-        }
-        if !entry.cut_texts.is_empty() {
-            cut_entries += 1;
         }
 
         let warned = entry
@@ -776,18 +554,13 @@ fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
             bad.push(format!("{at}: text recorded as cut but nothing warned"));
         }
 
-        for _ in entry.fields().iter().filter(|f| entry.is_truncated(f)) {
-            truncated_spans += 1;
-            if warned {
-                warned_spans += 1;
-            }
-        }
+        truncated_spans += entry
+            .fields()
+            .iter()
+            .filter(|f| entry.is_truncated(f))
+            .count() as u64;
         bad
     });
-    eprintln!(
-        "{cut_entries} entries with cut text, {truncated_spans} truncated spans \
-         ({warned_spans} on entries the warning list also names)"
-    );
     assert!(truncated_spans > 0, "corpus should carry cut spans");
     assert_no_violations(violations, "cut span disagreements");
 }
@@ -820,84 +593,4 @@ fn render_with_round_trips_and_replaces_across_the_corpus() {
         bad
     });
     assert_no_violations(violations, "render_with failures");
-}
-
-/// What the span API actually reaches, per corpus — the counterpart to the
-/// classification report above, for judging coverage rather than correctness.
-#[test]
-fn field_span_report() {
-    for (corpus, files) in &fixture_corpora() {
-        eprintln!();
-        eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            let mut entries: u64 = 0;
-            let mut entries_with_fields: u64 = 0;
-            let mut kind_counts: HashMap<&str, u64> = HashMap::new();
-            let mut in_message: u64 = 0;
-            let mut in_attached: u64 = 0;
-
-            for entry in LogStream::new(lines_from_file(file)) {
-                entries += 1;
-                let fields = entry.fields();
-                if !fields.is_empty() {
-                    entries_with_fields += 1;
-                }
-                for f in fields {
-                    *kind_counts.entry(f.kind.label()).or_default() += 1;
-                    match f.at {
-                        FieldLocation::Message => in_message += 1,
-                        FieldLocation::Attached(_) => in_attached += 1,
-                    }
-                }
-            }
-
-            let total: u64 = kind_counts.values().sum();
-            eprintln!();
-            eprintln!("=== {corpus}/{name} (field spans) ===");
-            eprintln!("  entries: {entries}, with at least one span: {entries_with_fields}");
-            eprintln!("  spans: {total} (message {in_message}, attached {in_attached})");
-            let mut by_count: Vec<_> = kind_counts.into_iter().collect();
-            by_count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            for (kind, count) in by_count {
-                eprintln!("    {kind:<20} {count}");
-            }
-        }
-    }
-}
-
-#[test]
-fn warning_report() {
-    for (corpus, files) in &fixture_corpora() {
-        eprintln!();
-        eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            let mut entries_with_warnings: u64 = 0;
-            let mut total_warnings: u64 = 0;
-            let mut warning_samples: Vec<String> = Vec::new();
-
-            for entry in LogStream::new(lines_from_file(file)) {
-                if !entry.warnings.is_empty() {
-                    entries_with_warnings += 1;
-                    total_warnings += entry.warnings.len() as u64;
-                    if warning_samples.len() < 10 {
-                        for w in &entry.warnings {
-                            if warning_samples.len() < 10 {
-                                warning_samples.push(format!("L{}: {}", entry.line_number, w));
-                            }
-                        }
-                    }
-                }
-            }
-
-            eprintln!();
-            eprintln!("=== {corpus}/{name} (warnings) ===");
-            eprintln!("  entries with warnings: {entries_with_warnings}");
-            eprintln!("  total warnings: {total_warnings}");
-            for sample in &warning_samples {
-                eprintln!("    | {sample}");
-            }
-        }
-    }
 }

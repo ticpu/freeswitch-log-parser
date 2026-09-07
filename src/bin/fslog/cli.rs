@@ -279,12 +279,17 @@ fn level_labels() -> Vec<&'static str> {
         .collect()
 }
 
-/// `disable` is the switch's "log nothing" sentinel, not a severity.
 fn parse_level(s: &str) -> Result<LogLevel, String> {
     match s.to_ascii_lowercase().parse::<LogLevel>() {
-        Ok(LogLevel::Disable) | Err(_) => {
-            Err(format!("valid levels are {}", level_labels().join(", ")))
-        }
+        Ok(LogLevel::Disable) => Err(format!(
+            "disable is the switch's \"log nothing\" sentinel, not a severity; \
+             valid levels are {}",
+            level_labels().join(", ")
+        )),
+        Err(_) => Err(format!(
+            "{s} is not a log level; valid levels are {}",
+            level_labels().join(", ")
+        )),
         Ok(level) => Ok(level),
     }
 }

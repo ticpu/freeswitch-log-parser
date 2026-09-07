@@ -2,7 +2,7 @@
 //! primary and continuation lines as they arrive.
 
 use crate::codec::{CodecMedia, CodecOffer, CodecTrace};
-use crate::message::{classify_message, MessageKind, SdpDirection};
+use crate::message::{classify_message, parse_bracketed_value, MessageKind, SdpDirection};
 
 use super::entry::{Block, ParseWarning};
 
@@ -10,18 +10,13 @@ use super::entry::{Block, ParseWarning};
 /// recognisable by it, since no other line may open one.
 const SDP_VERSION_LINE: &str = "v=0";
 
+/// A `NAME: [value]` line, looser than the classifier: the name is only
+/// required to be one word, so SDP and header lines inside a value still slice.
 fn parse_field_line(msg: &str) -> Option<(String, String)> {
-    let colon = msg.find(": ")?;
-    let name = &msg[..colon];
-    if name.contains(' ') || name.is_empty() {
+    let (name, value) = parse_bracketed_value(msg, 0)?;
+    if name.is_empty() || name.contains(' ') {
         return None;
     }
-    let value_part = &msg[colon + 2..];
-    let value = if let Some(inner) = value_part.strip_prefix('[') {
-        inner.strip_suffix(']').unwrap_or(inner)
-    } else {
-        value_part
-    };
     Some((name.to_string(), value.to_string()))
 }
 

@@ -75,6 +75,26 @@ fn reused_name_after_the_last_leave_is_a_new_instance() {
     assert_eq!(rejoined.instance, UUID2);
 }
 
+/// The second conference is empty, so the seat keeps the instance the first
+/// one minted — leaving the name as the only thing that moved.
+#[test]
+fn moving_to_another_conference_re_seats_on_the_name() {
+    let tracker = track(vec![
+        format!("{UUID1} EXECUTE [depth=0] loopback/tty-a conference(835)"),
+        format!("{UUID1} EXECUTE [depth=0] loopback/tty-a conference(844)"),
+    ]);
+
+    let membership = tracker.sessions()[UUID1].conference.clone().unwrap();
+    assert_eq!(membership.name, "844");
+    assert_eq!(membership.instance, UUID1);
+    assert_eq!(tracker.conferences.instance_for("835"), None);
+    assert_eq!(tracker.conferences.instance_for("844"), Some(UUID1));
+    assert_eq!(
+        tracker.conference_members(UUID1).collect::<Vec<_>>(),
+        [UUID1]
+    );
+}
+
 #[test]
 fn media_keeps_the_outcome_and_the_deduped_offer_set() {
     let tracker = track(vec![

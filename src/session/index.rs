@@ -101,13 +101,14 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             old: old.conference,
             new: new.conference,
         };
-        // A membership whose instance is unchanged is the same seat: only its
-        // profile or member id moved, and re-registering it would churn.
-        let same_instance = matches!(
+        // The registry keys on the name and identifies on the instance, so the
+        // seat is the pair: a name change carrying the instance forward still
+        // moves the session, and only profile or member id moving is churn.
+        let same_seat = matches!(
             (&conference.old, &conference.new),
-            (Some(o), Some(n)) if o.instance == n.instance
+            (Some(o), Some(n)) if o.name == n.name && o.instance == n.instance
         );
-        if !same_instance {
+        if !same_seat {
             if let Some(old_conf) = conference.old {
                 self.conferences.leave(&old_conf.name, uuid);
             }

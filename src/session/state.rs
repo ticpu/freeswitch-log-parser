@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use freeswitch_types::variables::VariableName;
-use freeswitch_types::{CallDirection, CallState, ChannelState, HangupCause};
+use freeswitch_types::{
+    CallDirection, CallState, ChannelState, EventHeader, HangupCause, VARIABLE_PREFIX,
+};
 
 use crate::line::parse_line;
 use crate::message::{classify_message, MessageKind};
@@ -177,24 +179,28 @@ impl SessionState {
     /// shapes decode here — a lighter reading on one of them would drop whatever
     /// it left out, `Other-Leg-Unique-ID` included, only for split dumps.
     fn apply_channel_field(&mut self, name: &str, value: &str, warnings: &mut Vec<ParseWarning>) {
-        match name {
-            "Channel-Name" => self.channel_name = Some(value.to_string()),
-            "Channel-State" => read(
+        match EventHeader::from_str(name) {
+            Ok(EventHeader::ChannelName) => self.channel_name = Some(value.to_string()),
+            Ok(EventHeader::ChannelState) => read(
                 &mut self.channel_state,
                 value,
                 SessionReading::ChannelState,
                 warnings,
             ),
-            "Call-Direction" => read(
+            Ok(EventHeader::CallDirection) => read(
                 &mut self.call_direction,
                 value,
                 SessionReading::CallDirection,
                 warnings,
             ),
-            "Caller-Caller-ID-Number" => self.caller_id_number = Some(value.to_string()),
-            "Caller-Caller-ID-Name" => self.caller_id_name = Some(value.to_string()),
-            "Caller-Destination-Number" => self.destination_number = Some(value.to_string()),
-            "Other-Leg-Unique-ID" => self.other_leg_uuid = Some(value.to_string()),
+            Ok(EventHeader::CallerCallerIdNumber) => {
+                self.caller_id_number = Some(value.to_string())
+            }
+            Ok(EventHeader::CallerCallerIdName) => self.caller_id_name = Some(value.to_string()),
+            Ok(EventHeader::CallerDestinationNumber) => {
+                self.destination_number = Some(value.to_string())
+            }
+            Ok(EventHeader::OtherLegUniqueId) => self.other_leg_uuid = Some(value.to_string()),
             _ => {}
         }
     }
@@ -225,7 +231,7 @@ impl SessionState {
                 self.apply_channel_field(name, value, &mut warnings);
             }
             for (name, value) in variables {
-                let var_name = name.strip_prefix("variable_").unwrap_or(name);
+                let var_name = name.strip_prefix(VARIABLE_PREFIX).unwrap_or(name);
                 self.variables.insert(var_name.to_string(), value.clone());
             }
         }

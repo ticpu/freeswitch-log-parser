@@ -77,7 +77,11 @@ impl Block {
         let wanted = var.as_str();
         variables
             .iter()
-            .find(|(n, _)| n.strip_prefix("variable_").unwrap_or(n) == wanted)
+            .find(|(n, _)| {
+                n.strip_prefix(freeswitch_types::VARIABLE_PREFIX)
+                    .unwrap_or(n)
+                    == wanted
+            })
             .map(|(_, v)| v.as_str())
     }
 }

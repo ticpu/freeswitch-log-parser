@@ -1,7 +1,7 @@
 //! Entry filtering — the needle automatons, the scope rules, and the wider
 //! scope that would have admitted a rejected entry.
 
-use std::io;
+use anyhow::Context;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 
@@ -10,7 +10,7 @@ use freeswitch_log_parser::{find_uuids, normalize_entry_timestamp, Block, LogLev
 /// Build a case-insensitive multi-needle matcher. One automaton scans a haystack
 /// once for every needle, so a `--related` pass carrying hundreds of discovered
 /// leg UUIDs costs the same per entry as a single `-u`.
-fn build_matcher(needles: &[String]) -> io::Result<Option<AhoCorasick>> {
+fn build_matcher(needles: &[String]) -> anyhow::Result<Option<AhoCorasick>> {
     if needles.is_empty() {
         return Ok(None);
     }
@@ -18,12 +18,7 @@ fn build_matcher(needles: &[String]) -> io::Result<Option<AhoCorasick>> {
         .ascii_case_insensitive(true)
         .build(needles)
         .map(Some)
-        .map_err(|e| {
-            io::Error::other(format!(
-                "cannot build a matcher for {} pattern(s): {e}",
-                needles.len()
-            ))
-        })
+        .with_context(|| format!("building a matcher for {} pattern(s)", needles.len()))
 }
 
 /// Construction parameters for [`FilterConfig::new`]. `Default` lets call sites
@@ -93,15 +88,15 @@ pub struct FilterConfig {
 
 /// Recompile a pattern with the case-insensitivity `-u` matching has, keeping
 /// any inline flags the operator wrote.
-fn case_insensitive(re: &regex::Regex) -> io::Result<regex::Regex> {
+fn case_insensitive(re: &regex::Regex) -> anyhow::Result<regex::Regex> {
     regex::RegexBuilder::new(re.as_str())
         .case_insensitive(true)
         .build()
-        .map_err(|e| io::Error::other(format!("cannot build a case-insensitive probe: {e}")))
+        .context("building a case-insensitive probe")
 }
 
 impl FilterConfig {
-    pub fn new(p: FilterParams) -> io::Result<Self> {
+    pub fn new(p: FilterParams) -> anyhow::Result<Self> {
         Ok(FilterConfig {
             uuid_ac: build_matcher(&p.uuid)?,
             uuid_needles: p.uuid,
@@ -119,13 +114,13 @@ impl FilterConfig {
         })
     }
 
-    pub fn set_uuids(&mut self, needles: &[String]) -> io::Result<()> {
+    pub fn set_uuids(&mut self, needles: &[String]) -> anyhow::Result<()> {
         self.uuid_ac = build_matcher(needles)?;
         self.uuid_needles = needles.to_vec();
         Ok(())
     }
 
-    pub fn set_fgrep(&mut self, needle: &str) -> io::Result<()> {
+    pub fn set_fgrep(&mut self, needle: &str) -> anyhow::Result<()> {
         self.fgrep_ac = build_matcher(std::slice::from_ref(&needle.to_string()))?;
         self.fgrep_needle = Some(needle.to_string());
         Ok(())

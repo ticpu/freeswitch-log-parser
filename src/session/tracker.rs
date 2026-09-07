@@ -123,6 +123,9 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         let changes =
             IndexedFieldChanges::diff(IndexedFields::of(&state), &SessionState::default());
         self.apply_index_changes(uuid, &changes);
+        // The peer's own pointer at this session is not in that diff, and left
+        // standing it back-links the next channel to reuse the uuid.
+        self.by_other_leg.remove(uuid);
         Some(state)
     }
 

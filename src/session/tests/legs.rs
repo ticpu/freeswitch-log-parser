@@ -381,6 +381,30 @@ fn concurrent_loopbacks_to_one_destination_do_not_link() {
 }
 
 #[test]
+fn removing_a_session_sweeps_the_link_pointed_at_it() {
+    let mut tracker = SessionTracker::new(LogStream::new(
+        vec![
+            full_line(UUID2, TS1, "New Channel sofia/internal/one [ignored]"),
+            full_line(
+                UUID1,
+                TS1,
+                &format!("Originate Resulted in Success: [sofia/internal/one] Peer UUID: {UUID2}"),
+            ),
+            full_line(UUID1, TS2, "New Channel sofia/internal/two [ignored]"),
+        ]
+        .into_iter(),
+    ));
+    tracker.by_ref().take(2).for_each(drop);
+    tracker.remove_session(UUID1);
+    for _ in tracker.by_ref() {}
+
+    assert!(
+        tracker.sessions()[UUID1].other_leg_uuid.is_none(),
+        "a new channel on a removed session's uuid must not inherit its old pairing"
+    );
+}
+
+#[test]
 fn relinking_a_leg_keeps_a_later_pairs_back_link() {
     let tracker = track(vec![
         full_line(

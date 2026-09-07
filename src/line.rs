@@ -156,11 +156,15 @@ pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
 /// The [`LogLevel`] inside a header's `[LEVEL]` field, or `None` when the
 /// brackets are missing or hold no level the switch knows.
 ///
-/// The log spells the level in upper case; `LogLevel`'s own `FromStr` is the
-/// switch's case-sensitive `LEVELS[]` lookup, so the name is folded first.
+/// `LogLevel`'s own `FromStr` is the switch's case-sensitive `LEVELS[]` lookup
+/// and the log spells the level in upper case, so the names are compared here
+/// instead: folding the name would allocate on every header line.
 pub fn level_from_bracketed(s: &str) -> Option<LogLevel> {
     let inner = s.strip_prefix('[')?.strip_suffix(']')?;
-    inner.to_ascii_lowercase().parse().ok()
+    LogLevel::ALL
+        .iter()
+        .find(|l| l.as_str().eq_ignore_ascii_case(inner))
+        .copied()
 }
 
 /// The header slices at bytes 26/27 (timestamp + separating space) are only
@@ -627,6 +631,12 @@ mod tests {
         assert_eq!(level_from_bracketed("[DEBUG]"), Some(LogLevel::Debug));
         assert_eq!(level_from_bracketed("[ERR]"), Some(LogLevel::Error));
         assert_eq!(level_from_bracketed("[CONSOLE]"), Some(LogLevel::Console));
+    }
+
+    #[test]
+    fn bracketed_level_reads_any_case() {
+        assert_eq!(level_from_bracketed("[debug]"), Some(LogLevel::Debug));
+        assert_eq!(level_from_bracketed("[Warning]"), Some(LogLevel::Warning));
     }
 
     #[test]

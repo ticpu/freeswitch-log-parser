@@ -229,19 +229,12 @@ fn read_tail_context(
         file.seek(SeekFrom::Start(seek_pos))?;
     }
 
-    let reader = BufReader::new(file);
-    let mut cap_report = CapReport::new(display_name(path));
-    let mut lines = Vec::new();
-    for decoded in read_log_lines_capped(reader, max_line_bytes) {
-        let capped = decoded?;
-        if let Some(over) = capped.over_cap {
-            cap_report.record(over);
-        }
-        if let Utf8Decode::InvalidBytes { at } = capped.line.decode {
-            warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
-        }
-        lines.push(capped.line.text);
-    }
+    let mut lines: Vec<String> = lossy_line_iter(
+        Box::new(BufReader::new(file)),
+        display_name(path),
+        max_line_bytes,
+    )
+    .collect();
 
     if seek_pos > 0 && !lines.is_empty() {
         lines.remove(0);

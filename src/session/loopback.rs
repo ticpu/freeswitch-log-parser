@@ -7,13 +7,17 @@
 
 use freeswitch_types::variables::{LoopbackChannelName, LoopbackLeg};
 
+/// The endpoint prefix a loopback channel name carries. `freeswitch-types`
+/// parses one but spells no sibling name, so this is the second copy.
+const PREFIX: &str = "loopback/";
+
 /// A leg name of the loopback whose B leg is `channel_name`.
 pub(crate) fn a_leg_name(channel_name: &str) -> Option<String> {
     let name = LoopbackChannelName::parse(channel_name)?;
     if name.leg() != LoopbackLeg::B {
         return None;
     }
-    Some(format!("loopback/{}-a", name.extension()))
+    Some(format!("{PREFIX}{}-a", name.extension()))
 }
 
 #[cfg(test)]

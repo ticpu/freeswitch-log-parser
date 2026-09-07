@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::message::MessageKind;
+use crate::message::{LifecycleEvent, MessageKind};
 use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
 use super::conference::{
@@ -254,7 +254,10 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             }
             // New Channel on this UUID — another session may have been waiting for
             // it, either by forced origination UUID or by the target it named.
-            MessageKind::ChannelLifecycle { detail, .. } => {
+            MessageKind::ChannelLifecycle {
+                event: LifecycleEvent::NewChannel,
+                detail,
+            } => {
                 if let Some(channel_name) = parse_new_channel(detail) {
                     let a_uuid = self
                         .by_other_leg

@@ -50,7 +50,7 @@ fn is_peer_uuid_var(name: &str) -> bool {
             .unwrap_or(false)
 }
 
-/// Call `f` with every peer-leg UUID `entry` mentions.
+/// Call `f` with every peer-leg UUID a variable assignment in `entry` carries.
 ///
 /// See [`for_each_peer_uuid_with`]; this recognizes only vanilla FreeSWITCH
 /// variables.
@@ -58,13 +58,19 @@ pub fn for_each_peer_uuid<F: FnMut(&str)>(entry: &LogEntry, f: F) {
     for_each_peer_uuid_with(entry, |_| false, f);
 }
 
-/// Call `f` with every peer-leg UUID `entry` mentions, treating a variable as
-/// peer-bearing when it is in [`PEER_UUID_VARS`] or `extra_var` accepts its name.
+/// Call `f` with every peer-leg UUID a variable assignment in `entry` carries,
+/// treating a variable as peer-bearing when it is in [`PEER_UUID_VARS`] or
+/// `extra_var` accepts its name.
 ///
 /// Walks only structured variable assignments — `CHANNEL_DATA` fields, standalone
 /// variable lines, `set`/`export`/`bridge` executions. Scanning the raw message
 /// and attached text instead would harvest shared-context variables (a FusionPBX
 /// `domain_uuid`, say) and pull in every unrelated call in the same tenant.
+///
+/// A peer another message kind names — an originate-success line's `Peer UUID:`
+/// — is not one of those assignments and is not walked;
+/// [`SessionState::other_leg_uuid`](crate::SessionState::other_leg_uuid) is
+/// where the per-session layer puts it.
 pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
     entry: &LogEntry,
     extra_var: impl Fn(&str) -> bool,

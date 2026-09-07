@@ -8,6 +8,8 @@ use std::hash::{Hash, Hasher};
 
 use freeswitch_log_parser::{find_uuids, LogLevel};
 
+use super::ColorMode;
+
 pub(super) const RESET: &str = "\x1b[0m";
 pub(super) const RED: &str = "\x1b[31m";
 pub(super) const GREEN: &str = "\x1b[32m";
@@ -18,6 +20,65 @@ pub(super) const DIM: &str = "\x1b[2m";
 pub(super) const DIM_YELLOW: &str = "\x1b[33;2m";
 pub(super) const DIM_GREEN: &str = "\x1b[32;2m";
 pub(super) const BRIGHT_GREEN: &str = "\x1b[92m";
+
+/// Every escape a rendered entry can carry, resolved once from the colour mode.
+/// Empty strings when colour is off, so a call site interpolates the same
+/// format string either way instead of choosing between two.
+pub struct Palette {
+    /// Whether the escapes are real, for the passes that rewrite text rather
+    /// than wrap it.
+    pub enabled: bool,
+    pub reset: &'static str,
+    pub dim: &'static str,
+    pub warning: &'static str,
+    pub label: &'static str,
+    pub field: &'static str,
+    pub sdp: &'static str,
+    pub codec: &'static str,
+}
+
+impl Palette {
+    pub fn new(mode: ColorMode) -> Self {
+        if mode != ColorMode::Always {
+            return Palette {
+                enabled: false,
+                reset: "",
+                dim: "",
+                warning: "",
+                label: "",
+                field: "",
+                sdp: "",
+                codec: "",
+            };
+        }
+        Palette {
+            enabled: true,
+            reset: RESET,
+            dim: DIM,
+            warning: MAGENTA,
+            label: CYAN,
+            field: DIM_GREEN,
+            sdp: BRIGHT_GREEN,
+            codec: DIM_YELLOW,
+        }
+    }
+
+    /// The band a severity runs in, empty when colour is off.
+    pub fn level(&self, level: Option<LogLevel>) -> &'static str {
+        if !self.enabled {
+            return "";
+        }
+        match level {
+            Some(LogLevel::Error | LogLevel::Crit | LogLevel::Alert) => RED,
+            Some(LogLevel::Warning) => MAGENTA,
+            Some(LogLevel::Info) => GREEN,
+            Some(LogLevel::Notice) => CYAN,
+            Some(LogLevel::Debug) => YELLOW,
+            Some(LogLevel::Console) => GREEN,
+            _ => "",
+        }
+    }
+}
 
 pub(super) fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
@@ -118,16 +179,4 @@ pub(super) fn colorize_pass_fail<'a>(text: &'a str, resume: &str) -> Cow<'a, str
     }
     out.push_str(rest);
     Cow::Owned(out)
-}
-
-pub(super) fn level_color(level: Option<LogLevel>) -> &'static str {
-    match level {
-        Some(LogLevel::Error | LogLevel::Crit | LogLevel::Alert) => RED,
-        Some(LogLevel::Warning) => MAGENTA,
-        Some(LogLevel::Info) => GREEN,
-        Some(LogLevel::Notice) => CYAN,
-        Some(LogLevel::Debug) => YELLOW,
-        Some(LogLevel::Console) => GREEN,
-        _ => "",
-    }
 }

@@ -12,6 +12,8 @@ use freeswitch_log_parser::MessageKind;
 use freeswitch_types::commands::endpoint::DialString;
 use freeswitch_types::{BridgeDialString, EslArray};
 
+use crate::output::Palette;
+
 /// The dial-string argument of an EXECUTE trace, when the application takes one.
 ///
 /// `bridge` and `att_xfer` are the applications FreeSWITCH ships whose argument
@@ -31,20 +33,16 @@ pub fn dial_string_of(kind: &MessageKind) -> Option<&str> {
 /// Write the expansion of `arguments`. Silently writes nothing when the argument
 /// list does not parse as a dial string — the entry's own message still carries
 /// the raw text, so there is nothing to warn about.
-pub fn print_dial_string(
-    w: &mut dyn Write,
-    arguments: &str,
-    label_color: &str,
-    value_color: &str,
-    reset: &str,
-) -> io::Result<()> {
+pub fn print_dial_string(w: &mut dyn Write, arguments: &str, p: &Palette) -> io::Result<()> {
+    let (label_color, value_color, reset) = (p.label, p.dim, p.reset);
+
     let Ok(dial) = BridgeDialString::from_str(arguments) else {
         return Ok(());
     };
 
     if let Some(vars) = dial.variables() {
         for (key, value) in vars.iter() {
-            print_variable(w, key, value, label_color, value_color, reset)?;
+            print_variable(w, key, value, p)?;
         }
     }
 
@@ -83,14 +81,8 @@ pub fn print_dial_string(
     Ok(())
 }
 
-fn print_variable(
-    w: &mut dyn Write,
-    key: &str,
-    value: &str,
-    label_color: &str,
-    value_color: &str,
-    reset: &str,
-) -> io::Result<()> {
+fn print_variable(w: &mut dyn Write, key: &str, value: &str, p: &Palette) -> io::Result<()> {
+    let (label_color, value_color, reset) = (p.label, p.dim, p.reset);
     // ARRAY:: is how FreeSWITCH packs a repeated header or multi-valued variable
     // into one string; rendering it raw hides how many values are really there.
     match EslArray::parse(value) {
@@ -115,10 +107,11 @@ fn print_variable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::ColorMode;
 
     fn render(arguments: &str) -> String {
         let mut out: Vec<u8> = Vec::new();
-        print_dial_string(&mut out, arguments, "", "", "").unwrap();
+        print_dial_string(&mut out, arguments, &Palette::new(ColorMode::Never)).unwrap();
         String::from_utf8(out).unwrap()
     }
 

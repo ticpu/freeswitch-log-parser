@@ -37,14 +37,11 @@ impl EntryPrinter {
             &entry.timestamp
         };
 
-        let use_color = self.color == ColorMode::Always;
-        let lc = if use_color {
-            level_color(entry.level)
-        } else {
-            ""
-        };
-        let reset = if use_color { RESET } else { "" };
-        let dim = if use_color { DIM } else { "" };
+        let p = Palette::new(self.color);
+        let use_color = p.enabled;
+        let lc = p.level(entry.level);
+        let reset = p.reset;
+        let dim = p.dim;
 
         // Markers carry no time, level or UUID, so the entry columns would all be
         // empty. A rule reads as what it is: a break between files or days.
@@ -106,27 +103,24 @@ impl EntryPrinter {
 
         if self.show_blocks {
             if let Some(block) = &entry.block {
-                self.print_block(w, block, use_color)?;
+                self.print_block(w, block, &p)?;
             }
             if let Some(args) = dial_string_of(&entry.message_kind) {
-                let (lbl, val) = if use_color { (CYAN, DIM) } else { ("", "") };
-                print_dial_string(w, args, lbl, val, reset)?;
+                print_dial_string(w, args, &p)?;
             }
         }
 
         if self.show_session {
             if let Some(session) = session {
-                self.print_session(w, session, use_color)?;
+                self.print_session(w, session, &p)?;
             }
         }
 
         for warning in &entry.warnings {
-            let wc = if use_color { MAGENTA } else { "" };
-            writeln!(w, "{wc}    WARN {warning}{reset}")?;
+            writeln!(w, "{}    WARN {warning}{reset}", p.warning)?;
         }
 
         if !entry.attached.is_empty() {
-            let dim_s = if use_color { DIM } else { "" };
             // Continuation lines the parser did not fold into a typed block are
             // the entry's only content — dialplan regex verdicts, EXECUTE traces.
             // Collapsing those to a count leaves nothing readable behind.
@@ -136,9 +130,9 @@ impl EntryPrinter {
                     let rendered = if use_color {
                         // Chained through Cow so a line neither pass touches —
                         // the common case — is never copied.
-                        match colorize_uuids(line, dim_s) {
-                            Cow::Borrowed(s) => colorize_pass_fail(s, dim_s),
-                            Cow::Owned(s) => match colorize_pass_fail(&s, dim_s) {
+                        match colorize_uuids(line, dim) {
+                            Cow::Borrowed(s) => colorize_pass_fail(s, dim),
+                            Cow::Owned(s) => match colorize_pass_fail(&s, dim) {
                                 Cow::Borrowed(_) => Cow::Owned(s),
                                 Cow::Owned(both) => Cow::Owned(both),
                             },
@@ -146,14 +140,14 @@ impl EntryPrinter {
                     } else {
                         Cow::Borrowed(line)
                     };
-                    writeln!(w, "{dim_s}         {rendered}{reset}")?;
+                    writeln!(w, "{dim}         {rendered}{reset}")?;
                 }
             } else if !(self.show_blocks && entry.block.is_some()) {
                 // A block already printed above is these same lines, parsed —
                 // counting them again says nothing the reader cannot see.
                 writeln!(
                     w,
-                    "{dim_s}         ({} attached lines){reset}",
+                    "{dim}         ({} attached lines){reset}",
                     entry.attached.len()
                 )?;
             }
@@ -218,10 +212,10 @@ impl EntryPrinter {
         lines
     }
 
-    fn print_block(&self, w: &mut dyn Write, block: &Block, use_color: bool) -> io::Result<()> {
-        let bc = if use_color { DIM_GREEN } else { "" };
-        let sc = if use_color { BRIGHT_GREEN } else { "" };
-        let reset = if use_color { RESET } else { "" };
+    fn print_block(&self, w: &mut dyn Write, block: &Block, p: &Palette) -> io::Result<()> {
+        let bc = p.field;
+        let sc = p.sdp;
+        let reset = p.reset;
 
         match block {
             Block::ChannelData { fields, variables } => {
@@ -252,7 +246,7 @@ impl EntryPrinter {
                 matched,
                 near_matched,
             } => {
-                let cc = if use_color { DIM_YELLOW } else { "" };
+                let cc = p.codec;
                 writeln!(
                     w,
                     "{cc}         codec  {media}: {} comparisons, {} matched, {} near{reset}",
@@ -281,10 +275,10 @@ impl EntryPrinter {
         &self,
         w: &mut dyn Write,
         session: &freeswitch_log_parser::SessionSnapshot,
-        use_color: bool,
+        p: &Palette,
     ) -> io::Result<()> {
-        let dim = if use_color { DIM } else { "" };
-        let reset = if use_color { RESET } else { "" };
+        let dim = p.dim;
+        let reset = p.reset;
         let mut parts = Vec::new();
         if let Some(ctx) = &session.dialplan_context {
             parts.push(format!("ctx={ctx}"));

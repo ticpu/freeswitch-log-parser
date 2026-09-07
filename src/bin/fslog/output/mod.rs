@@ -6,6 +6,7 @@ mod printer;
 #[cfg(test)]
 pub mod tests;
 
+pub use color::Palette;
 pub use filter::{FilterConfig, FilterParams, Hidden, Verdict};
 pub use printer::EntryPrinter;
 

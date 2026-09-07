@@ -185,7 +185,7 @@ impl<'a> Emitter<'a> {
         } else {
             if self.before > 0 {
                 let mut bytes = Vec::new();
-                self.printer.print_entry(&mut bytes, entry, session, None)?;
+                self.printer.print_entry(&mut bytes, entry, session)?;
                 let seg = self
                     .seg_tracker
                     .segment_for_line(entry.line_number)
@@ -219,7 +219,7 @@ impl<'a> Emitter<'a> {
             seg.as_ref().map(|(i, n)| (*i, n.as_str())),
             &entry.timestamp,
         )?;
-        self.printer.print_entry(out, entry, session, None)
+        self.printer.print_entry(out, entry, session)
     }
 
     fn emit_bytes(&mut self, out: &mut dyn Write, b: &Buffered) -> io::Result<()> {
@@ -237,7 +237,7 @@ impl<'a> Emitter<'a> {
             if self.last_seg != Some(idx) {
                 self.last_seg = Some(idx);
                 let sep = separator_entry(MessageKind::FileChange, name.to_string());
-                self.printer.print_entry(out, &sep, None, None)?;
+                self.printer.print_entry(out, &sep, None)?;
             }
         }
         if timestamp.len() >= 10 {
@@ -245,7 +245,7 @@ impl<'a> Emitter<'a> {
             if date != self.last_date {
                 self.last_date = date.to_string();
                 let sep = separator_entry(MessageKind::DateChange, self.last_date.clone());
-                self.printer.print_entry(out, &sep, None, None)?;
+                self.printer.print_entry(out, &sep, None)?;
             }
         }
         Ok(())
@@ -271,7 +271,6 @@ mod tests {
             color: ColorMode::Never,
             show_blocks: false,
             show_session: false,
-            show_filename: false,
             show_line_numbers: false,
         };
         let filter = crate::output::tests::filter(FilterParams {
@@ -338,7 +337,6 @@ mod tests {
             color: ColorMode::Never,
             show_blocks: false,
             show_session: false,
-            show_filename: false,
             show_line_numbers: false,
         };
         let (_chain, tracker) = TrackedChain::new(Vec::new());

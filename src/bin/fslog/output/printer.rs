@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::io::{self, Write};
 
-use freeswitch_log_parser::{truncate_at_char_boundary, Block, MessageKind};
+use freeswitch_log_parser::{truncate_at_char_boundary, Block, LogEntry, MessageKind};
 
 use crate::dialstring::{dial_string_of, print_dial_string};
 
@@ -15,17 +15,52 @@ pub struct EntryPrinter {
     pub color: ColorMode,
     pub show_blocks: bool,
     pub show_session: bool,
-    pub show_filename: bool,
     pub show_line_numbers: bool,
 }
 
+/// What becomes of an entry's continuation lines.
+enum AttachedView<'a> {
+    /// Printed one per line, the header's own data first where it was split off.
+    Inline(Option<&'a str>),
+    /// Named by count: they are neither the entry's only content nor parsed above.
+    Counted,
+    /// Left out — there are none, or the typed block above already is them.
+    Silent,
+}
+
 impl EntryPrinter {
-    pub fn print_entry(
+    /// The header text, and how the lines under it are rendered.
+    fn layout<'a>(&self, entry: &'a LogEntry) -> (&'a str, AttachedView<'a>) {
+        let msg = entry.message.as_str();
+        if entry.attached.is_empty() {
+            return (msg, AttachedView::Silent);
+        }
+        // Continuation lines print inline only when nothing else carries the
+        // entry's content; a typed block or a bare count already does.
+        let inline = (self.show_blocks && entry.block.is_none()) || entry.attached.len() == 1;
+        if !inline {
+            // A block already printed above is these same lines, parsed —
+            // counting them again says nothing the reader cannot see.
+            return match self.show_blocks && entry.block.is_some() {
+                true => (msg, AttachedView::Silent),
+                false => (msg, AttachedView::Counted),
+            };
+        }
+        // With a body to head, the channel goes on the header alone and its data
+        // joins the body — otherwise the header would be the one line carrying
+        // both, and the block would not read as a column.
+        match split_dialplan_line(msg) {
+            Some((channel, data)) => (channel, AttachedView::Inline(Some(data))),
+            None => (msg, AttachedView::Inline(None)),
+        }
+    }
+
+    fn write_header(
         &self,
         w: &mut dyn Write,
-        entry: &freeswitch_log_parser::LogEntry,
-        session: Option<&freeswitch_log_parser::SessionSnapshot>,
-        filename: Option<&str>,
+        entry: &LogEntry,
+        p: &Palette,
+        head: &str,
     ) -> io::Result<()> {
         let level = entry
             .level
@@ -36,25 +71,12 @@ impl EntryPrinter {
         } else {
             &entry.timestamp
         };
-
-        let p = Palette::new(self.color);
-        let use_color = p.enabled;
         let lc = p.level(entry.level);
         let reset = p.reset;
-        let dim = p.dim;
-
-        // Markers carry no time, level or UUID, so the entry columns would all be
-        // empty. A rule reads as what it is: a break between files or days.
-        if matches!(
-            entry.message_kind,
-            MessageKind::FileChange | MessageKind::DateChange
-        ) {
-            return writeln!(w, "{dim}── {}{reset}", entry.message);
-        }
 
         let uuid = match &entry.uuid {
-            None => format!("{dim}-{reset}"),
-            Some(u) if use_color => {
+            None => format!("{}-{reset}", p.dim),
+            Some(u) if p.enabled => {
                 let mut s = String::new();
                 write_uuid(&mut s, u);
                 s
@@ -62,31 +84,11 @@ impl EntryPrinter {
             Some(u) => u.clone(),
         };
 
-        // Continuation lines print inline only when nothing else carries the
-        // entry's content; a typed block or a bare count already does.
-        let inline = !entry.attached.is_empty()
-            && ((self.show_blocks && entry.block.is_none()) || entry.attached.len() == 1);
-
-        // With a body to head, the channel goes on the header alone and its data
-        // joins the body — otherwise the header would be the one line carrying
-        // both, and the block would not read as a column.
-        let (head, head_data) = match inline
-            .then(|| split_dialplan_line(&entry.message))
-            .flatten()
-        {
-            Some((channel, data)) => (channel, Some(data)),
-            None => (entry.message.as_str(), None),
-        };
-
-        let msg = if use_color {
+        let msg = if p.enabled {
             colorize_uuids(head, lc)
         } else {
             Cow::Borrowed(head)
         };
-
-        if let Some(fname) = filename.filter(|_| self.show_filename) {
-            write!(w, "{dim}{fname}{reset} ")?;
-        }
 
         if self.show_line_numbers {
             write!(w, "{lc}L{line:>6} ", line = entry.line_number)?;
@@ -99,7 +101,69 @@ impl EntryPrinter {
             w,
             "{lc}{time:>15} {level:>7}{reset} {uuid} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
             mkind = entry.message_kind,
-        )?;
+        )
+    }
+
+    fn write_attached(
+        &self,
+        w: &mut dyn Write,
+        entry: &LogEntry,
+        p: &Palette,
+        view: AttachedView,
+    ) -> io::Result<()> {
+        let (dim, reset) = (p.dim, p.reset);
+        match view {
+            AttachedView::Silent => Ok(()),
+            AttachedView::Counted => writeln!(
+                w,
+                "{dim}         ({} attached lines){reset}",
+                entry.attached.len()
+            ),
+            // Continuation lines the parser did not fold into a typed block are
+            // the entry's only content — dialplan regex verdicts, EXECUTE traces.
+            // Collapsing those to a count leaves nothing readable behind.
+            AttachedView::Inline(head_data) => {
+                for line in head_data.into_iter().chain(&entry.attached) {
+                    let line = strip_repeated_prefix(line, entry.uuid.as_deref().unwrap_or(""));
+                    let rendered = if p.enabled {
+                        // Chained through Cow so a line neither pass touches —
+                        // the common case — is never copied.
+                        match colorize_uuids(line, dim) {
+                            Cow::Borrowed(s) => colorize_pass_fail(s, dim),
+                            Cow::Owned(s) => match colorize_pass_fail(&s, dim) {
+                                Cow::Borrowed(_) => Cow::Owned(s),
+                                Cow::Owned(both) => Cow::Owned(both),
+                            },
+                        }
+                    } else {
+                        Cow::Borrowed(line)
+                    };
+                    writeln!(w, "{dim}         {rendered}{reset}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn print_entry(
+        &self,
+        w: &mut dyn Write,
+        entry: &LogEntry,
+        session: Option<&freeswitch_log_parser::SessionSnapshot>,
+    ) -> io::Result<()> {
+        let p = Palette::new(self.color);
+
+        // Markers carry no time, level or UUID, so the entry columns would all be
+        // empty. A rule reads as what it is: a break between files or days.
+        if matches!(
+            entry.message_kind,
+            MessageKind::FileChange | MessageKind::DateChange
+        ) {
+            return writeln!(w, "{}── {}{}", p.dim, entry.message, p.reset);
+        }
+
+        let (head, attached) = self.layout(entry);
+        self.write_header(w, entry, &p, head)?;
 
         if self.show_blocks {
             if let Some(block) = &entry.block {
@@ -117,43 +181,10 @@ impl EntryPrinter {
         }
 
         for warning in &entry.warnings {
-            writeln!(w, "{}    WARN {warning}{reset}", p.warning)?;
+            writeln!(w, "{}    WARN {warning}{}", p.warning, p.reset)?;
         }
 
-        if !entry.attached.is_empty() {
-            // Continuation lines the parser did not fold into a typed block are
-            // the entry's only content — dialplan regex verdicts, EXECUTE traces.
-            // Collapsing those to a count leaves nothing readable behind.
-            if inline {
-                for line in head_data.into_iter().chain(&entry.attached) {
-                    let line = strip_repeated_prefix(line, entry.uuid.as_deref().unwrap_or(""));
-                    let rendered = if use_color {
-                        // Chained through Cow so a line neither pass touches —
-                        // the common case — is never copied.
-                        match colorize_uuids(line, dim) {
-                            Cow::Borrowed(s) => colorize_pass_fail(s, dim),
-                            Cow::Owned(s) => match colorize_pass_fail(&s, dim) {
-                                Cow::Borrowed(_) => Cow::Owned(s),
-                                Cow::Owned(both) => Cow::Owned(both),
-                            },
-                        }
-                    } else {
-                        Cow::Borrowed(line)
-                    };
-                    writeln!(w, "{dim}         {rendered}{reset}")?;
-                }
-            } else if !(self.show_blocks && entry.block.is_some()) {
-                // A block already printed above is these same lines, parsed —
-                // counting them again says nothing the reader cannot see.
-                writeln!(
-                    w,
-                    "{dim}         ({} attached lines){reset}",
-                    entry.attached.len()
-                )?;
-            }
-        }
-
-        Ok(())
+        self.write_attached(w, entry, &p, attached)
     }
 
     /// The codec list, then the streams held or carrying no payload type.

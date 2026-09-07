@@ -24,14 +24,13 @@ fn printer(color: ColorMode, show_blocks: bool) -> EntryPrinter {
         color,
         show_blocks,
         show_session: false,
-        show_filename: false,
         show_line_numbers: false,
     }
 }
 
 fn render(printer: &EntryPrinter, entry: &LogEntry) -> String {
     let mut out: Vec<u8> = Vec::new();
-    printer.print_entry(&mut out, entry, None, None).unwrap();
+    printer.print_entry(&mut out, entry, None).unwrap();
     String::from_utf8(out).unwrap()
 }
 

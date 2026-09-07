@@ -25,7 +25,7 @@ pub fn run(ctx: &RunCtx, args: &TailArgs, out: &mut dyn Write) -> io::Result<()>
         }
         if !args.filter.stats {
             let written = printer
-                .print_entry(out, &enriched.entry, enriched.session.as_ref(), None)
+                .print_entry(out, &enriched.entry, enriched.session.as_ref())
                 .and_then(|()| out.flush());
             match written {
                 Err(e) if is_broken_pipe(&e) => break,

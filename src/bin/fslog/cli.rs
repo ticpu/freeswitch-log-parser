@@ -152,7 +152,6 @@ impl FilterArgs {
             color,
             show_blocks: self.blocks,
             show_session: self.session,
-            show_filename: false,
             show_line_numbers: self.line_numbers,
         }
     }

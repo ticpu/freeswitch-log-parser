@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;
 
-use freeswitch_types::{ChannelVariable, VARIABLE_PREFIX};
+use freeswitch_types::{ChannelVariable, EventHeader, VARIABLE_PREFIX};
 
 use crate::message::{
     classify_message, dialplan_parts, execute_parts, hangup_channel, is_channel_variable_narration,
@@ -297,11 +297,11 @@ fn collect_dialplan(msg: &str, out: &mut Vec<Field>) {
 }
 
 fn collect_channel_field(msg: &str, name: &str, out: &mut Vec<Field>) {
-    let kind = match name {
-        "Channel-Name" => FieldKind::ChannelName,
-        "Caller-Caller-ID-Name" => FieldKind::CallerIdName,
-        "Caller-Caller-ID-Number" => FieldKind::CallerIdNumber,
-        "Caller-Destination-Number" => FieldKind::DestinationNumber,
+    let kind = match EventHeader::from_str(name) {
+        Ok(EventHeader::ChannelName) => FieldKind::ChannelName,
+        Ok(EventHeader::CallerCallerIdName) => FieldKind::CallerIdName,
+        Ok(EventHeader::CallerCallerIdNumber) => FieldKind::CallerIdNumber,
+        Ok(EventHeader::CallerDestinationNumber) => FieldKind::DestinationNumber,
         _ => FieldKind::VariableValue,
     };
     let Some((_, value)) = parse_bracketed_value(msg, 0) else {

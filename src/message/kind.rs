@@ -60,6 +60,35 @@ impl fmt::Display for SdpDirection {
     }
 }
 
+/// Which lifecycle step a [`MessageKind::ChannelLifecycle`] line narrates.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleEvent {
+    /// `New Channel <channel> [<uuid>]` (`switch_channel.c`).
+    NewChannel,
+    /// `Hangup <channel> [<state>] [<cause>]` (`switch_channel.c`).
+    Hangup,
+    /// `Close Channel <channel> [<state>]` (`switch_core_session.c`) and the
+    /// channel-prefixed `destroy/unlink session` that follows it.
+    Destroy,
+    /// `Channel [<channel>] has been answered` (`switch_channel.c`).
+    Answered,
+    /// A lifecycle line none of the above names.
+    Other,
+}
+
+impl fmt::Display for LifecycleEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LifecycleEvent::NewChannel => f.pad("new-channel"),
+            LifecycleEvent::Hangup => f.pad("hangup"),
+            LifecycleEvent::Destroy => f.pad("destroy"),
+            LifecycleEvent::Answered => f.pad("answered"),
+            LifecycleEvent::Other => f.pad("other"),
+        }
+    }
+}
+
 /// Semantic classification of a log message's content.
 ///
 /// `Display` includes variant-specific detail (e.g. `execute(set)`, `var(sip_call_id)`)
@@ -93,7 +122,10 @@ pub enum MessageKind {
     /// RTP, RTCP, recording, and other media-related messages.
     Media { detail: String },
     /// Channel lifecycle events — new/close/hangup, bridge, ring, REFER, CANCEL, BYE.
-    ChannelLifecycle { detail: String },
+    ChannelLifecycle {
+        event: LifecycleEvent,
+        detail: String,
+    },
     /// Sofia logged a SIP INVITE on this channel — the line is one of:
     /// - `sofia/<profile>/<endpoint> receiving invite from <ip>:<port> ... call-id: <id>`
     /// - `sofia/<profile>/<endpoint> sending invite [version: ...] [call-id: <id>]`

@@ -7,7 +7,7 @@ use crate::codec::CodecMedia;
 
 use super::dtmf::parse_dtmf;
 use super::kind::MessageKind;
-use super::lifecycle::{classify_channel_prefixed, detect_channel_lifecycle};
+use super::lifecycle::{channel_lifecycle, classify_channel_prefixed, detect_channel_lifecycle};
 use super::media::{detect_media, detect_sdp_direction};
 use super::parts::{
     dialplan_parts, execute_parts, parse_bracketed_value, set_export_parts, strip_channel_prefix,
@@ -135,9 +135,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
                 detail: msg.to_string(),
             };
         }
-        return MessageKind::ChannelLifecycle {
-            detail: msg.to_string(),
-        };
+        return channel_lifecycle(msg);
     }
 
     // SOFIA STATE (no channel prefix) — e.g. "SOFIA EXCHANGE_MEDIA"
@@ -149,9 +147,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
 
     // Pre-dialplan: checking condition / action results from sofia_pre_dialplan.c
     if msg.starts_with("checking condition") || msg.starts_with("action(") {
-        return MessageKind::ChannelLifecycle {
-            detail: msg.to_string(),
-        };
+        return channel_lifecycle(msg);
     }
 
     if msg.starts_with("Event Socket Command") {

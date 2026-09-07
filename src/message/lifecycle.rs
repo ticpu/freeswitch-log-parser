@@ -1,11 +1,30 @@
 //! Channel lifecycle lines and the sofia-prefixed shapes that carry a SIP INVITE.
 
-use super::kind::{MessageKind, SipInviteDirection};
+use super::kind::{LifecycleEvent, MessageKind, SipInviteDirection};
 use super::media::detect_media;
 use super::parts::set_export_parts;
 
 /// Whether what follows a channel name is one of the core `[name]=[value]`
 /// narrations. Only the shape is matched here; [`set_export_parts`] slices it.
+/// A lifecycle message with its step resolved from the text.
+pub(crate) fn channel_lifecycle(detail: &str) -> MessageKind {
+    let event = if detail.starts_with("New Channel ") {
+        LifecycleEvent::NewChannel
+    } else if detail.starts_with("Hangup ") {
+        LifecycleEvent::Hangup
+    } else if detail.starts_with("Close Channel ") || detail.starts_with("destroy/unlink") {
+        LifecycleEvent::Destroy
+    } else if detail.contains("has been answered") {
+        LifecycleEvent::Answered
+    } else {
+        LifecycleEvent::Other
+    };
+    MessageKind::ChannelLifecycle {
+        event,
+        detail: detail.to_string(),
+    }
+}
+
 pub(crate) fn is_channel_variable_narration(rest: &str) -> bool {
     rest.starts_with("EXPORTING[") || rest.starts_with("setting variable [")
 }
@@ -48,9 +67,7 @@ pub(super) fn classify_channel_prefixed(channel_part: &str, rest: &str) -> Messa
     }
 
     // Channel-prefixed lifecycle: destroy/unlink, REFER, CANCEL, BYE, etc.
-    MessageKind::ChannelLifecycle {
-        detail: rest.to_string(),
-    }
+    channel_lifecycle(rest)
 }
 
 pub(crate) fn sip_invite_direction(rest: &str) -> Option<SipInviteDirection> {
@@ -117,22 +134,16 @@ pub(super) fn detect_channel_lifecycle(msg: &str) -> Option<MessageKind> {
     ];
     for prefix in &lifecycle_prefixes {
         if msg.starts_with(prefix) {
-            return Some(MessageKind::ChannelLifecycle {
-                detail: msg.to_string(),
-            });
+            return Some(channel_lifecycle(msg));
         }
     }
 
     if msg.starts_with("Channel ") {
-        return Some(MessageKind::ChannelLifecycle {
-            detail: msg.to_string(),
-        });
+        return Some(channel_lifecycle(msg));
     }
 
     if msg.starts_with("Application ") && msg.contains("Requires media") {
-        return Some(MessageKind::ChannelLifecycle {
-            detail: msg.to_string(),
-        });
+        return Some(channel_lifecycle(msg));
     }
 
     None

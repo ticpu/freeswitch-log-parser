@@ -30,7 +30,7 @@ pub(super) fn build_update(
     let cs_destroy = ChannelState::CsDestroy.to_string();
     let is_hangup = matches!(
         &enriched.entry.message_kind,
-        MessageKind::ChannelLifecycle { detail }
+        MessageKind::ChannelLifecycle { detail, .. }
             if detail.contains("Hangup") || detail.contains("Destroy")
     ) || matches!(
         &enriched.entry.message_kind,
@@ -40,7 +40,7 @@ pub(super) fn build_update(
 
     let is_new_channel = matches!(
         &enriched.entry.message_kind,
-        MessageKind::ChannelLifecycle { detail }
+        MessageKind::ChannelLifecycle { detail, .. }
             if detail.starts_with("New Channel ")
     );
 

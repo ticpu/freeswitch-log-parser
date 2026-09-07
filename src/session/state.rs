@@ -251,7 +251,7 @@ impl SessionState {
                 }
                 _ => {}
             },
-            MessageKind::ChannelLifecycle { detail } => {
+            MessageKind::ChannelLifecycle { detail, .. } => {
                 if let Some(name) = parse_new_channel(detail) {
                     if self.channel_name.is_none() {
                         self.channel_name = Some(name);

@@ -290,7 +290,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
 
         // New Channel on this UUID — another session may have been waiting for it,
         // either by forced origination UUID or by the target it named.
-        if let MessageKind::ChannelLifecycle { detail } = &entry.message_kind {
+        if let MessageKind::ChannelLifecycle { detail, .. } = &entry.message_kind {
             if let Some(channel_name) = parse_new_channel(detail) {
                 let a_uuid = self
                     .by_other_leg

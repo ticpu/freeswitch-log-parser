@@ -269,6 +269,43 @@ fn hangup_is_channel_lifecycle() {
 }
 
 #[test]
+fn a_lifecycle_line_names_its_step() {
+    for (msg, event) in [
+        (
+            "New Channel sofia/internal/1263@192.0.2.1 [a1b2c3d4-e5f6-7890-abcd-ef1234567890]",
+            LifecycleEvent::NewChannel,
+        ),
+        (
+            "Hangup sofia/internal/1263@192.0.2.1 [CS_CONSUME_MEDIA] [NORMAL_CLEARING]",
+            LifecycleEvent::Hangup,
+        ),
+        (
+            "Close Channel sofia/internal/1263@192.0.2.1 [CS_DESTROY]",
+            LifecycleEvent::Destroy,
+        ),
+        (
+            "sofia/internal/1263@192.0.2.1 destroy/unlink session from object",
+            LifecycleEvent::Destroy,
+        ),
+        (
+            "Channel [sofia/internal/1263@192.0.2.1] has been answered",
+            LifecycleEvent::Answered,
+        ),
+        (
+            "Ring-Ready sofia/internal/1263@192.0.2.1",
+            LifecycleEvent::Other,
+        ),
+    ] {
+        match classify_message(msg) {
+            MessageKind::ChannelLifecycle { event: got, .. } => {
+                assert_eq!(got, event, "failed for {msg}")
+            }
+            other => panic!("expected ChannelLifecycle for {msg}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn channel_field_no_brackets() {
     let msg = "Channel-Presence-ID: 1234@192.0.2.1";
     match classify_message(msg) {
@@ -757,6 +794,7 @@ fn every_message_kind_label_is_listed_in_all_labels() {
             detail: String::new(),
         },
         MessageKind::ChannelLifecycle {
+            event: LifecycleEvent::Other,
             detail: String::new(),
         },
         MessageKind::SipInvite {

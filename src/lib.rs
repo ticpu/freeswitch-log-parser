@@ -83,8 +83,8 @@ pub use freeswitch_types::{
 };
 pub use line::{level_from_bracketed, parse_line, LineKind, RawLine};
 pub use message::{
-    classify_message, regex_condition_parts, DtmfSource, MessageKind, RegexCondition, SdpDirection,
-    SipInviteDirection,
+    classify_message, regex_condition_parts, DtmfSource, LifecycleEvent, MessageKind,
+    RegexCondition, SdpDirection, SipInviteDirection,
 };
 pub use peer::{
     for_each_peer_uuid, for_each_peer_uuid_with, is_peer_uuid_var, LOOPBACK_PEER_UUID_VARS,

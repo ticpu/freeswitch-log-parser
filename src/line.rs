@@ -11,8 +11,8 @@ use std::ops::Range;
 ///
 /// FreeSWITCH's `switch_log_printf` emits five distinct line shapes depending
 /// on whether a session UUID is active, whether the line has a timestamp, and
-/// whether a buffer collision truncated the output. The full line-shape
-/// anatomy is documented in the repository's CLAUDE.md.
+/// whether a buffer collision truncated the output; a blank line is the sixth
+/// kind. The full anatomy is documented in the repository's CLAUDE.md.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -62,7 +62,7 @@ pub struct RawLine<'a> {
     pub source: Option<&'a str>,
     /// The message text after all structured fields have been consumed.
     pub message: &'a str,
-    /// Which of the five line formats this line matched.
+    /// Which line shape this line matched.
     pub kind: LineKind,
 }
 

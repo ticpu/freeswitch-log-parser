@@ -251,7 +251,7 @@ fslog search [OPTIONS] [PATTERN]
 Filtering:
 
 - `-u, --uuid <UUID>` — session UUID substring, matched against the channel-UUID column; repeat for OR matching
-- `-l, --level <LEVEL>` — minimum severity (`debug`…`console`)
+- `-l, --level <LEVEL>` — keep entries at this severity or more severe; `debug` keeps everything, `console` only the most severe
 - `-c, --category <KIND>` — message kind (`execute`, `dialplan`, `media`, …); repeat for OR matching
 - `--fgrep <PATTERN>` — case-insensitive fixed-string match on the message
 - `--grep <REGEX>` — regex match on the message

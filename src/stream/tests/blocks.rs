@@ -1,5 +1,6 @@
 //! CHANNEL_DATA and SDP block detection, and multi-line value reassembly.
 
+use crate::message::VarName;
 use freeswitch_types::variables::SofiaVariable;
 use freeswitch_types::ChannelVariable;
 
@@ -37,14 +38,11 @@ fn channel_data_block_fields_and_variables() {
             assert_eq!(variables.len(), 2);
             assert_eq!(
                 variables[0],
-                (
-                    "variable_sip_call_id".to_string(),
-                    "test123@192.0.2.1".to_string()
-                )
+                (VarName::new("sip_call_id"), "test123@192.0.2.1".to_string())
             );
             assert_eq!(
                 variables[1],
-                ("variable_direction".to_string(), "inbound".to_string())
+                (VarName::new("direction"), "inbound".to_string())
             );
         }
         other => panic!("expected ChannelData block, got {other:?}"),
@@ -72,13 +70,13 @@ fn channel_data_multiline_variable_reassembly() {
         Block::ChannelData { fields, variables } => {
             assert_eq!(fields.len(), 1);
             assert_eq!(variables.len(), 2);
-            assert_eq!(variables[0].0, "variable_switch_r_sdp");
+            assert_eq!(variables[0].0.bare(), "switch_r_sdp");
             assert!(variables[0].1.starts_with("v=0\n"));
             assert!(variables[0].1.contains("m=audio 47758 RTP/AVP 0 101"));
             assert!(!variables[0].1.ends_with(']'));
             assert_eq!(
                 variables[1],
-                ("variable_direction".to_string(), "inbound".to_string())
+                (VarName::new("direction"), "inbound".to_string())
             );
         }
         other => panic!("expected ChannelData block, got {other:?}"),
@@ -224,7 +222,7 @@ fn block_accessors_hide_the_variable_prefix() {
     assert_eq!(
         block.variable(SofiaVariable::SipCallId),
         Some("test123@192.0.2.1"),
-        "the caller never spells the variable_ prefix a dump stores"
+        "a variable enum names the same thing a stored VarName does"
     );
     assert_eq!(block.variable(ChannelVariable::Direction), None);
 }
@@ -357,7 +355,7 @@ fn an_embedded_sdp_value_stays_in_the_channel_data_block() {
         Block::ChannelData { variables, .. } => {
             assert_eq!(variables.len(), 2);
             assert!(variables[0].1.starts_with("v=0\n"));
-            assert_eq!(variables[1].0, "variable_direction");
+            assert_eq!(variables[1].0.bare(), "direction");
         }
         other => panic!("expected ChannelData block, got {other:?}"),
     }

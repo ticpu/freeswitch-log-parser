@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use freeswitch_types::variables::VariableName;
-use freeswitch_types::{
-    CallDirection, CallState, ChannelState, EventHeader, HangupCause, VARIABLE_PREFIX,
-};
+use freeswitch_types::{CallDirection, CallState, ChannelState, EventHeader, HangupCause};
 
 use crate::line::parse_line;
 use crate::message::{classify_message, LifecycleEvent, MessageKind};
@@ -243,8 +241,8 @@ impl SessionState {
                 self.apply_channel_field(name, value, &mut warnings);
             }
             for (name, value) in variables {
-                let var_name = name.strip_prefix(VARIABLE_PREFIX).unwrap_or(name);
-                self.variables.insert(var_name.to_string(), value.clone());
+                self.variables
+                    .insert(name.bare().to_string(), value.clone());
             }
         }
 

@@ -198,6 +198,8 @@ Exposed as a public function so Layer 1 consumers can call it directly on `RawLi
 
 `BlockBuilder` (`src/stream/block.rs`) has one variant per `Block` variant plus `Idle` for an entry that opens no block. `BlockBuilder::open` reads the primary line's `MessageKind`: CHANNEL_DATA opens the field/variable accumulator, an SDP marker opens a body, a codec-negotiation line opens a comparison run. Later lines go to `push_continuation`, or to `push_codec_trace` for a run, and `finish` hands back the block together with whatever warnings the accumulation raised.
 
+A dump's variable keys are `VarName`, the same spelling `MessageKind::Variable` carries, so nothing strips or re-adds the prefix between the two: `Block::variable` matches a `freeswitch-types` enum against `VarName::bare` and the printer's `Display` renders the dump's form.
+
 A CHANNEL_DATA value whose `[` has not closed is held in `open_var` — one field, so a half-open variable cannot be represented — and continuation lines join it with `\n` until the `]` arrives. A cut write may lose that `]` entirely, so `mark_variable_cut` bounds the join at the first line opening a name of its own. Raw lines stay in `attached` for consumers needing the original format.
 
 A codec trace is the one primary line that does not close the pending entry: `merge_codec_run` folds it in only when its UUID and its media type both match the open run, so a video negotiation never joins an audio one.

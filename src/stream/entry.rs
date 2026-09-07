@@ -8,7 +8,7 @@ use crate::codec::{CodecMedia, CodecOffer, CodecParseError};
 use crate::decode::truncate_at_char_boundary;
 use crate::fields::FieldLocation;
 use crate::line::LineKind;
-use crate::message::{MessageKind, SdpDirection};
+use crate::message::{MessageKind, SdpDirection, VarName};
 use freeswitch_types::LogLevel;
 
 use super::collision::MOD_LOGFILE_BUF_SIZE;
@@ -24,7 +24,7 @@ pub enum Block {
     /// Multi-line variable values (e.g. embedded SDP) are reassembled with `\n` separators.
     ChannelData {
         fields: Vec<(String, String)>,
-        variables: Vec<(String, String)>,
+        variables: Vec<(VarName, String)>,
     },
     /// SDP session description body, collected line by line.
     ///
@@ -66,10 +66,10 @@ impl Block {
 
     /// Value of a channel variable in a CHANNEL_DATA dump.
     ///
-    /// Accepts any of `freeswitch-types`' variable-name enums, and spares the
-    /// caller from knowing that a dump spells its keys with the `variable_`
-    /// prefix that [`SessionState::variable`](crate::SessionState::variable)
-    /// strips — the two surfaces answer the same question the same way.
+    /// Accepts any of `freeswitch-types`' variable-name enums, which name a
+    /// variable the way [`VarName::bare`] does — the same question
+    /// [`SessionState::variable`](crate::SessionState::variable) answers, the
+    /// same way.
     pub fn variable<V: freeswitch_types::variables::VariableName>(&self, var: V) -> Option<&str> {
         let Block::ChannelData { variables, .. } = self else {
             return None;
@@ -77,11 +77,7 @@ impl Block {
         let wanted = var.as_str();
         variables
             .iter()
-            .find(|(n, _)| {
-                n.strip_prefix(freeswitch_types::VARIABLE_PREFIX)
-                    .unwrap_or(n)
-                    == wanted
-            })
+            .find(|(n, _)| n.bare() == wanted)
             .map(|(_, v)| v.as_str())
     }
 }
@@ -153,12 +149,12 @@ impl fmt::Display for SessionReading {
 pub enum ParseWarning {
     /// A CHANNEL_DATA variable opened its `[` and the block ended before the `]`.
     /// The value collected so far is still recorded.
-    UnclosedVariable { name: String },
+    UnclosedVariable { name: VarName },
     /// A CHANNEL_DATA variable's value was cut by the logger's write buffer. The
     /// value is recorded with the lost middle missing: reassembly resumes after
     /// the cut and runs to the value's `]` or to the next name, whichever comes
     /// first.
-    TruncatedVariable { name: String },
+    TruncatedVariable { name: VarName },
     /// A line inside a CHANNEL_DATA block matched neither the field nor the
     /// variable shape, so it contributed nothing to the block. Most often a
     /// name the write buffer cut mid-token, not a shape the parser cannot read.

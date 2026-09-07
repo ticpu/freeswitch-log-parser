@@ -1,6 +1,6 @@
 //! Behavioral tests for entry rendering and filtering.
 
-use freeswitch_log_parser::{AttachedLines, Block, LogEntry, LogLevel, MessageKind};
+use freeswitch_log_parser::{AttachedLines, Block, LogEntry, LogLevel, MessageKind, VarName};
 
 use super::color::{uuid_truecolor, BRIGHT_GREEN, RED, RESET};
 use super::*;
@@ -129,7 +129,7 @@ fn channel_data_entry() -> LogEntry {
     );
     e.block = Some(Block::ChannelData {
         fields: vec![("Channel-Name".into(), "x".into())],
-        variables: vec![("variable_a".into(), "b".into())],
+        variables: vec![(VarName::new("a"), "b".into())],
     });
     e
 }
@@ -195,7 +195,7 @@ fn long_variable_values_are_not_truncated() {
     let mut e = entry("u", "CHANNEL_DATA:", &[]);
     e.block = Some(Block::ChannelData {
         fields: Vec::new(),
-        variables: vec![("variable_sip_multipart".to_string(), long.clone())],
+        variables: vec![(VarName::new("sip_multipart"), long.clone())],
     });
     let out = render(&printer(ColorMode::Never, true), &e);
     assert!(out.contains(&long), "{out}");

@@ -2,6 +2,7 @@
 //! than one record, and the state a mid-block UUID drop leaves behind.
 
 use super::*;
+use crate::message::VarName;
 
 #[test]
 fn continuation_lines_at_file_boundary_must_not_inherit_previous_timestamp() {
@@ -223,14 +224,14 @@ fn a_cut_value_does_not_swallow_the_next_variable() {
     match entries[0].block.as_ref().expect("should have block") {
         Block::ChannelData { variables, .. } => {
             assert_eq!(variables.len(), 2);
-            assert_eq!(variables[0].0, "variable_long_xml");
+            assert_eq!(variables[0].0.bare(), "long_xml");
             assert!(
                 !variables[0].1.contains("variable_direction"),
                 "the cut value swallowed the next variable"
             );
             assert_eq!(
                 variables[1],
-                ("variable_direction".to_string(), "inbound".to_string())
+                (VarName::new("direction"), "inbound".to_string())
             );
         }
         other => panic!("expected ChannelData block, got {other:?}"),
@@ -238,7 +239,7 @@ fn a_cut_value_does_not_swallow_the_next_variable() {
     assert!(entries[0]
         .warnings
         .contains(&ParseWarning::TruncatedVariable {
-            name: "variable_long_xml".to_string()
+            name: VarName::new("long_xml")
         }));
 }
 
@@ -264,17 +265,17 @@ fn a_cut_value_keeps_the_lines_that_follow_it() {
     match entry.block.as_ref().expect("should have block") {
         Block::ChannelData { variables, .. } => {
             assert_eq!(variables.len(), 2);
-            assert_eq!(variables[0].0, "variable_sip_multipart");
+            assert_eq!(variables[0].0.bare(), "sip_multipart");
             assert!(variables[0].1.ends_with("a=rtpmap:102 opus/48000/2\n"));
             assert_eq!(
                 variables[1],
-                ("variable_max_forwards".to_string(), "70".to_string())
+                (VarName::new("max_forwards"), "70".to_string())
             );
         }
         other => panic!("expected ChannelData block, got {other:?}"),
     }
     assert!(entry.warnings.contains(&ParseWarning::TruncatedVariable {
-        name: "variable_sip_multipart".to_string()
+        name: VarName::new("sip_multipart")
     }));
     assert!(
         !entry
@@ -415,9 +416,9 @@ fn truncated_collision_in_channel_data_variable() {
                 2,
                 "should have direction + unclosed long_xml"
             );
-            assert_eq!(variables[0].0, "variable_direction");
+            assert_eq!(variables[0].0.bare(), "direction");
             assert_eq!(variables[0].1, "inbound");
-            assert_eq!(variables[1].0, "variable_long_xml");
+            assert_eq!(variables[1].0.bare(), "long_xml");
         }
         other => panic!("expected ChannelData block, got {other:?}"),
     }
@@ -483,16 +484,16 @@ fn channel_data_uuid_drops_mid_block() {
             assert_eq!(fields.len(), 0);
             assert_eq!(variables.len(), 8);
             // UUID-prefixed variables
-            assert_eq!(variables[0].0, "variable_max_forwards");
+            assert_eq!(variables[0].0.bare(), "max_forwards");
             assert_eq!(variables[0].1, "69");
-            assert_eq!(variables[1].0, "variable_presence_id");
+            assert_eq!(variables[1].0.bare(), "presence_id");
             assert_eq!(variables[1].1, "1251@[2001:db8::10]");
-            assert_eq!(variables[2].0, "variable_sip_h_X-Custom-ID");
+            assert_eq!(variables[2].0.bare(), "sip_h_X-Custom-ID");
             // Bare variables (UUID dropped)
-            assert_eq!(variables[3].0, "variable_sip_h_X-Call-Info");
+            assert_eq!(variables[3].0.bare(), "sip_h_X-Call-Info");
             assert!(variables[3].1.contains("emergency-CallId"));
-            assert_eq!(variables[4].0, "variable_ep_codec_string");
-            assert_eq!(variables[7].0, "variable_rtp_use_codec_name");
+            assert_eq!(variables[4].0.bare(), "ep_codec_string");
+            assert_eq!(variables[7].0.bare(), "rtp_use_codec_name");
             assert_eq!(variables[7].1, "opus");
         }
         other => panic!("expected ChannelData block, got {other:?}"),
@@ -536,10 +537,10 @@ fn channel_data_uuid_drops_with_multiline_variable() {
         Block::ChannelData { fields, variables } => {
             assert_eq!(fields.len(), 0);
             assert_eq!(variables.len(), 5);
-            assert_eq!(variables[0].0, "variable_max_forwards");
-            assert_eq!(variables[1].0, "variable_sip_h_X-Custom-ID");
+            assert_eq!(variables[0].0.bare(), "max_forwards");
+            assert_eq!(variables[1].0.bare(), "sip_h_X-Custom-ID");
             // Multi-line SDP variable reassembled from bare continuations
-            assert_eq!(variables[2].0, "variable_switch_r_sdp");
+            assert_eq!(variables[2].0.bare(), "switch_r_sdp");
             let sdp = &variables[2].1;
             assert!(
                 sdp.starts_with("v=0\n"),
@@ -549,8 +550,8 @@ fn channel_data_uuid_drops_with_multiline_variable() {
             assert!(sdp.contains("a=ptime:20\n"));
             assert!(!sdp.ends_with(']'), "closing bracket should be stripped");
             // Post-SDP bare variables
-            assert_eq!(variables[3].0, "variable_ep_codec_string");
-            assert_eq!(variables[4].0, "variable_direction");
+            assert_eq!(variables[3].0.bare(), "ep_codec_string");
+            assert_eq!(variables[4].0.bare(), "direction");
             assert_eq!(variables[4].1, "inbound");
         }
         other => panic!("expected ChannelData block, got {other:?}"),
@@ -597,8 +598,8 @@ fn channel_data_bare_variable_collision_with_execute() {
         Block::ChannelData { fields, variables } => {
             assert_eq!(fields.len(), 0);
             assert_eq!(variables.len(), 2);
-            assert_eq!(variables[0].0, "variable_max_forwards");
-            assert_eq!(variables[1].0, "variable_DP_MATCH");
+            assert_eq!(variables[0].0.bare(), "max_forwards");
+            assert_eq!(variables[1].0.bare(), "DP_MATCH");
         }
         other => panic!("expected ChannelData block, got {other:?}"),
     }
@@ -732,12 +733,12 @@ fn a_multi_line_write_cut_on_a_short_line_splits() {
     assert_eq!(stream.stats().lines_split, 1);
     match entries[0].block.as_ref().expect("block") {
         Block::ChannelData { variables, .. } => {
-            assert_eq!(variables[0].0, "variable_switch_r_sdp");
+            assert_eq!(variables[0].0.bare(), "switch_r_sdp");
             assert!(
                 !variables[0].1.contains("variable_direction"),
                 "the cut value swallowed the record after it"
             );
-            assert_eq!(variables[1].0, "variable_direction");
+            assert_eq!(variables[1].0.bare(), "direction");
         }
         other => panic!("expected ChannelData, got {other:?}"),
     }

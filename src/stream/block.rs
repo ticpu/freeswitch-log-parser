@@ -2,7 +2,7 @@
 //! primary and continuation lines as they arrive.
 
 use crate::codec::{CodecMedia, CodecOffer, CodecTrace};
-use crate::message::{classify_message, parse_bracketed_value, MessageKind, SdpDirection};
+use crate::message::{classify_message, parse_bracketed_value, MessageKind, SdpDirection, VarName};
 
 use super::entry::{Block, ParseWarning};
 
@@ -22,7 +22,7 @@ fn parse_field_line(msg: &str) -> Option<(String, String)> {
 
 /// A channel variable whose `[` has not been closed yet.
 pub(super) struct OpenVar {
-    name: String,
+    name: VarName,
     value: String,
     /// The logger cut this value mid-write. Its `]` may have died in the lost
     /// tail, so the join ends at the first line opening a name of its own.
@@ -44,7 +44,7 @@ pub(super) enum BlockBuilder {
     Idle,
     ChannelData {
         fields: Vec<(String, String)>,
-        variables: Vec<(String, String)>,
+        variables: Vec<(VarName, String)>,
         // One field, so a half-open variable cannot be represented.
         open_var: Option<OpenVar>,
     },
@@ -125,7 +125,6 @@ impl BlockBuilder {
                 match classify_message(msg) {
                     MessageKind::ChannelField { name, value } => fields.push((name, value)),
                     MessageKind::Variable { name, value } => {
-                        let name = name.to_prefixed();
                         if !msg.ends_with(']') && msg.contains(": [") {
                             *open_var = Some(OpenVar {
                                 name,

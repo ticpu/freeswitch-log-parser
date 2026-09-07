@@ -88,7 +88,7 @@ pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
 
     if let Some(Block::ChannelData { variables, .. }) = &entry.block {
         for (name, value) in variables {
-            if wanted(name) {
+            if wanted(name.bare()) {
                 harvest(value);
             }
         }
@@ -184,10 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn strips_variable_prefix_in_channel_data() {
+    fn harvests_from_a_channel_data_dump() {
         let block = Block::ChannelData {
             fields: Vec::new(),
-            variables: vec![("variable_signal_bond".to_string(), PEER.to_string())],
+            variables: vec![(
+                VarName::from_prefixed("variable_signal_bond"),
+                PEER.to_string(),
+            )],
         };
         assert_eq!(
             collect(&entry(MessageKind::General, Some(block))),

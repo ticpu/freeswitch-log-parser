@@ -8,7 +8,7 @@ use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 use super::conference::{self, ConferenceEvent, ConferenceMembership, ConferenceRegistry};
 use super::index::{deindex, IndexedFieldChanges, IndexedFields};
 use super::loopback;
-use super::parse::{parse_new_channel, parse_originate_channel, parse_originate_success};
+use super::parse::parse_new_channel;
 use super::state::{SessionSnapshot, SessionState};
 use super::SessionHook;
 
@@ -277,36 +277,39 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// Cross-session leg linking. Called after `update_from_entry` so per-session
     /// state (bridge target, channel name) is already populated.
     fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
-        // "Originate Resulted in Success ... Peer UUID: BLEG" — authoritative
-        if entry.message.contains("Originate Resulted in Success") {
-            if let Some(peer_uuid) = parse_originate_success(&entry.message) {
-                self.link_pair(uuid, &peer_uuid);
-            } else if let Some(chan) = parse_originate_channel(&entry.message) {
-                // Builds whose originate line omits the `Peer UUID:` suffix leave
-                // the channel name as the only handle on the B leg.
-                if let Some(b_uuid) = self.unique_live_leg(chan, uuid) {
+        match &entry.message_kind {
+            MessageKind::OriginateSuccess {
+                peer_uuid: Some(peer),
+                ..
+            } => self.link_pair(uuid, peer),
+            // Builds whose originate line omits the `Peer UUID:` suffix leave the
+            // channel name as the only handle on the B leg.
+            MessageKind::OriginateSuccess {
+                channel,
+                peer_uuid: None,
+            } => {
+                if let Some(b_uuid) = self.unique_live_leg(channel, uuid) {
                     self.link_pair(uuid, &b_uuid);
                 }
             }
-            return;
-        }
+            // New Channel on this UUID — another session may have been waiting for
+            // it, either by forced origination UUID or by the target it named.
+            MessageKind::ChannelLifecycle { detail, .. } => {
+                if let Some(channel_name) = parse_new_channel(detail) {
+                    let a_uuid = self
+                        .by_other_leg
+                        .get(uuid)
+                        .cloned()
+                        .or_else(|| self.unique_pending_leg(&channel_name, uuid))
+                        .or_else(|| self.loopback_a_leg(&channel_name, uuid))
+                        .filter(|a| a.as_str() != uuid);
 
-        // New Channel on this UUID — another session may have been waiting for it,
-        // either by forced origination UUID or by the target it named.
-        if let MessageKind::ChannelLifecycle { detail, .. } = &entry.message_kind {
-            if let Some(channel_name) = parse_new_channel(detail) {
-                let a_uuid = self
-                    .by_other_leg
-                    .get(uuid)
-                    .cloned()
-                    .or_else(|| self.unique_pending_leg(&channel_name, uuid))
-                    .or_else(|| self.loopback_a_leg(&channel_name, uuid))
-                    .filter(|a| a.as_str() != uuid);
-
-                if let Some(a_uuid) = a_uuid {
-                    self.link_pair(&a_uuid, uuid);
+                    if let Some(a_uuid) = a_uuid {
+                        self.link_pair(&a_uuid, uuid);
+                    }
                 }
             }
+            _ => {}
         }
     }
 }

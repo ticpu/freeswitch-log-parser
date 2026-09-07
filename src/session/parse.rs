@@ -105,29 +105,3 @@ pub struct BridgeInfo {
     /// the new channel will report as its channel name.
     pub target_channel: String,
 }
-
-/// Parse "Originate Resulted in Success: [channel] Peer UUID: uuid"
-pub(super) fn parse_originate_success(msg: &str) -> Option<String> {
-    let marker = "Peer UUID: ";
-    let idx = msg.find(marker)?;
-    let uuid = msg[idx + marker.len()..].trim();
-    if uuid.is_empty() {
-        None
-    } else {
-        Some(uuid.to_string())
-    }
-}
-
-/// Parse the bracketed channel name from "Originate Resulted in Success: [<chan>] …".
-/// Used as a fallback when the `Peer UUID:` suffix is absent (FS 1.10.5-dev and
-/// similar builds). Returns the channel name borrowed from `msg`.
-pub(super) fn parse_originate_channel(msg: &str) -> Option<&str> {
-    let start = msg.find(" [")? + 2;
-    let end = msg[start..].find(']')?;
-    let chan = &msg[start..start + end];
-    if chan.is_empty() {
-        None
-    } else {
-        Some(chan)
-    }
-}

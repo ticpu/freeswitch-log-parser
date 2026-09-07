@@ -152,7 +152,7 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
             })
             .filter(|n| prescan::is_single_line_safe(n))
         {
-            Some(needle) => prescan::narrow(&files, needle),
+            Some(needle) => prescan::narrow(&files, needle, ctx.color),
             None => files.clone(),
         }
     } else {

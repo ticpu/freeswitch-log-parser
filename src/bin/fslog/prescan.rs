@@ -10,6 +10,7 @@ use log::{debug, warn};
 use rayon::prelude::*;
 
 use crate::files::{open_log_file, Segment};
+use crate::output::ColorMode;
 
 /// Whether `needle` can be prescanned without risking a false negative.
 ///
@@ -37,15 +38,16 @@ fn is_sip_call_id(s: &str) -> bool {
 /// parallel. Files that cannot be opened are kept rather than dropped: a prescan
 /// exists to save work, and guessing "no match" from a read failure would hide
 /// entries the full parse would have reported.
-pub fn narrow(files: &[Segment], needle: &str) -> Vec<Segment> {
+pub fn narrow(files: &[Segment], needle: &str, color: ColorMode) -> Vec<Segment> {
     // Not a debug_assert: an empty needle reaches `windows(0)`, which panics in
     // release too, with nothing to say about where it came from.
     assert!(!needle.is_empty(), "prescan needle is empty");
     let total = files.len();
     debug!("prescanning {total} file(s) for {needle:?}");
     let done = AtomicUsize::new(0);
-    // Progress is a terminal affordance; to a pipe or a log it is only escape noise.
-    let progress = std::io::stderr().is_terminal();
+    // Progress rewrites its own line with ANSI escapes: to a pipe or a log, or
+    // where the operator turned colour off, that is noise with no line to erase.
+    let progress = color == ColorMode::Always && std::io::stderr().is_terminal();
 
     let mut kept: Vec<(usize, Segment)> = files
         .par_iter()

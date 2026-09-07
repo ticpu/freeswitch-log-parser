@@ -5,25 +5,26 @@ use freeswitch_log_parser::{CallDirection, CallState, ChannelState};
 
 use super::model::{state_label, AppState, CallEvent, CallFields, ContextFilter, ReaderMsg};
 use super::reader::{apply_update, drain_session_removals, gc_ended};
-use super::time::{call_duration, format_age, format_duration, log_age, parse_timestamp_secs};
+use super::time::{call_duration, format_age, format_duration, log_age, parse_timestamp};
 use super::*;
 
 #[test]
 fn parse_timestamp_basic() {
-    let secs = parse_timestamp_secs("2025-01-15 10:30:45.123456").unwrap();
-    assert_eq!(secs % 86400, 10 * 3600 + 30 * 60 + 45);
+    let dt = parse_timestamp("2025-01-15 10:30:45.123456").unwrap();
+    assert_eq!((dt.year(), dt.month(), dt.day()), (2025, 1, 15));
+    assert_eq!((dt.hour(), dt.minute(), dt.second()), (10, 30, 45));
 }
 
 #[test]
 fn parse_timestamp_midnight() {
-    let secs = parse_timestamp_secs("2025-06-01 00:00:00.000000").unwrap();
-    assert_eq!(secs % 86400, 0);
+    let dt = parse_timestamp("2025-06-01 00:00:00.000000").unwrap();
+    assert_eq!((dt.hour(), dt.minute(), dt.second()), (0, 0, 0));
 }
 
 #[test]
 fn parse_timestamp_too_short() {
-    assert!(parse_timestamp_secs("2025-01-15").is_none());
-    assert!(parse_timestamp_secs("").is_none());
+    assert!(parse_timestamp("2025-01-15").is_none());
+    assert!(parse_timestamp("").is_none());
 }
 
 #[test]
@@ -366,7 +367,7 @@ fn fixture_dump_all_calls_have_valid_timestamps() {
     let bad: Vec<_> = state
         .calls
         .iter()
-        .filter(|r| parse_timestamp_secs(&r.log_start).is_none())
+        .filter(|r| parse_timestamp(&r.log_start).is_none())
         .map(|r| &r.uuid)
         .collect();
 

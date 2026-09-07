@@ -10,8 +10,8 @@ use std::time::Instant;
 use log::{error, warn};
 
 use freeswitch_log_parser::{
-    CallDirection, ChannelState, ChannelVariable, EnrichedEntry, LogStream, MessageKind,
-    SessionState, SessionTracker, SofiaVariable, TrackedChain,
+    CallDirection, ChannelState, ChannelVariable, EnrichedEntry, LifecycleEvent, LogStream,
+    MessageKind, SessionState, SessionTracker, SofiaVariable, TrackedChain,
 };
 
 use crate::files::{discover_log_files, display_name, open_full_tail_reader, open_log_reader};
@@ -27,32 +27,26 @@ pub(super) fn build_update(
         return None;
     }
 
-    let cs_destroy = ChannelState::CsDestroy.to_string();
-    let is_hangup = matches!(
-        &enriched.entry.message_kind,
-        MessageKind::ChannelLifecycle { detail, .. }
-            if detail.contains("Hangup") || detail.contains("Destroy")
-    ) || matches!(
-        &enriched.entry.message_kind,
-        MessageKind::StateChange { detail }
-            if detail.contains(cs_destroy.as_str())
-    );
-
-    let is_new_channel = matches!(
-        &enriched.entry.message_kind,
-        MessageKind::ChannelLifecycle { detail, .. }
-            if detail.starts_with("New Channel ")
-    );
-
     let snap = enriched.session.as_ref();
     let state = sessions.get(&uuid);
 
-    let event = if is_hangup {
-        Some(CallEvent::Hangup)
-    } else if is_new_channel {
-        Some(CallEvent::NewChannel)
-    } else {
-        None
+    // A state change to CS_DESTROY ends the row too: the leg's own lifecycle
+    // line may sit in a rotated file the monitor never read.
+    let event = match &enriched.entry.message_kind {
+        MessageKind::ChannelLifecycle {
+            event: LifecycleEvent::NewChannel,
+            ..
+        } => Some(CallEvent::NewChannel),
+        MessageKind::ChannelLifecycle {
+            event: LifecycleEvent::Hangup | LifecycleEvent::Destroy,
+            ..
+        } => Some(CallEvent::Hangup),
+        MessageKind::StateChange { detail }
+            if detail.contains(ChannelState::CsDestroy.to_string().as_str()) =>
+        {
+            Some(CallEvent::Hangup)
+        }
+        _ => None,
     };
 
     let fields = CallFields {

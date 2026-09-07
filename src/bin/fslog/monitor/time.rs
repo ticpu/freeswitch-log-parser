@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+use jiff::civil::DateTime;
+
 use super::model::CallRow;
 
 pub(super) fn end_ts(row: &CallRow) -> &str {
@@ -21,28 +23,19 @@ pub(super) fn call_age(row: &CallRow, latest: &str) -> Duration {
     log_age(end_ts(row), latest)
 }
 
-pub(super) fn parse_timestamp_secs(ts: &str) -> Option<u64> {
-    if ts.len() < 19 {
-        return None;
-    }
-    let year: u64 = ts[0..4].parse().ok()?;
-    let month: u64 = ts[5..7].parse().ok()?;
-    let day: u64 = ts[8..10].parse().ok()?;
-    let hour: u64 = ts[11..13].parse().ok()?;
-    let min: u64 = ts[14..16].parse().ok()?;
-    let sec: u64 = ts[17..19].parse().ok()?;
-    let (y, m) = if month > 2 {
-        (year, month - 3)
-    } else {
-        (year - 1, month + 9)
-    };
-    let days = 365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + day - 1;
-    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+/// The entry timestamp's date and time, sub-second part ignored.
+pub(super) fn parse_timestamp(ts: &str) -> Option<DateTime> {
+    DateTime::strptime("%Y-%m-%d %H:%M:%S", ts.get(..19)?).ok()
 }
 
 pub(super) fn log_age(start: &str, end: &str) -> Duration {
-    match (parse_timestamp_secs(start), parse_timestamp_secs(end)) {
-        (Some(s), Some(e)) if e >= s => Duration::from_secs(e - s),
+    let (Some(s), Some(e)) = (parse_timestamp(start), parse_timestamp(end)) else {
+        return Duration::ZERO;
+    };
+    // A row whose last line predates its start is a clock the log disagrees
+    // with, not a negative age.
+    match e.duration_since(s).as_secs() {
+        secs if secs > 0 => Duration::from_secs(secs as u64),
         _ => Duration::ZERO,
     }
 }

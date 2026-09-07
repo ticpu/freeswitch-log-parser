@@ -1,7 +1,7 @@
 //! The classification dispatcher — the ordered prefix checks that map a
 //! message to its [`MessageKind`], and the shape-specific constructors.
 
-use freeswitch_types::{variable_key, VARIABLE_PREFIX};
+use freeswitch_types::VARIABLE_PREFIX;
 
 use crate::codec::CodecMedia;
 
@@ -62,7 +62,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
     }
 
     if msg.starts_with(VARIABLE_PREFIX) {
-        if let Some((name, value)) = parse_bracketed_value(msg, 0) {
+        if let Some((name, value)) = parse_bracketed_value(msg, VARIABLE_PREFIX.len()) {
             return MessageKind::Variable {
                 name: name.to_string(),
                 value: value.to_string(),
@@ -115,7 +115,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
     if let Some(rest) = msg.strip_prefix("set variable ") {
         if let Some((name, value)) = rest.split_once('=') {
             return MessageKind::Variable {
-                name: variable_key(name),
+                name: name.to_string(),
                 value: value.to_string(),
             };
         }
@@ -198,7 +198,7 @@ fn parse_core_session_set_variable(msg: &str) -> MessageKind {
     if let Some(end) = rest.strip_suffix(')') {
         if let Some(comma) = end.find(", ") {
             return MessageKind::Variable {
-                name: variable_key(&end[..comma]),
+                name: end[..comma].to_string(),
                 value: end[comma + 2..].to_string(),
             };
         }
@@ -217,7 +217,7 @@ fn parse_unset(msg: &str) -> MessageKind {
         rest
     };
     MessageKind::Variable {
-        name: variable_key(name),
+        name: name.to_string(),
         value: String::new(),
     }
 }
@@ -232,7 +232,7 @@ fn parse_dialplan_processing(msg: &str) -> MessageKind {
 fn parse_set_or_export(msg: &str) -> Option<MessageKind> {
     let parts = set_export_parts(msg)?;
     Some(MessageKind::Variable {
-        name: variable_key(parts.name),
+        name: parts.name.to_string(),
         value: parts.value.to_string(),
     })
 }

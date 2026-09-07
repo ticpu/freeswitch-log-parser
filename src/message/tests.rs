@@ -145,27 +145,50 @@ fn channel_field_name() {
     }
 }
 
-#[test]
-fn variable_single_line() {
-    let msg = "variable_sip_call_id: [test123@192.0.2.1]";
+fn variable_parts(msg: &str) -> (String, String) {
     match classify_message(msg) {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_sip_call_id");
-            assert_eq!(value, "test123@192.0.2.1");
-        }
+        MessageKind::Variable { name, value } => (name, value),
         other => panic!("expected Variable, got {other:?}"),
     }
 }
 
+/// Every narration yields the bare name, whichever spelling it logged.
 #[test]
-fn variable_multi_line_start() {
-    let msg = "variable_switch_r_sdp: [v=0";
-    match classify_message(msg) {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_switch_r_sdp");
-            assert_eq!(value, "v=0");
-        }
-        other => panic!("expected Variable, got {other:?}"),
+fn a_variable_names_itself_without_the_dump_prefix() {
+    for (msg, name, value) in [
+        (
+            "variable_sip_call_id: [test123@192.0.2.1]",
+            "sip_call_id",
+            "test123@192.0.2.1",
+        ),
+        ("variable_switch_r_sdp: [v=0", "switch_r_sdp", "v=0"),
+        ("variable_direction: inbound", "direction", "inbound"),
+        (
+            "CoreSession::setVariable(X-City, ST GEORGES)",
+            "X-City",
+            "ST GEORGES",
+        ),
+        (
+            "SET sofia/internal-v6/1263@[2001:db8:2220:198::10] [ngcs_bridge_sip_req_uri]=[conf-factory-app.qc.core.ng.example.test]",
+            "ngcs_bridge_sip_req_uri",
+            "conf-factory-app.qc.core.ng.example.test",
+        ),
+        (
+            "EXPORT (export_vars) (REMOTE ONLY) [sip_from_uri]=[sip:psap1.qc.psap.ng.example.test]",
+            "sip_from_uri",
+            "sip:psap1.qc.psap.ng.example.test",
+        ),
+        (
+            "EXPORT (export_vars) [originate_timeout]=[3600]",
+            "originate_timeout",
+            "3600",
+        ),
+    ] {
+        assert_eq!(
+            variable_parts(msg),
+            (name.to_string(), value.to_string()),
+            "failed for {msg}"
+        );
     }
 }
 
@@ -231,17 +254,6 @@ fn state_change() {
 }
 
 #[test]
-fn core_session_set_variable() {
-    match classify_message("CoreSession::setVariable(X-City, ST GEORGES)") {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_X-City");
-            assert_eq!(value, "ST GEORGES");
-        }
-        other => panic!("expected Variable, got {other:?}"),
-    }
-}
-
-#[test]
 fn general_empty() {
     assert_eq!(classify_message(""), MessageKind::General);
 }
@@ -269,18 +281,6 @@ fn channel_field_no_brackets() {
 }
 
 #[test]
-fn variable_no_brackets() {
-    let msg = "variable_direction: inbound";
-    match classify_message(msg) {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_direction");
-            assert_eq!(value, "inbound");
-        }
-        other => panic!("expected Variable, got {other:?}"),
-    }
-}
-
-#[test]
 fn execute_lowercase() {
     let msg = "Execute [depth=2] set(RECORD_STEREO=true)";
     match classify_message(msg) {
@@ -299,43 +299,6 @@ fn execute_lowercase() {
 }
 
 #[test]
-fn set_variable_message() {
-    let msg = "SET sofia/internal-v6/1263@[2001:db8:2220:198::10] [ngcs_bridge_sip_req_uri]=[conf-factory-app.qc.core.ng.example.test]";
-    match classify_message(msg) {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_ngcs_bridge_sip_req_uri");
-            assert_eq!(value, "conf-factory-app.qc.core.ng.example.test");
-        }
-        other => panic!("expected Variable, got {other:?}"),
-    }
-}
-
-#[test]
-fn export_variable_message() {
-    let msg =
-        "EXPORT (export_vars) (REMOTE ONLY) [sip_from_uri]=[sip:psap1.qc.psap.ng.example.test]";
-    match classify_message(msg) {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_sip_from_uri");
-            assert_eq!(value, "sip:psap1.qc.psap.ng.example.test");
-        }
-        other => panic!("expected Variable, got {other:?}"),
-    }
-}
-
-#[test]
-fn export_simple_variable() {
-    let msg = "EXPORT (export_vars) [originate_timeout]=[3600]";
-    match classify_message(msg) {
-        MessageKind::Variable { name, value } => {
-            assert_eq!(name, "variable_originate_timeout");
-            assert_eq!(value, "3600");
-        }
-        other => panic!("expected Variable, got {other:?}"),
-    }
-}
-
-#[test]
 fn a_regex_condition_value_keeps_its_own_parentheses() {
     let cond = regex_condition_parts(
         "Regex (PASS) [routing] caller_id_name(Doe (Mobile)) =~ /^.*$/ break=on-false",
@@ -345,13 +308,6 @@ fn a_regex_condition_value_keeps_its_own_parentheses() {
     assert_eq!(cond.value, "Doe (Mobile)");
 }
 
-fn variable_parts(msg: &str) -> (String, String) {
-    match classify_message(msg) {
-        MessageKind::Variable { name, value } => (name, value),
-        other => panic!("expected Variable, got {other:?}"),
-    }
-}
-
 /// `set()` logs `SET`, `PUSH` or `UNSHIFT` depending on the stack it writes to.
 #[test]
 fn the_stack_variants_of_set_are_variables_too() {
@@ -359,7 +315,7 @@ fn the_stack_variants_of_set_are_variables_too() {
         let msg = format!("{verb} sofia/internal/1263@192.0.2.1 [ngcs_leg]=[b]");
         assert_eq!(
             variable_parts(&msg),
-            ("variable_ngcs_leg".to_string(), "b".to_string())
+            ("ngcs_leg".to_string(), "b".to_string())
         );
     }
 }
@@ -371,7 +327,7 @@ fn exporting_is_a_variable_despite_its_channel_prefix() {
     assert_eq!(
         variable_parts(msg),
         (
-            "variable_effective_caller_id_number".to_string(),
+            "effective_caller_id_number".to_string(),
             "15555550100".to_string()
         )
     );
@@ -382,10 +338,7 @@ fn a_passthrough_header_becomes_a_variable() {
     let msg = "sofia/internal/1263@192.0.2.1 setting variable [sip_h_X-Call-Info]=[ARRAY::a|:b]";
     assert_eq!(
         variable_parts(msg),
-        (
-            "variable_sip_h_X-Call-Info".to_string(),
-            "ARRAY::a|:b".to_string()
-        )
+        ("sip_h_X-Call-Info".to_string(), "ARRAY::a|:b".to_string())
     );
 }
 
@@ -394,10 +347,7 @@ fn a_value_holding_brackets_is_not_cut_at_the_first_one() {
     let msg = "EXPORT (export_vars) [caller_id_name]=[Doe [Mobile]]";
     assert_eq!(
         variable_parts(msg),
-        (
-            "variable_caller_id_name".to_string(),
-            "Doe [Mobile]".to_string()
-        )
+        ("caller_id_name".to_string(), "Doe [Mobile]".to_string())
     );
 }
 

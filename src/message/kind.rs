@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use freeswitch_types::VARIABLE_PREFIX;
+
 use crate::codec::CodecMedia;
 
 /// Which end of a call an SDP body belongs to.
@@ -79,7 +81,8 @@ pub enum MessageKind {
     /// A `Channel-*` or similar hyphenated field from a CHANNEL_DATA dump.
     ChannelField { name: String, value: String },
     /// A channel variable named with its value, whichever narration logged it.
-    /// `name` always carries the `variable_` prefix.
+    /// `name` is bare; [`variable_key`](freeswitch_types::variable_key) spells
+    /// the dump's prefixed form.
     Variable { name: String, value: String },
     /// Start of an SDP body block (`Local SDP:`, `Remote SDP:`).
     SdpMarker { direction: SdpDirection },
@@ -179,7 +182,7 @@ impl fmt::Display for MessageKind {
             MessageKind::Dialplan { .. } => f.pad("dialplan"),
             MessageKind::ChannelData => f.pad("channel-data"),
             MessageKind::ChannelField { name, .. } => write!(f, "field({})", name),
-            MessageKind::Variable { name, .. } => write!(f, "var({})", name),
+            MessageKind::Variable { name, .. } => write!(f, "var({VARIABLE_PREFIX}{name})"),
             MessageKind::SdpMarker { direction } => write!(f, "sdp({})", direction),
             MessageKind::StateChange { .. } => f.pad("state-change"),
             MessageKind::CodecNegotiation { media } => {

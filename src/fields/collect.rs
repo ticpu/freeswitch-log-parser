@@ -169,8 +169,7 @@ fn push_channel(out: &mut Vec<Field>, msg: &str, channel: &str) {
 /// The slot a variable's name names; a name outside the identity vocabulary
 /// falls to the neutral value slot rather than going unspanned.
 fn variable_value_kind(name: &str) -> FieldKind {
-    let bare = name.strip_prefix(VARIABLE_PREFIX).unwrap_or(name);
-    match ChannelVariable::from_str(bare) {
+    match ChannelVariable::from_str(name) {
         Ok(ChannelVariable::CallerIdName)
         | Ok(ChannelVariable::EffectiveCallerIdName)
         | Ok(ChannelVariable::OriginationCallerIdName) => FieldKind::CallerIdName,

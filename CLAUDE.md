@@ -169,7 +169,7 @@ Endpoint-specific: `"%s SOFIA EXECUTE\n"` (mod_sofia.c:232), `"%s RTC EXECUTE\n"
 - `Dialplan: channel ...` / `Chatplan: channel ...` → dialplan processing
 - `CHANNEL_DATA` → start of channel variable dump block
 - `Channel-Name: [value]` → channel field within a dump
-- `variable_name: [value]` → channel variable within a dump
+- `variable_name: [value]` → channel variable within a dump; `MessageKind::Variable.name` is the bare name, whichever narration spelled it
 - `Local SDP:` / `Remote SDP:` → start of SDP body block
 - `State Change ...` → channel state transition
 - Everything else → `General`

@@ -104,13 +104,12 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs, max_line_bytes: usize) -> io::Re
     Ok(())
 }
 
-pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> io::Result<()> {
+pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> anyhow::Result<()> {
     if args.dump {
-        return run_dump(dir, &args, max_line_bytes);
+        return Ok(run_dump(dir, &args, max_line_bytes)?);
     }
 
-    let cfg = config::load_config(args.config.as_deref())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let cfg = config::load_config(args.config.as_deref())?;
 
     let path = resolve_log_path(dir, args.file.as_deref());
 
@@ -192,5 +191,5 @@ pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> io::Result<(
 
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
-    result
+    Ok(result?)
 }

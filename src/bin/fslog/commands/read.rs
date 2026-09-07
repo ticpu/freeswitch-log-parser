@@ -7,9 +7,9 @@ use crate::cli::{build_filter, ReadArgs};
 use crate::files::{display_name, lossy_line_iter, open_log_reader, resolve_log_path};
 use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output, RunCtx, RunPlan};
 
-pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> io::Result<()> {
+pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> anyhow::Result<()> {
     let (dir, max_line_bytes) = (ctx.dir.as_path(), ctx.max_line_bytes);
-    let filter = build_filter(&args.filter, None, None);
+    let filter = build_filter(&args.filter, None, None)?;
 
     let (name, lines): (String, Box<dyn Iterator<Item = String>>) = match args.file.as_deref() {
         Some("-") => (
@@ -51,5 +51,5 @@ pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> io::Result<()>
         false,
         &run.hidden,
     );
-    print_epilogue(&plan, &run)
+    Ok(print_epilogue(&plan, &run)?)
 }

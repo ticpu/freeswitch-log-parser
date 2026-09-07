@@ -1,6 +1,6 @@
 //! `fslog tail` — follow the live log, printing each match as it lands.
 
-use std::io::{self, Write};
+use std::io::Write;
 
 use freeswitch_log_parser::{LogStream, SessionTracker};
 
@@ -9,8 +9,8 @@ use crate::files::{open_tail_reader, resolve_log_path};
 use crate::pager::is_broken_pipe;
 use crate::run::RunCtx;
 
-pub fn run(ctx: &RunCtx, args: &TailArgs, out: &mut dyn Write) -> io::Result<()> {
-    let filter = build_filter(&args.filter, None, None);
+pub fn run(ctx: &RunCtx, args: &TailArgs, out: &mut dyn Write) -> anyhow::Result<()> {
+    let filter = build_filter(&args.filter, None, None)?;
 
     let path = resolve_log_path(&ctx.dir, args.file.as_deref());
     let lines = open_tail_reader(&path, args.lines, ctx.max_line_bytes)?;

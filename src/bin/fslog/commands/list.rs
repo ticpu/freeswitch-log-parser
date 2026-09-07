@@ -1,11 +1,11 @@
 //! `fslog list` — the log files on hand, with their rotation dates and sizes.
 
-use std::io::{self, Write};
+use std::io::Write;
 
-use crate::files::{discover_log_files, format_size};
+use crate::files::{discover_log_files, display_name, format_size};
 use crate::run::RunCtx;
 
-pub fn run(ctx: &RunCtx, out: &mut dyn Write) -> io::Result<()> {
+pub fn run(ctx: &RunCtx, out: &mut dyn Write) -> anyhow::Result<()> {
     let files = discover_log_files(&ctx.dir)?;
     for f in &files {
         let date = f
@@ -21,7 +21,7 @@ pub fn run(ctx: &RunCtx, out: &mut dyn Write) -> io::Result<()> {
             })
             .unwrap_or_else(|| "(current)".to_string());
         let size = format_size(f.size);
-        let name = f.path.file_name().unwrap().to_string_lossy();
+        let name = display_name(&f.path);
         writeln!(out, "{date:<17} {size:>6}  {name}")?;
     }
     Ok(())

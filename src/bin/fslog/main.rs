@@ -24,16 +24,20 @@ use pager::PagedWriter;
 use run::RunCtx;
 
 /// Run `body` against the output sink, through a pager when asked for one.
-fn paged(pager: bool, body: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
+fn paged(
+    pager: bool,
+    body: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let mut out = PagedWriter::new(pager);
     let result = body(&mut out);
-    result.and(out.finish())
+    let finished = out.finish();
+    result.and(finished.map_err(anyhow::Error::from))
 }
 
 /// The one place a command meets its output sink. `monitor` owns the terminal
 /// itself, `tail` follows forever and `completions` writes a shell script —
 /// none of the three is something to hold in a pager.
-fn dispatch(cli: Cli) -> io::Result<()> {
+fn dispatch(cli: Cli) -> anyhow::Result<()> {
     let Cli {
         dir,
         color,

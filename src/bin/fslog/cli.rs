@@ -3,8 +3,8 @@
 
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
-use std::process;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use freeswitch_log_parser::{
@@ -82,11 +82,11 @@ pub struct FilterArgs {
     pub uuid: Vec<String>,
 
     /// Minimum log level
-    #[arg(short, long, value_name = "LEVEL")]
-    pub level: Option<String>,
+    #[arg(short, long, value_name = "LEVEL", value_parser = parse_level)]
+    pub level: Option<LogLevel>,
 
     /// Message category filter (repeatable, OR logic)
-    #[arg(short, long, value_name = "KIND")]
+    #[arg(short, long, value_name = "KIND", value_parser = parse_category)]
     pub category: Vec<String>,
 
     /// Fixed string substring search (case-insensitive)
@@ -104,8 +104,8 @@ pub struct FilterArgs {
     /// --match-blocks is given. That is deliberate: a term found in a dialplan
     /// regex is the configuration mentioning it, not the call. Entries a
     /// narrower scope kept out are counted and reported on stderr at end of run.
-    #[arg(long, value_name = "PATTERN")]
-    pub grep: Option<String>,
+    #[arg(long, value_name = "PATTERN", value_parser = parse_regex)]
+    pub grep: Option<regex::Regex>,
 
     /// Codec name in a negotiation or SDP block (repeatable, OR logic)
     #[arg(long, value_name = "NAME")]
@@ -279,48 +279,47 @@ fn level_labels() -> Vec<&'static str> {
         .collect()
 }
 
-pub fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) -> FilterConfig {
-    let min_level: Option<LogLevel> = filter.level.as_ref().map(|l| {
-        // `disable` is the switch's "log nothing" sentinel, not a severity.
-        match l.to_ascii_lowercase().parse::<LogLevel>() {
-            Ok(LogLevel::Disable) | Err(_) => {
-                eprintln!("invalid log level: {l}");
-                eprintln!("valid levels: {}", level_labels().join(", "));
-                process::exit(2);
-            }
-            Ok(level) => level,
+/// `disable` is the switch's "log nothing" sentinel, not a severity.
+fn parse_level(s: &str) -> Result<LogLevel, String> {
+    match s.to_ascii_lowercase().parse::<LogLevel>() {
+        Ok(LogLevel::Disable) | Err(_) => {
+            Err(format!("valid levels are {}", level_labels().join(", ")))
         }
-    });
-
-    for cat in &filter.category {
-        if !MessageKind::ALL_LABELS.contains(&cat.as_str()) {
-            eprintln!("invalid category: {cat}");
-            eprintln!("valid categories: {}", MessageKind::ALL_LABELS.join(", "));
-            process::exit(2);
-        }
+        Ok(level) => Ok(level),
     }
+}
 
-    let grep = filter.grep.as_ref().map(|pattern| {
-        regex::Regex::new(pattern).unwrap_or_else(|e| {
-            eprintln!("invalid regex: {e}");
-            process::exit(2);
-        })
-    });
+fn parse_category(s: &str) -> Result<String, String> {
+    if MessageKind::ALL_LABELS.contains(&s) {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "valid categories are {}",
+            MessageKind::ALL_LABELS.join(", ")
+        ))
+    }
+}
 
+fn parse_regex(s: &str) -> Result<regex::Regex, regex::Error> {
+    regex::Regex::new(s)
+}
+
+pub fn build_filter(
+    filter: &FilterArgs,
+    from: Option<&str>,
+    until: Option<&str>,
+) -> anyhow::Result<FilterConfig> {
     FilterConfig::new(FilterParams {
         uuid: filter.uuid.clone(),
         uuid_strict: true,
         match_blocks: filter.match_blocks,
-        min_level,
+        min_level: filter.level,
         category: filter.category.clone(),
         fgrep: filter.fgrep.clone(),
-        grep,
+        grep: filter.grep.clone(),
         codec: filter.codec.clone(),
         from_ts: from.map(stamp_lower_bound),
         until_ts: until.map(stamp_upper_bound),
     })
-    .unwrap_or_else(|e| {
-        eprintln!("fslog: {e}");
-        process::exit(2);
-    })
+    .context("building the entry filter")
 }

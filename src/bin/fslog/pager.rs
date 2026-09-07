@@ -57,7 +57,15 @@ impl PagedWriter {
 /// `-R` passes colour through, `-F` quits when the output fits one screen, `-X`
 /// leaves it on the terminal after quitting.
 fn spawn() -> Target {
-    let pager = std::env::var("FSLOG_PAGER").unwrap_or_else(|_| "less".to_string());
+    let pager = match std::env::var("FSLOG_PAGER") {
+        Ok(p) => p,
+        Err(std::env::VarError::NotPresent) => "less".to_string(),
+        // Set but unreadable is a misconfiguration, not an absent setting.
+        Err(e) => {
+            warn!("FSLOG_PAGER is set but unusable: {e}; falling back to less");
+            "less".to_string()
+        }
+    };
     let mut parts = pager.split_whitespace();
     let Some(program) = parts.next() else {
         return Target::Stdout(io::stdout());

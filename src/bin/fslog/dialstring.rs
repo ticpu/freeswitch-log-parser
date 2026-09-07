@@ -11,6 +11,7 @@ use std::str::FromStr;
 use freeswitch_log_parser::MessageKind;
 use freeswitch_types::commands::endpoint::DialString;
 use freeswitch_types::{BridgeDialString, EslArray};
+use log::debug;
 
 use crate::output::Palette;
 
@@ -30,14 +31,18 @@ pub fn dial_string_of(kind: &MessageKind) -> Option<&str> {
     }
 }
 
-/// Write the expansion of `arguments`. Silently writes nothing when the argument
-/// list does not parse as a dial string — the entry's own message still carries
-/// the raw text, so there is nothing to warn about.
+/// Write the expansion of `arguments`. Writes nothing when the argument list
+/// does not parse as a dial string — the entry's own message still carries the
+/// raw text, so the failure is a debug note, not a warning.
 pub fn print_dial_string(w: &mut dyn Write, arguments: &str, p: &Palette) -> io::Result<()> {
     let (label_color, value_color, reset) = (p.label, p.dim, p.reset);
 
-    let Ok(dial) = BridgeDialString::from_str(arguments) else {
-        return Ok(());
+    let dial = match BridgeDialString::from_str(arguments) {
+        Ok(dial) => dial,
+        Err(e) => {
+            debug!("the EXECUTE trace's dial-string argument does not parse: {e}");
+            return Ok(());
+        }
     };
 
     if let Some(vars) = dial.variables() {

@@ -111,16 +111,14 @@ fn build_segments(
         .collect()
 }
 
-pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> io::Result<()> {
+pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Result<()> {
     let dir = ctx.dir.as_path();
     if args.pattern.is_some() && args.filter.fgrep.is_some() {
-        return Err(io::Error::other(
-            "provide either a positional PATTERN or --fgrep, not both",
-        ));
+        anyhow::bail!("provide either a positional PATTERN or --fgrep, not both");
     }
 
     let (from, until) = args.window();
-    let mut filter = build_filter(&args.filter, from.as_deref(), until.as_deref());
+    let mut filter = build_filter(&args.filter, from.as_deref(), until.as_deref())?;
     if let Some(p) = &args.pattern {
         filter.set_fgrep(p)?;
     }
@@ -165,7 +163,7 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> io::Result<(
         files.clone()
     };
     if seeded.is_empty() {
-        return report_empty();
+        return Ok(report_empty()?);
     }
 
     let printer = args.filter.printer(ctx.color);
@@ -180,7 +178,7 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> io::Result<(
             &filter.for_discovery(),
         );
         if discovered.is_empty() {
-            return report_empty();
+            return Ok(report_empty()?);
         }
         let seeds: Vec<String> = discovered.into_iter().collect();
         filter.set_uuids(&seeds)?;
@@ -206,7 +204,7 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> io::Result<(
         args.related,
         &run.hidden,
     );
-    print_epilogue(&plan, &run)
+    Ok(print_epilogue(&plan, &run)?)
 }
 
 #[cfg(test)]

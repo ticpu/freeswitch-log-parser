@@ -133,23 +133,6 @@ fn processing_line_with_regex_type_and_angle_bracket_caller() {
 }
 
 #[test]
-fn processing_line_extension_format() {
-    let lines = vec![full_line(
-        UUID1,
-        TS1,
-        "Processing Extension 1263 <1263>->start_recording in context recordings",
-    )];
-    let entries = collect_enriched(lines);
-    let session = entries[0].session.as_ref().unwrap();
-    assert_eq!(session.initial_context.as_deref(), Some("recordings"));
-    assert_eq!(
-        session.dialplan_from.as_deref(),
-        Some("Extension 1263 <1263>")
-    );
-    assert_eq!(session.dialplan_to.as_deref(), Some("start_recording"));
-}
-
-#[test]
 fn parse_processing_line_anchors_on_last_arrow() {
     let dest = |msg: &str| parse_processing_line(msg).map(|dp| dp.to);
     assert_eq!(

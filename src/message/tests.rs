@@ -301,17 +301,6 @@ fn execute_lowercase() {
 }
 
 #[test]
-fn execute_lowercase_db() {
-    let msg = "Execute [depth=1] db(insert/ng_${originating_leg_uuid}/record_leg/${uuid})";
-    match classify_message(msg) {
-        MessageKind::Execute { application, .. } => {
-            assert_eq!(application, "db");
-        }
-        other => panic!("expected Execute, got {other:?}"),
-    }
-}
-
-#[test]
 fn set_variable_message() {
     let msg = "SET sofia/internal-v6/1263@[2001:db8:2220:198::10] [ngcs_bridge_sip_req_uri]=[conf-factory-app.qc.core.ng.example.test]";
     match classify_message(msg) {

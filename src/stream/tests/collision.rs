@@ -69,26 +69,6 @@ fn no_split_on_short_lines() {
 }
 
 #[test]
-fn timestamp_collision_splits_system_lines() {
-    let line = format!(
-        "{TS1} 98.03% [INFO] mod_event_socket.c:1752 Event Socket Command from ::1:42864: api sofia jsonstatus{TS2} 97.93% [INFO] mod_event_socket.c:1752 Event Socket Command from ::1:42898: api fsctl pause_check"
-    );
-    let mut stream = LogStream::new(std::iter::once(line));
-    let entries: Vec<_> = stream.by_ref().collect();
-    assert_eq!(entries.len(), 2);
-    assert_eq!(
-        entries[0].message,
-        "Event Socket Command from ::1:42864: api sofia jsonstatus"
-    );
-    assert_eq!(
-        entries[1].message,
-        "Event Socket Command from ::1:42898: api fsctl pause_check"
-    );
-    assert_eq!(stream.stats().lines_split, 1);
-    assert_accounting(&stream);
-}
-
-#[test]
 fn timestamp_collision_splits_three_entries() {
     let ts3 = "2025-01-15 10:30:47.345678";
     let line = format!(

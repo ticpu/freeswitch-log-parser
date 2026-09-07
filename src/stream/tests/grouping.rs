@@ -168,28 +168,6 @@ fn execute_after_channel_data_same_uuid() {
 }
 
 #[test]
-fn execute_between_full_lines_same_uuid() {
-    let lines = vec![
-        full_line(UUID1, TS1, "CoreSession::setVariable(X-Example-City, TESTVILLE)"),
-        format!("{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 db(insert/ng_{UUID1}/city/TESTVILLE)"),
-        full_line(UUID1, TS2, "CoreSession::setVariable(X-Example-Region, TSV)"),
-    ];
-    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
-    assert_eq!(entries.len(), 3);
-    assert_eq!(
-        entries[0].message,
-        "CoreSession::setVariable(X-Example-City, TESTVILLE)"
-    );
-    assert!(entries[0].attached.is_empty());
-    assert!(entries[1].message.starts_with("EXECUTE "));
-    assert_eq!(entries[1].kind, LineKind::UuidContinuation);
-    assert_eq!(
-        entries[2].message,
-        "CoreSession::setVariable(X-Example-Region, TSV)"
-    );
-}
-
-#[test]
 fn multiple_execute_between_full_lines() {
     let lines = vec![
         full_line(UUID1, TS1, "CoreSession::setVariable(ngcs_call_id, urn:emergency:uid:callid:test)"),

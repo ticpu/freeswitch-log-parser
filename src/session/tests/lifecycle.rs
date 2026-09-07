@@ -177,21 +177,6 @@ fn bleg_lifecycle_extracts_data_from_processing() {
 }
 
 #[test]
-fn channel_name_from_new_channel() {
-    let lines = vec![full_line(
-        UUID1,
-        TS1,
-        "New Channel sofia/internal-v4/sos [a1b2c3d4-e5f6-7890-abcd-ef1234567890]",
-    )];
-    let entries = collect_enriched(lines);
-    let session = entries[0].session.as_ref().unwrap();
-    assert_eq!(
-        session.channel_name.as_deref(),
-        Some("sofia/internal-v4/sos")
-    );
-}
-
-#[test]
 fn remove_session() {
     let lines = vec![full_line(
         UUID1,

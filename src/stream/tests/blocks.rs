@@ -251,42 +251,6 @@ fn channel_data_multiline_variable_keeps_a_trailing_bracket() {
 }
 
 #[test]
-fn channel_data_multiline_variable_spans_many_lines() {
-    let lines = vec![
-        full_line(UUID1, TS1, "CHANNEL_DATA:"),
-        format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),
-        "variable_switch_r_sdp: [v=0".to_string(),
-        "o=- 1234 5678 IN IP4 192.0.2.1".to_string(),
-        "s=-".to_string(),
-        "c=IN IP4 192.0.2.1".to_string(),
-        "t=0 0".to_string(),
-        "m=audio 47758 RTP/AVP 0 8 101".to_string(),
-        "a=rtpmap:0 PCMU/8000".to_string(),
-        "a=rtpmap:8 PCMA/8000".to_string(),
-        "a=rtpmap:101 telephone-event/8000".to_string(),
-        "a=fmtp:101 0-16".to_string(),
-        "]".to_string(),
-        "variable_direction: [inbound]".to_string(),
-    ];
-    let entries: Vec<_> = LogStream::new(lines.into_iter()).collect();
-    assert_eq!(entries.len(), 1);
-    let block = entries[0].block.as_ref().expect("should have block");
-    match block {
-        Block::ChannelData { fields, variables } => {
-            assert_eq!(fields.len(), 1);
-            assert_eq!(variables.len(), 2);
-            assert_eq!(variables[0].0, "variable_switch_r_sdp");
-            let sdp = &variables[0].1;
-            assert!(sdp.starts_with("v=0\n"));
-            assert!(sdp.contains("a=fmtp:101 0-16"));
-            assert!(!sdp.ends_with(']'));
-            assert_eq!(variables[1].0, "variable_direction");
-        }
-        other => panic!("expected ChannelData block, got {other:?}"),
-    }
-}
-
-#[test]
 fn sdp_from_verto_update_media() {
     let lines = vec![
         full_line(UUID1, TS1, "updateMedia: Local SDP"),

@@ -6,6 +6,8 @@ use std::ops::Range;
 use super::processing::ProcessingParts;
 use super::*;
 
+const UUID1: &str = "00112233-4455-6677-8899-aabbccddeeff";
+
 fn parts(msg: &str) -> ProcessingParts {
     processing_parts(msg).expect("should parse")
 }
@@ -16,6 +18,32 @@ fn spans(msg: &str) -> Vec<(FieldKind, &str)> {
         .into_iter()
         .map(|f| (f.kind, &msg[f.range]))
         .collect()
+}
+
+fn entry_from(lines: &[String]) -> crate::stream::LogEntry {
+    crate::stream::LogStream::new(lines.iter().cloned())
+        .next()
+        .expect("one entry")
+}
+
+fn text_at<'a>(entry: &'a crate::stream::LogEntry, f: &Field) -> &'a str {
+    match f.at {
+        FieldLocation::Message => &entry.message[f.range.clone()],
+        FieldLocation::Attached(i) => &entry.attached.get(i).expect("line")[f.range.clone()],
+    }
+}
+
+fn field(kind: FieldKind, range: Range<usize>) -> Field {
+    Field {
+        kind,
+        at: FieldLocation::Message,
+        range,
+    }
+}
+
+/// The primary line opening a CHANNEL_DATA dump under `UUID1`.
+fn header() -> String {
+    format!("{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:")
 }
 
 #[test]
@@ -347,7 +375,13 @@ fn bracketed_ipv6_channel_host_excludes_brackets() {
 #[test]
 fn channel_host_with_port_strips_it() {
     let msg = "EXECUTE [depth=0] sofia/internal/1263@192.0.2.1:5060 answer";
-    assert_eq!(spans(msg)[1], (FieldKind::IpAddr, "192.0.2.1"));
+    assert_eq!(
+        spans(msg),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1:5060"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+        ]
+    );
 }
 
 #[test]
@@ -418,7 +452,13 @@ fn paren_channel_state_line_emits_channel() {
 #[test]
 fn hangup_and_new_channel_emit_channel() {
     let hangup = "Hangup sofia/internal/1263@192.0.2.1 [CS_CONSUME_MEDIA] [NORMAL_CLEARING]";
-    assert_eq!(spans(hangup)[0].1, "sofia/internal/1263@192.0.2.1");
+    assert_eq!(
+        spans(hangup),
+        [
+            (FieldKind::ChannelName, "sofia/internal/1263@192.0.2.1"),
+            (FieldKind::IpAddr, "192.0.2.1"),
+        ]
+    );
 
     let new = "New Channel sofia/internal/1263@192.0.2.1 [00112233-4455-6677-8899-aabbccddeeff]";
     assert_eq!(
@@ -493,27 +533,10 @@ fn general_message_emits_nothing() {
     assert_eq!(spans("Activating RTCP PORT 4001"), []);
 }
 
-const UUID1: &str = "00112233-4455-6677-8899-aabbccddeeff";
-
-fn entry_from(lines: &[String]) -> crate::stream::LogEntry {
-    crate::stream::LogStream::new(lines.iter().cloned())
-        .next()
-        .expect("one entry")
-}
-
-fn text_at<'a>(entry: &'a crate::stream::LogEntry, f: &Field) -> &'a str {
-    match f.at {
-        FieldLocation::Message => &entry.message[f.range.clone()],
-        FieldLocation::Attached(i) => &entry.attached.get(i).expect("line")[f.range.clone()],
-    }
-}
-
 #[test]
 fn attached_spans_index_the_raw_line_including_its_prefix() {
     let lines = vec![
-        format!(
-            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
-        ),
+        header(),
         format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
     ];
     let entry = entry_from(&lines);
@@ -535,9 +558,7 @@ fn attached_spans_index_the_raw_line_including_its_prefix() {
 #[test]
 fn message_and_attached_locations_stay_separate() {
     let lines = vec![
-        format!(
-            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
-        ),
+        header(),
         format!("{UUID1} Channel-Name: [sofia/internal/1263@192.0.2.1]"),
     ];
     let entry = entry_from(&lines);
@@ -556,9 +577,7 @@ fn message_and_attached_locations_stay_separate() {
 #[test]
 fn bare_continuation_has_no_prefix_to_skip() {
     let lines = vec![
-        format!(
-            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
-        ),
+        header(),
         format!("{UUID1} variable_sip_full_from: [x"),
         "Caller-Destination-Number: [1263]".to_string(),
     ];
@@ -577,9 +596,7 @@ fn bare_continuation_has_no_prefix_to_skip() {
 #[test]
 fn a_whole_value_span_is_not_truncated() {
     let lines = vec![
-        format!(
-            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
-        ),
+        header(),
         format!("{UUID1} variable_sip_h_X-Trace: [<http://192.0.2.9/t?id=7>]"),
     ];
     let entry = entry_from(&lines);
@@ -599,14 +616,6 @@ fn a_span_at_a_location_the_entry_lacks_is_not_truncated() {
         range: 0..1,
     };
     assert!(!entry.is_truncated(&f));
-}
-
-fn field(kind: FieldKind, range: Range<usize>) -> Field {
-    Field {
-        kind,
-        at: FieldLocation::Message,
-        range,
-    }
 }
 
 #[test]
@@ -676,9 +685,7 @@ fn a_span_is_validated_even_when_it_is_not_replaced() {
 #[test]
 fn render_with_rewrites_message_and_attached_separately() {
     let lines = vec![
-        format!(
-            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
-        ),
+        header(),
         format!("{UUID1} Caller-Caller-ID-Number: [15555550100]"),
     ];
     let entry = entry_from(&lines);
@@ -695,9 +702,7 @@ fn render_with_rewrites_message_and_attached_separately() {
 #[test]
 fn render_with_replacing_every_field_keeps_the_uuid_prefix_addressable() {
     let lines = vec![
-        format!(
-            "{UUID1} 2026-02-01 10:00:00.000000 95.97% [DEBUG] mod_dptools.c:1999 CHANNEL_DATA:"
-        ),
+        header(),
         format!("{UUID1} Channel-Name: [sofia/internal/1263@192.0.2.1]"),
     ];
     let entry = entry_from(&lines);

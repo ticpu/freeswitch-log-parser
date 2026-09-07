@@ -112,9 +112,9 @@ pub(super) type LineIter = Box<dyn Iterator<Item = String>>;
 pub(super) fn monitor_segments(
     dir: &Path,
     path: &Path,
-    open_current: fn(&Path, usize) -> io::Result<LineIter>,
+    open_current: fn(&Path, usize) -> anyhow::Result<LineIter>,
     max_line_bytes: usize,
-) -> io::Result<Vec<(String, LineIter)>> {
+) -> anyhow::Result<Vec<(String, LineIter)>> {
     let mut segments: Vec<(String, LineIter)> = Vec::new();
 
     match discover_log_files(dir) {

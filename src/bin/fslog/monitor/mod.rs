@@ -57,7 +57,7 @@ fn process_log(
     context_filter: ContextFilter,
     max_line_bytes: usize,
     linger: Duration,
-) -> io::Result<AppState> {
+) -> anyhow::Result<AppState> {
     let segments = monitor_segments(dir, path, open_log_reader, max_line_bytes)?;
 
     let (chain, _) = TrackedChain::new(segments);
@@ -80,7 +80,7 @@ pub fn run_dump(
     args: &MonitorArgs,
     max_line_bytes: usize,
     linger: Duration,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let path = resolve_log_path(dir, args.file.as_deref());
 
     let context_filter = args
@@ -110,7 +110,7 @@ pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> anyhow::Resu
     let linger = Duration::from_secs(cfg.monitor.hangup_linger_seconds);
 
     if args.dump {
-        return Ok(run_dump(dir, &args, max_line_bytes, linger)?);
+        return run_dump(dir, &args, max_line_bytes, linger);
     }
 
     let path = resolve_log_path(dir, args.file.as_deref());

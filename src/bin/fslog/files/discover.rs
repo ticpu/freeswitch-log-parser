@@ -2,9 +2,9 @@
 //! reach.
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use freeswitch_log_parser::{log_rotation_stamp, stamp_lower_bound, stamp_upper_bound};
 
 pub struct LogFile {
@@ -13,10 +13,12 @@ pub struct LogFile {
     pub size: u64,
 }
 
-pub fn discover_log_files(dir: &Path) -> io::Result<Vec<LogFile>> {
+pub fn discover_log_files(dir: &Path) -> anyhow::Result<Vec<LogFile>> {
     let mut files = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+    let listing =
+        fs::read_dir(dir).with_context(|| format!("listing log directory {}", dir.display()))?;
+    for entry in listing {
+        let entry = entry.with_context(|| format!("reading an entry of {}", dir.display()))?;
         let path = entry.path();
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
@@ -25,7 +27,9 @@ pub fn discover_log_files(dir: &Path) -> io::Result<Vec<LogFile>> {
         if !name.starts_with("freeswitch.log") {
             continue;
         }
-        let meta = entry.metadata()?;
+        let meta = entry
+            .metadata()
+            .with_context(|| format!("stat {}", path.display()))?;
         if !meta.is_file() {
             continue;
         }

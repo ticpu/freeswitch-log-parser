@@ -2,9 +2,10 @@
 //! the read cap they share.
 
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use freeswitch_log_parser::{
     decode_log_line, read_log_line_capped, read_log_lines_capped, trim_capped_tail, OverCap,
     Utf8Decode,
@@ -54,8 +55,9 @@ impl Drop for CapReport {
     }
 }
 
-pub fn open_log_file(path: &Path) -> io::Result<Box<dyn BufRead>> {
-    let file = fs::File::open(path)?;
+pub fn open_log_file(path: &Path) -> anyhow::Result<Box<dyn BufRead>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("opening log file {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext == "xz" {
         Ok(Box::new(BufReader::new(XzDecoder::new(file))))
@@ -67,7 +69,7 @@ pub fn open_log_file(path: &Path) -> io::Result<Box<dyn BufRead>> {
 pub fn open_log_reader(
     path: &Path,
     max_line_bytes: usize,
-) -> io::Result<Box<dyn Iterator<Item = String>>> {
+) -> anyhow::Result<Box<dyn Iterator<Item = String>>> {
     let reader = open_log_file(path)?;
     Ok(lossy_line_iter(reader, display_name(path), max_line_bytes))
 }
@@ -212,11 +214,15 @@ fn read_tail_context(
     path: &Path,
     n_lines: usize,
     max_line_bytes: usize,
-) -> io::Result<(Vec<String>, u64)> {
+) -> anyhow::Result<(Vec<String>, u64)> {
     use std::io::{Seek, SeekFrom};
 
-    let mut file = fs::File::open(path)?;
-    let len = file.metadata()?.len();
+    let mut file =
+        fs::File::open(path).with_context(|| format!("opening log file {}", path.display()))?;
+    let len = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
 
     if n_lines == 0 || len == 0 {
         return Ok((Vec::new(), len));
@@ -226,7 +232,8 @@ fn read_tail_context(
     let seek_pos = len - seek_back;
 
     if seek_pos > 0 {
-        file.seek(SeekFrom::Start(seek_pos))?;
+        file.seek(SeekFrom::Start(seek_pos))
+            .with_context(|| format!("seeking to {seek_pos} in {}", path.display()))?;
     }
 
     let mut lines: Vec<String> = lossy_line_iter(
@@ -251,13 +258,15 @@ pub fn open_tail_reader(
     path: &Path,
     initial_lines: usize,
     max_line_bytes: usize,
-) -> io::Result<Box<dyn Iterator<Item = String>>> {
+) -> anyhow::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 
     let (context, file_len) = read_tail_context(path, initial_lines, max_line_bytes)?;
 
-    let mut file = fs::File::open(path)?;
-    file.seek(SeekFrom::Start(file_len))?;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("opening log file {}", path.display()))?;
+    file.seek(SeekFrom::Start(file_len))
+        .with_context(|| format!("seeking to the end of {}", path.display()))?;
     let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes);
 
     Ok(Box::new(context.into_iter().chain(tail)))
@@ -267,15 +276,20 @@ pub fn open_tail_reader(
 pub fn open_full_tail_reader(
     path: &Path,
     max_line_bytes: usize,
-) -> io::Result<Box<dyn Iterator<Item = String>>> {
+) -> anyhow::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 
     let reader = open_log_file(path)?;
-    let end_pos = fs::File::open(path)?.metadata()?.len();
+    let end_pos = fs::File::open(path)
+        .and_then(|f| f.metadata())
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
     let lines = lossy_line_iter(reader, display_name(path), max_line_bytes);
 
-    let mut file = fs::File::open(path)?;
-    file.seek(SeekFrom::Start(end_pos))?;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("opening log file {}", path.display()))?;
+    file.seek(SeekFrom::Start(end_pos))
+        .with_context(|| format!("seeking to the end of {}", path.display()))?;
     let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes);
 
     Ok(Box::new(lines.chain(tail)))
@@ -283,6 +297,8 @@ pub fn open_full_tail_reader(
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::*;
 
     /// Drive the follower over a fixed buffer. Every assertion below consumes

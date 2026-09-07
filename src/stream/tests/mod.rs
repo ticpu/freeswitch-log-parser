@@ -35,10 +35,11 @@ fn assert_accounting(stream: &LogStream<impl Iterator<Item = String>>) {
         stats.unaccounted_lines(),
         0,
         "line accounting invariant violated: \
-         processed={} + split={} != in_entries={} + empty_orphan={}",
+         processed={} + split={} != in_entries={} + empty_orphan={} + dropped={}",
         stats.lines_processed,
         stats.lines_split,
         stats.lines_in_entries,
         stats.lines_empty_orphan,
+        stats.lines_dropped,
     );
 }

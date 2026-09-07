@@ -104,22 +104,6 @@ fn drain_unclassified() {
     assert_eq!(stream.stats().lines_unclassified, 1);
 }
 
-// --- Line accounting tests ---
-
-fn assert_accounting(stream: &LogStream<impl Iterator<Item = String>>) {
-    let stats = stream.stats();
-    assert_eq!(
-        stats.unaccounted_lines(),
-        0,
-        "line accounting invariant violated: \
-         processed={} + split={} != in_entries={} + empty_orphan={}",
-        stats.lines_processed,
-        stats.lines_split,
-        stats.lines_in_entries,
-        stats.lines_empty_orphan,
-    );
-}
-
 #[test]
 fn accounting_full_lines() {
     let lines = vec![

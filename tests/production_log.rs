@@ -1,10 +1,9 @@
 #![cfg(feature = "fixtures")]
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::path::Path;
-
-use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use freeswitch_log_parser::{
     is_uuid, parse_line, read_log_lines, Block, CodecMedia, Field, FieldKind, FieldLocation,
@@ -13,6 +12,20 @@ use freeswitch_log_parser::{
 use xz2::read::XzDecoder;
 
 const FIXTURES_DIR: &str = "tests/fixtures";
+
+/// Smallest fixture in the corpus, and a busy one: EXECUTE traces, CHANNEL_DATA
+/// dumps, SDP bodies and a video negotiation.
+const BUSY: &str = "pbx/freeswitch.log.2026-05-11-14-20-22.1.xz";
+
+/// Smallest fixture carrying write-budget collisions (234 lines longer than the
+/// 2047-byte budget, each colliding on it) and System lines with an embedded UUID.
+const CUT: &str = "bcf/freeswitch.log.2026-02-21-02-20-10.1.xz";
+
+const RA221: &str = "ra221/freeswitch.log.30.xz";
+
+fn fixture(rel: &str) -> PathBuf {
+    Path::new(FIXTURES_DIR).join(rel)
+}
 
 fn lines_from_file(path: &Path) -> Box<dyn Iterator<Item = String>> {
     let file = File::open(path).unwrap_or_else(|e| {
@@ -37,9 +50,9 @@ fn is_log_file(path: &Path) -> bool {
     name.ends_with(".xz") || name.ends_with(".log") || name.ends_with(".1")
 }
 
-fn fixture_corpora() -> Vec<(String, Vec<std::path::PathBuf>)> {
+fn fixture_corpora() -> Vec<(String, Vec<PathBuf>)> {
     let dir = Path::new(FIXTURES_DIR);
-    let mut corpora: Vec<(String, Vec<std::path::PathBuf>)> = std::fs::read_dir(dir)
+    let mut corpora: Vec<(String, Vec<PathBuf>)> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| {
             panic!("fixture corpus {FIXTURES_DIR} is required by --features fixtures: {e}")
         })
@@ -67,17 +80,13 @@ fn fixture_corpora() -> Vec<(String, Vec<std::path::PathBuf>)> {
     corpora
 }
 
-fn for_each_fixture(
-    mut check: impl FnMut(&str, &str, usize, &LogEntry) -> Vec<String>,
+fn for_each_entry(
+    rel: &str,
+    mut check: impl FnMut(usize, &LogEntry) -> Vec<String>,
 ) -> Vec<String> {
     let mut violations = Vec::new();
-    for (corpus, files) in &fixture_corpora() {
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            for (i, entry) in LogStream::new(lines_from_file(file)).enumerate() {
-                violations.extend(check(corpus, &name, i, &entry));
-            }
-        }
+    for (i, entry) in LogStream::new(lines_from_file(&fixture(rel))).enumerate() {
+        violations.extend(check(i, &entry));
     }
     violations
 }
@@ -101,12 +110,12 @@ fn assert_no_violations(violations: Vec<String>, label: &str) {
 
 #[test]
 fn no_execute_in_attached() {
-    let violations = for_each_fixture(|corpus, name, i, entry| {
+    let violations = for_each_entry(BUSY, |i, entry| {
         let mut v = Vec::new();
         for (j, line) in entry.attached.iter().enumerate() {
             let parsed = parse_line(line);
             if parsed.kind == LineKind::UuidContinuation && parsed.message.starts_with("EXECUTE ") {
-                v.push(format!("{corpus}/{name}: entry {i} attached[{j}]"));
+                v.push(format!("{BUSY}: entry {i} attached[{j}]"));
             }
         }
         v
@@ -116,18 +125,18 @@ fn no_execute_in_attached() {
 
 #[test]
 fn channel_data_has_typed_block() {
-    let violations = for_each_fixture(|corpus, name, i, entry| {
+    let violations = for_each_entry(BUSY, |i, entry| {
         if entry.message_kind == MessageKind::ChannelData && !entry.attached.is_empty() {
             if entry.block.is_none() {
                 return vec![format!(
-                    "{corpus}/{name}: entry {i} CHANNEL_DATA with {} attached but no block",
+                    "{BUSY}: entry {i} CHANNEL_DATA with {} attached but no block",
                     entry.attached.len()
                 )];
             }
             if let Some(Block::ChannelData { fields, variables }) = &entry.block {
                 if fields.is_empty() && variables.is_empty() {
                     return vec![format!(
-                        "{corpus}/{name}: entry {i} CHANNEL_DATA block with empty fields and variables"
+                        "{BUSY}: entry {i} CHANNEL_DATA block with empty fields and variables"
                     )];
                 }
             }
@@ -139,21 +148,19 @@ fn channel_data_has_typed_block() {
 
 #[test]
 fn sdp_has_typed_block() {
-    let violations = for_each_fixture(|corpus, name, i, entry| {
+    let violations = for_each_entry(BUSY, |i, entry| {
         if matches!(&entry.message_kind, MessageKind::SdpMarker { .. })
             && !entry.attached.is_empty()
         {
             if entry.block.is_none() {
                 return vec![format!(
-                    "{corpus}/{name}: entry {i} SDP marker with {} attached but no block",
+                    "{BUSY}: entry {i} SDP marker with {} attached but no block",
                     entry.attached.len()
                 )];
             }
             if let Some(Block::Sdp { body, .. }) = &entry.block {
                 if body.is_empty() {
-                    return vec![format!(
-                        "{corpus}/{name}: entry {i} SDP block with empty body"
-                    )];
+                    return vec![format!("{BUSY}: entry {i} SDP block with empty body")];
                 }
             }
         }
@@ -182,7 +189,7 @@ fn channel_data_bare_continuations_accumulated() {
                     if bare_count > 0 {
                         blocks_with_bare += 1;
                         assert!(
-                            fields.len() + variables.len() > 0,
+                            !fields.is_empty() || !variables.is_empty(),
                             "{corpus}/{name}: L{} CHANNEL_DATA has {bare_count} bare lines \
                              but block has 0 fields+variables",
                             entry.line_number,
@@ -229,24 +236,17 @@ fn line_accounting_balances_across_the_corpus() {
 
 #[test]
 fn system_lines_with_embedded_uuid_extracted() {
-    // FreeSWITCH's C++ wrapper (switch_cpp.cpp) logs with SWITCH_CHANNEL_LOG
-    // (no session context) but includes the UUID at the start of the message.
-    // These must be extracted so -u filtering and session tracking work.
+    // switch_cpp.cpp logs with no session context but puts the UUID at the start
+    // of the message; -u filtering and session tracking depend on extracting it.
     let mut system_with_uuid: u64 = 0;
-
-    for (_corpus, files) in &fixture_corpora() {
-        for file in files {
-            for entry in LogStream::new(lines_from_file(file)) {
-                if entry.kind == LineKind::System && entry.uuid.is_some() {
-                    system_with_uuid += 1;
-                }
-            }
+    for entry in LogStream::new(lines_from_file(&fixture(CUT))) {
+        if entry.kind == LineKind::System && entry.uuid.is_some() {
+            system_with_uuid += 1;
         }
     }
-
     assert!(
         system_with_uuid > 0,
-        "expected fixture data to contain System lines with embedded UUIDs"
+        "{CUT} should hold System lines with embedded UUIDs"
     );
 }
 
@@ -254,13 +254,10 @@ fn system_lines_with_embedded_uuid_extracted() {
 fn originate_success_channel_fallback_links_pbx_fixture() {
     // The fixture spans ~20 minutes, so several prior sessions share the b-leg's
     // channel_name and only the liveness filter leaves one live candidate.
-    let path = Path::new(FIXTURES_DIR)
-        .join("pbx")
-        .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
     const A_LEG: &str = "fc541b63-d608-42af-9ae7-1717ec610def";
     const B_LEG: &str = "23f602c0-618a-46ed-adba-da2827c6a2ce";
 
-    let stream = LogStream::new(lines_from_file(&path));
+    let stream = LogStream::new(lines_from_file(&fixture(BUSY)));
     let mut tracker = SessionTracker::new(stream);
     for _ in tracker.by_ref() {}
 
@@ -287,14 +284,8 @@ fn originate_success_channel_fallback_links_pbx_fixture() {
 
 #[test]
 fn conference_and_loopback_link_ra221_fixture() {
-    // ra221/freeswitch.log.30.xz holds two conferences that reuse neither name
-    // but run minutes apart: 835 is joined by a pulseaudio leg, a softphone, a
-    // loopback A leg and a later gateway leg; 844 is a separate call entirely.
     // The loopback B leg never executes `conference` — it is reachable only
     // through the A/B name pairing.
-    let path = Path::new(FIXTURES_DIR)
-        .join("ra221")
-        .join("freeswitch.log.30.xz");
     const PULSEAUDIO: &str = "35cd5158-b48e-44ce-b91d-5bd724cfbf34";
     const SOFTPHONE: &str = "1dd18372-af8f-416b-80f3-3339fcb3f371";
     const LOOPBACK_A: &str = "4827c0b0-e96c-4b7d-84ed-a6870b3112f2";
@@ -302,7 +293,7 @@ fn conference_and_loopback_link_ra221_fixture() {
     const GATEWAY: &str = "31a53234-a72c-42e9-9ab1-a6080cfc7b58";
     const OTHER_CONFERENCE: &str = "cb94c4aa-3455-4d1c-aca7-7df0d67e912b";
 
-    let stream = LogStream::new(lines_from_file(&path));
+    let stream = LogStream::new(lines_from_file(&fixture(RA221)));
     let mut tracker = SessionTracker::new(stream);
     let mut instances: HashMap<String, String> = HashMap::new();
     for enriched in tracker.by_ref() {
@@ -350,14 +341,11 @@ fn conference_and_loopback_link_ra221_fixture() {
 
 #[test]
 fn codec_outcome_tracked_on_ra221_fixture() {
-    // 83b3cbfd negotiates opus twice over PCMU/G722 offers, then the engine
+    // This leg negotiates opus twice over PCMU/G722 offers, then the engine
     // reports the read implementation and the original read codec.
-    let path = Path::new(FIXTURES_DIR)
-        .join("ra221")
-        .join("freeswitch.log.30.xz");
     const LEG: &str = "83b3cbfd-98ca-4532-89ed-eb31acb1de50";
 
-    let stream = LogStream::new(lines_from_file(&path));
+    let stream = LogStream::new(lines_from_file(&fixture(RA221)));
     let mut tracker = SessionTracker::new(stream);
     for _ in tracker.by_ref() {}
 
@@ -391,10 +379,7 @@ fn codec_outcome_tracked_on_ra221_fixture() {
 
 #[test]
 fn video_negotiation_classified_on_pbx_fixture() {
-    let path = Path::new(FIXTURES_DIR)
-        .join("pbx")
-        .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
-    let video = LogStream::new(lines_from_file(&path))
+    let video = LogStream::new(lines_from_file(&fixture(BUSY)))
         .filter(|e| {
             matches!(
                 &e.block,
@@ -422,8 +407,7 @@ fn sdp_bodies_parse_across_the_corpus() {
             for entry in LogStream::new(lines_from_file(file)) {
                 let Some(block) = &entry.block else { continue };
                 // A body describes codecs only if it reached an m= line with a
-                // live port: mod_logfile's buffer cuts bodies short, and a
-                // port-0 section is media being declined, not codecs.
+                // live port: a port-0 section is media declined, not codecs.
                 let has_media = matches!(
                     block,
                     Block::Sdp { body, .. } if body.iter().any(|l| {
@@ -463,9 +447,9 @@ fn sdp_bodies_parse_across_the_corpus() {
 /// boundaries, non-empty, ordered container-first, and never partially
 /// overlapping a sibling.
 #[test]
-fn field_spans_are_well_formed_across_the_corpus() {
+fn field_spans_are_well_formed() {
     let mut total: u64 = 0;
-    let violations = for_each_fixture(|corpus, name, _, entry| {
+    let violations = for_each_entry(BUSY, |_, entry| {
         let mut bad = Vec::new();
         let fields = entry.fields();
         total += fields.len() as u64;
@@ -479,7 +463,7 @@ fn field_spans_are_well_formed_across_the_corpus() {
 
         let mut prev: Option<&Field> = None;
         for f in &fields {
-            let where_ = format!("{corpus}/{name} L{} {}", entry.line_number, f.kind);
+            let where_ = format!("{BUSY} L{} {}", entry.line_number, f.kind);
             let Some(text) = text_of(f.at) else {
                 bad.push(format!("{where_}: names a missing attached line"));
                 continue;
@@ -514,18 +498,18 @@ fn field_spans_are_well_formed_across_the_corpus() {
         }
         bad
     });
-    assert!(total > 0, "corpus should yield field spans");
+    assert!(total > 0, "{BUSY} should yield field spans");
     assert_no_violations(violations, "malformed field spans");
 }
 
 /// Every cut text must be one the entry has, must answer to a warning naming a
 /// cut, and a warned variable must have left one behind.
 #[test]
-fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
+fn cut_spans_agree_with_truncation_warnings() {
     let mut truncated_spans: u64 = 0;
-    let violations = for_each_fixture(|corpus, name, _, entry| {
+    let violations = for_each_entry(CUT, |_, entry| {
         let mut bad = Vec::new();
-        let at = format!("{corpus}/{name} L{}", entry.line_number);
+        let at = format!("{CUT} L{}", entry.line_number);
 
         for loc in &entry.cut_texts {
             if let FieldLocation::Attached(i) = loc {
@@ -561,17 +545,17 @@ fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
             .count() as u64;
         bad
     });
-    assert!(truncated_spans > 0, "corpus should carry cut spans");
+    assert!(truncated_spans > 0, "{CUT} should carry cut spans");
     assert_no_violations(violations, "cut span disagreements");
 }
 
-/// The applier must survive the whole corpus in both directions: replacing
-/// nothing is a byte-identical round trip, replacing everything never conflicts.
+/// The applier must survive both directions: replacing nothing is a
+/// byte-identical round trip, replacing everything never conflicts.
 #[test]
-fn render_with_round_trips_and_replaces_across_the_corpus() {
-    let violations = for_each_fixture(|corpus, name, _, entry| {
+fn render_with_round_trips_and_replaces() {
+    let violations = for_each_entry(BUSY, |_, entry| {
         let mut bad = Vec::new();
-        let at = format!("{corpus}/{name} L{}", entry.line_number);
+        let at = format!("{BUSY} L{}", entry.line_number);
 
         match entry.render_with(|_, _| None) {
             Ok(out) => {

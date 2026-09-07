@@ -39,6 +39,16 @@ fn read<T: FromStr>(
     }
 }
 
+/// Where an entry's dump values come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DumpSource {
+    /// A reassembled block holds them, so the raw attached lines are skipped:
+    /// re-applying one would clobber a multi-line value with its first fragment.
+    Block,
+    /// The attached lines are all there is.
+    AttachedLines,
+}
+
 /// Mutable per-UUID state accumulator, updated as entries are processed.
 ///
 /// Fields are `None` until the corresponding data is first seen in the stream.
@@ -225,7 +235,10 @@ impl SessionState {
     /// Absorb an entry, returning whatever readings its values defeated.
     pub(super) fn update_from_entry(&mut self, entry: &LogEntry) -> Vec<ParseWarning> {
         let mut warnings = Vec::new();
-        let block_has_channel_data = matches!(entry.block, Some(Block::ChannelData { .. }));
+        let dump = match entry.block {
+            Some(Block::ChannelData { .. }) => DumpSource::Block,
+            _ => DumpSource::AttachedLines,
+        };
         if let Some(Block::ChannelData { fields, variables }) = &entry.block {
             for (name, value) in fields {
                 self.apply_channel_field(name, value, &mut warnings);
@@ -287,7 +300,7 @@ impl SessionState {
 
         for attached in &entry.attached {
             let parsed = parse_line(attached);
-            self.update_from_message(parsed.message, block_has_channel_data, &mut warnings);
+            self.update_from_message(parsed.message, dump, &mut warnings);
         }
         warnings
     }
@@ -344,16 +357,13 @@ impl SessionState {
     fn update_from_message(
         &mut self,
         msg: &str,
-        block_provides_channel_data: bool,
+        dump: DumpSource,
         warnings: &mut Vec<ParseWarning>,
     ) {
         let kind = classify_message(msg);
         match &kind {
-            // A ChannelData block already carries these — re-applying the raw
-            // attached lines would clobber reassembled multi-line values with
-            // their opening fragment.
             MessageKind::Variable { .. } | MessageKind::ChannelField { .. }
-                if block_provides_channel_data => {}
+                if dump == DumpSource::Block => {}
             kind => self.apply_kind(kind, warnings),
         }
         self.apply_processing(msg);

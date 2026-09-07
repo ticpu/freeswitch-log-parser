@@ -234,7 +234,7 @@ Three tiers:
 lines_processed + lines_split == lines_in_entries + lines_empty_orphan + lines_dropped
 ```
 
-`ParseStats::unaccounted_lines()` returns the difference — non-zero indicates a parser bug.
+`ParseStats::unaccounted_lines()` returns the signed difference — non-zero either way indicates a parser bug, positive for lines lost and negative for entries claiming more than arrived.
 
 Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in entries: 1 primary + N attached), `lines_empty_orphan` (empty lines with no pending entry), `lines_split` (extra chunks from splitting a physical line that held more than one record — a cut write's successor, or write contention), `lines_dropped` (continuation lines an entry's attached buffer had no room for), `lines_unclassified` (orthogonal anomaly counter).
 

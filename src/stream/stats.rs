@@ -20,10 +20,6 @@ pub enum UnclassifiedTracking {
 pub enum UnclassifiedReason {
     /// Bare continuation line arrived with no pending entry to attach to.
     OrphanContinuation,
-    /// Line was parsed but the message didn't match any known pattern.
-    UnknownMessageFormat,
-    /// EXECUTE or variable line was only partially readable.
-    TruncatedField,
 }
 
 /// Record of a single unclassified line, captured when tracking is enabled.
@@ -58,18 +54,19 @@ pub struct ParseStats {
 }
 
 impl ParseStats {
-    /// Lines that were processed but not accounted for by any tracking category.
+    /// How far the line accounting is out of balance, positive when lines went
+    /// missing and negative when the entries claim more than arrived.
     ///
-    /// Returns 0 when the parser correctly accounts for every input line.
-    /// A non-zero value indicates a parser bug — lines were silently lost.
-    /// A line the parser knowingly could not keep is counted in
+    /// Returns 0 when the parser correctly accounts for every input line. Any
+    /// other value, either sign, indicates a parser bug. A line the parser
+    /// knowingly could not keep is counted in
     /// [`lines_dropped`](Self::lines_dropped) rather than going missing here.
     ///
     /// Invariant:
     /// `lines_processed + lines_split == lines_in_entries + lines_empty_orphan + lines_dropped`
-    pub fn unaccounted_lines(&self) -> u64 {
+    pub fn unaccounted_lines(&self) -> i64 {
         let expected = self.lines_in_entries + self.lines_empty_orphan + self.lines_dropped;
         let actual = self.lines_processed + self.lines_split;
-        actual.saturating_sub(expected)
+        actual as i64 - expected as i64
     }
 }

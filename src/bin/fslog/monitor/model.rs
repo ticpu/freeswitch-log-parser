@@ -63,36 +63,13 @@ pub(super) struct CallFields {
 impl CallFields {
     /// Field-wise merge: `Some` in `update` overwrites, `None` keeps existing.
     pub(super) fn merge(&mut self, update: CallFields) {
-        let CallFields {
-            other_leg_uuid,
-            direction,
-            caller,
-            callee,
-            channel_state,
-            call_state,
-            context,
-        } = update;
-        if other_leg_uuid.is_some() {
-            self.other_leg_uuid = other_leg_uuid;
-        }
-        if direction.is_some() {
-            self.direction = direction;
-        }
-        if caller.is_some() {
-            self.caller = caller;
-        }
-        if callee.is_some() {
-            self.callee = callee;
-        }
-        if channel_state.is_some() {
-            self.channel_state = channel_state;
-        }
-        if call_state.is_some() {
-            self.call_state = call_state;
-        }
-        if context.is_some() {
-            self.context = context;
-        }
+        self.other_leg_uuid = update.other_leg_uuid.or(self.other_leg_uuid.take());
+        self.direction = update.direction.or(self.direction);
+        self.caller = update.caller.or(self.caller.take());
+        self.callee = update.callee.or(self.callee.take());
+        self.channel_state = update.channel_state.or(self.channel_state);
+        self.call_state = update.call_state.or(self.call_state);
+        self.context = update.context.or(self.context.take());
     }
 }
 

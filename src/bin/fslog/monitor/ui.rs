@@ -9,6 +9,7 @@ use ratatui::widgets::{
 
 use freeswitch_log_parser::CallDirection;
 
+use super::input::menu_actions;
 use super::model::{state_label, AppState, CallRow, UiMode};
 use super::time::{call_age, call_duration, format_age, format_duration};
 
@@ -32,25 +33,76 @@ pub(super) fn short8(uuid: &str) -> &str {
     }
 }
 
-/// The 9 display columns shared by the TUI table and `--dump` output, so the
-/// scripting surface cannot drift from what the TUI shows.
+/// One display column: its heading, its width, and the cell it reads from a row.
+struct Column {
+    header: &'static str,
+    width: Constraint,
+    cell: fn(&CallRow, &str) -> String,
+}
+
+/// The display columns shared by the TUI table and `--dump` output, so the
+/// scripting surface cannot drift from what the TUI shows — and so the
+/// headings, the widths and the cells cannot drift from each other.
+const COLUMNS: [Column; 9] = [
+    Column {
+        header: "A-Leg",
+        width: Constraint::Length(8),
+        cell: |r, _| short8(&r.uuid).to_string(),
+    },
+    Column {
+        header: "B-Leg",
+        width: Constraint::Length(8),
+        cell: |r, _| {
+            r.fields
+                .other_leg_uuid
+                .as_deref()
+                .map(short8)
+                .unwrap_or("-")
+                .to_string()
+        },
+    },
+    Column {
+        header: "Dir",
+        width: Constraint::Length(3),
+        cell: |r, _| format_direction(r.fields.direction).to_string(),
+    },
+    Column {
+        header: "Caller",
+        width: Constraint::Min(12),
+        cell: |r, _| r.fields.caller.as_deref().unwrap_or("-").to_string(),
+    },
+    Column {
+        header: "Callee",
+        width: Constraint::Min(12),
+        cell: |r, _| r.fields.callee.as_deref().unwrap_or("-").to_string(),
+    },
+    Column {
+        header: "State",
+        width: Constraint::Length(7),
+        cell: |r, _| {
+            state_label(r.fields.channel_state, r.fields.call_state)
+                .unwrap_or_else(|| "-".to_string())
+        },
+    },
+    Column {
+        header: "Duration",
+        width: Constraint::Length(7),
+        cell: |r, _| format_duration(call_duration(r)),
+    },
+    Column {
+        header: "Age",
+        width: Constraint::Length(4),
+        cell: |r, latest| format_age(call_age(r, latest)),
+    },
+    Column {
+        header: "Context",
+        width: Constraint::Min(8),
+        cell: |r, _| r.fields.context.as_deref().unwrap_or("-").to_string(),
+    },
+];
+
 pub(super) fn row_cells(r: &CallRow, latest: &str) -> [String; 9] {
-    [
-        short8(&r.uuid).to_string(),
-        r.fields
-            .other_leg_uuid
-            .as_deref()
-            .map(short8)
-            .unwrap_or("-")
-            .to_string(),
-        format_direction(r.fields.direction).to_string(),
-        r.fields.caller.as_deref().unwrap_or("-").to_string(),
-        r.fields.callee.as_deref().unwrap_or("-").to_string(),
-        state_label(r.fields.channel_state, r.fields.call_state).unwrap_or_else(|| "-".to_string()),
-        format_duration(call_duration(r)),
-        format_age(call_age(r, latest)),
-        r.fields.context.as_deref().unwrap_or("-").to_string(),
-    ]
+    std::array::from_fn(|i| (COLUMNS[i].cell)(r, latest))
 }
 pub(super) fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &mut TableState) {
     let area = f.area();
@@ -74,18 +126,7 @@ pub(super) fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &
     ]);
     f.render_widget(Paragraph::new(status), chunks[0]);
 
-    let header = Row::new([
-        Cell::from("A-Leg"),
-        Cell::from("B-Leg"),
-        Cell::from("Dir"),
-        Cell::from("Caller"),
-        Cell::from("Callee"),
-        Cell::from("State"),
-        Cell::from("Duration"),
-        Cell::from("Age"),
-        Cell::from("Context"),
-    ])
-    .style(
+    let header = Row::new(COLUMNS.map(|c| Cell::from(c.header))).style(
         Style::default()
             .add_modifier(Modifier::BOLD)
             .fg(Color::Cyan),
@@ -104,19 +145,7 @@ pub(super) fn render_ui(f: &mut ratatui::Frame, state: &AppState, table_state: &
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(3),
-        Constraint::Min(12),
-        Constraint::Min(12),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(4),
-        Constraint::Min(8),
-    ];
-
-    let table = Table::new(rows, widths)
+    let table = Table::new(rows, COLUMNS.map(|c| c.width))
         .header(header)
         .block(Block::default().borders(Borders::ALL))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -193,13 +222,9 @@ pub(super) fn render_menu(
     uuid: &str,
     selected: usize,
 ) {
-    let uuid_short = short8(uuid);
-    let mut items: Vec<ListItem> = vec![
-        ListItem::new(format!("search  (fslog search --uuid {uuid_short}...)")),
-        ListItem::new(format!("tail    (fslog tail --uuid {uuid_short}...)")),
-    ];
-    for tool in &state.tools {
-        items.push(ListItem::new(format!("{}  ({})", tool.name, tool.command)));
-    }
+    let items: Vec<ListItem> = menu_actions(&state.tools, uuid)
+        .into_iter()
+        .map(|(_, label)| ListItem::new(label))
+        .collect();
     render_popup_list(f, area, " Actions ", items, selected, 60);
 }

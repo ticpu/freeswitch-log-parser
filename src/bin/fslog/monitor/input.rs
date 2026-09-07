@@ -6,10 +6,51 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use ratatui::crossterm::ExecutableCommand;
 
+use crate::config::Tool;
+
 use super::model::{AppState, UiMode};
+use super::ui::short8;
+
+/// What a menu row does when chosen.
+pub(super) enum Action {
+    Search,
+    Tail,
+    Tool(usize),
+}
+
+/// The action menu in display order, each row with the label it shows. The one
+/// place the numbering exists: the popup, the key handler's bound and the
+/// dispatch all read it.
+pub(super) fn menu_actions(tools: &[Tool], uuid: &str) -> Vec<(Action, String)> {
+    let short = short8(uuid);
+    let mut items = vec![
+        (
+            Action::Search,
+            format!("search  (fslog search --uuid {short}...)"),
+        ),
+        (
+            Action::Tail,
+            format!("tail    (fslog tail --uuid {short}...)"),
+        ),
+    ];
+    items.extend(
+        tools
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (Action::Tool(i), format!("{}  ({})", t.name, t.command))),
+    );
+    items
+}
 
 pub(super) fn execute_action(state: &AppState, uuid: &str, action_index: usize) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
+
+    let Some((action, _)) = menu_actions(&state.tools, uuid)
+        .into_iter()
+        .nth(action_index)
+    else {
+        return Ok(());
+    };
 
     let from_date = state
         .calls
@@ -21,32 +62,29 @@ pub(super) fn execute_action(state: &AppState, uuid: &str, action_index: usize) 
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
-    let err = match action_index {
-        0 => {
+    let dir_str = state.dir.to_string_lossy().into_owned();
+    let err = match action {
+        Action::Search => {
             let exe = std::env::current_exe()?;
-            let dir_str = state.dir.to_string_lossy().into_owned();
             let mut args = vec!["--dir", &dir_str, "search", "--uuid", uuid];
             if !from_date.is_empty() {
                 args.extend(["--from", from_date]);
             }
             std::process::Command::new(&exe).args(args).exec()
         }
-        1 => {
+        Action::Tail => {
             let exe = std::env::current_exe()?;
-            let dir_str = state.dir.to_string_lossy().into_owned();
             std::process::Command::new(&exe)
                 .args(["--dir", &dir_str, "tail", "--uuid", uuid])
                 .exec()
         }
-        n => {
-            let tool_idx = n - 2;
-            if let Some(tool) = state.tools.get(tool_idx) {
+        Action::Tool(i) => match state.tools.get(i) {
+            Some(tool) => {
                 let cmd = tool.expand_command(uuid);
                 std::process::Command::new("sh").args(["-c", &cmd]).exec()
-            } else {
-                return Ok(());
             }
-        }
+            None => return Ok(()),
+        },
     };
 
     Err(io::Error::other(err))
@@ -136,7 +174,7 @@ pub(super) fn handle_leg_picker_key(state: &mut AppState, code: KeyCode) {
 }
 
 pub(super) fn handle_menu_key(state: &mut AppState, code: KeyCode) {
-    let item_count = 2 + state.tools.len();
+    let item_count = menu_actions(&state.tools, "").len();
     match code {
         KeyCode::Esc | KeyCode::Char('q') => state.ui_mode = UiMode::Table,
         KeyCode::Up | KeyCode::Char('k') => {

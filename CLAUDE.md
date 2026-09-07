@@ -260,7 +260,7 @@ Ordered least to most severe: Debug < Info < Notice < Warning < Err < Crit < Ale
 
 ## Test Data
 
-Production log fixtures live in `tests/fixtures/` (xz-compressed rotated files + uncompressed `freeswitch.log`).
+Production log fixtures live in `tests/fixtures/` (xz-compressed rotated files + uncompressed `freeswitch.log`). They are gitignored, so `tests/production_log.rs` is gated behind the `fixtures` feature — off, it compiles to nothing and CI stays green without a corpus; on, the corpus is mandatory and every missing path is a hard failure.
 
 **Always prefer `fslog` over raw grep/rg** when investigating log data:
 ```
@@ -277,8 +277,8 @@ Never copy production log lines verbatim into source.
 ## Rust Guidelines
 
 ### Workflow
-- **`hooks/pre-commit` is the verification.** Run `cargo clippy --fix --allow-dirty --message-format=short && cargo fmt`, then commit and let the hook gate it. It runs `cargo fmt --check`, `cargo clippy --all-targets --features tui -D warnings`, `cargo test --release --features tui` and gitleaks — do not re-run any of those by hand
-- `tui → cli → sdp`, so the hook's one test run already covers every feature the crate has. There is no `--all-features` run to add, and no `cargo build` to add
+- **`hooks/pre-commit` is the verification.** Run `cargo clippy --fix --allow-dirty --message-format=short && cargo fmt`, then commit and let the hook gate it. It runs `cargo fmt --check`, `cargo clippy --all-targets --features tui -D warnings`, `cargo test --release --features tui,fixtures` and gitleaks — do not re-run any of those by hand
+- `tui → cli → sdp`, so the hook's one test run already covers every feature the crate has. `fixtures` is orthogonal: it gates `tests/production_log.rs` alone, and with it on a missing or empty `tests/fixtures/` fails the run instead of skipping it. There is no `--all-features` run to add, and no `cargo build` to add
 - `cargo test --release` on its own only when iterating on a failing test — never in debug, xz-compressed production fixture tests are far too slow there
 - `cargo build --release --features tui` when you actually need the `fslog` binary to run against fixtures; `tui` enables the monitor subcommand (ratatui, serde, serde_yml), `sdp` gates `Block::sdp_codecs()`
 - **Cargo.lock is never committed** — this is a library crate, Cargo.lock stays in .gitignore

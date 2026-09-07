@@ -29,7 +29,7 @@ if ! cargo clippy --all-targets --features tui --message-format=short -- -D warn
 fi
 
 echo "Running tests..."
-if ! test_output=$(cargo test --release --features tui 2>&1); then
+if ! test_output=$(cargo test --release --features tui,fixtures 2>&1); then
 	echo "$test_output" | tail
 	echo "Tests failed. Fix them before committing."
 	exit 1

@@ -1,3 +1,5 @@
+#![cfg(feature = "fixtures")]
+
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -14,7 +16,12 @@ use xz2::read::XzDecoder;
 const FIXTURES_DIR: &str = "tests/fixtures";
 
 fn lines_from_file(path: &Path) -> Box<dyn Iterator<Item = String>> {
-    let file = File::open(path).expect("open fixture");
+    let file = File::open(path).unwrap_or_else(|e| {
+        panic!(
+            "fixture {} is required by --features fixtures: {e}",
+            path.display()
+        )
+    });
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let reader: Box<dyn Read> = if ext == "xz" {
@@ -33,11 +40,10 @@ fn is_log_file(path: &Path) -> bool {
 
 fn fixture_corpora() -> Vec<(String, Vec<std::path::PathBuf>)> {
     let dir = Path::new(FIXTURES_DIR);
-    if !dir.is_dir() {
-        return Vec::new();
-    }
     let mut corpora: Vec<(String, Vec<std::path::PathBuf>)> = std::fs::read_dir(dir)
-        .expect("read fixtures dir")
+        .unwrap_or_else(|e| {
+            panic!("fixture corpus {FIXTURES_DIR} is required by --features fixtures: {e}")
+        })
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_dir())
@@ -55,6 +61,10 @@ fn fixture_corpora() -> Vec<(String, Vec<std::path::PathBuf>)> {
         .filter(|(_, files)| !files.is_empty())
         .collect();
     corpora.sort_by(|a, b| a.0.cmp(&b.0));
+    assert!(
+        !corpora.is_empty(),
+        "fixture corpus {FIXTURES_DIR} holds no log files"
+    );
     corpora
 }
 
@@ -90,15 +100,6 @@ fn assert_no_violations(violations: Vec<String>, label: &str) {
     );
 }
 
-fn skip_if_no_fixtures() -> bool {
-    if fixture_corpora().is_empty() {
-        eprintln!("skipping: no fixture files in {FIXTURES_DIR}");
-        true
-    } else {
-        false
-    }
-}
-
 #[test]
 fn no_execute_in_attached() {
     let violations = for_each_fixture(|corpus, name, i, entry| {
@@ -111,9 +112,6 @@ fn no_execute_in_attached() {
         }
         v
     });
-    if violations.is_empty() && skip_if_no_fixtures() {
-        return;
-    }
     assert_no_violations(violations, "EXECUTE lines found in attached");
 }
 
@@ -137,9 +135,6 @@ fn channel_data_has_typed_block() {
         }
         vec![]
     });
-    if violations.is_empty() && skip_if_no_fixtures() {
-        return;
-    }
     assert_no_violations(violations, "CHANNEL_DATA entries missing typed block");
 }
 
@@ -165,9 +160,6 @@ fn sdp_has_typed_block() {
         }
         vec![]
     });
-    if violations.is_empty() && skip_if_no_fixtures() {
-        return;
-    }
     assert_no_violations(violations, "SDP entries missing typed block");
 }
 
@@ -177,9 +169,6 @@ fn channel_data_bare_continuations_accumulated() {
     // a CHANNEL_DATA dump. Bare continuation lines (variable_* without UUID
     // prefix) must still be accumulated into the block. Found in 20+ instances
     // across bcf and pbx fixture corpora.
-    if skip_if_no_fixtures() {
-        return;
-    }
     let mut total_blocks: u64 = 0;
     let mut blocks_with_bare: u64 = 0;
     let mut max_bare_ratio: f64 = 0.0;
@@ -232,9 +221,6 @@ fn channel_data_bare_continuations_accumulated() {
 
 #[test]
 fn comprehensive_parse_report() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     for (corpus, files) in &fixture_corpora() {
         eprintln!();
         eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
@@ -396,9 +382,6 @@ fn comprehensive_parse_report() {
 
 #[test]
 fn session_tracker_learns_state() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     for (corpus, files) in &fixture_corpora() {
         eprintln!();
         eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
@@ -447,9 +430,6 @@ fn system_lines_with_embedded_uuid_extracted() {
     // FreeSWITCH's C++ wrapper (switch_cpp.cpp) logs with SWITCH_CHANNEL_LOG
     // (no session context) but includes the UUID at the start of the message.
     // These must be extracted so -u filtering and session tracking work.
-    if skip_if_no_fixtures() {
-        return;
-    }
     let mut total_system: u64 = 0;
     let mut system_with_uuid: u64 = 0;
 
@@ -489,10 +469,6 @@ fn originate_success_channel_fallback_links_pbx_fixture() {
     let path = Path::new(FIXTURES_DIR)
         .join("pbx")
         .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
-    if !path.exists() {
-        eprintln!("skipping: {} not present", path.display());
-        return;
-    }
     const A_LEG: &str = "fc541b63-d608-42af-9ae7-1717ec610def";
     const B_LEG: &str = "23f602c0-618a-46ed-adba-da2827c6a2ce";
 
@@ -531,10 +507,6 @@ fn conference_and_loopback_link_ra221_fixture() {
     let path = Path::new(FIXTURES_DIR)
         .join("ra221")
         .join("freeswitch.log.30.xz");
-    if !path.exists() {
-        eprintln!("skipping: {} not present", path.display());
-        return;
-    }
     const PULSEAUDIO: &str = "35cd5158-b48e-44ce-b91d-5bd724cfbf34";
     const SOFTPHONE: &str = "1dd18372-af8f-416b-80f3-3339fcb3f371";
     const LOOPBACK_A: &str = "4827c0b0-e96c-4b7d-84ed-a6870b3112f2";
@@ -595,10 +567,6 @@ fn codec_outcome_tracked_on_ra221_fixture() {
     let path = Path::new(FIXTURES_DIR)
         .join("ra221")
         .join("freeswitch.log.30.xz");
-    if !path.exists() {
-        eprintln!("skipping: {} not present", path.display());
-        return;
-    }
     const LEG: &str = "83b3cbfd-98ca-4532-89ed-eb31acb1de50";
 
     let stream = LogStream::new(lines_from_file(&path));
@@ -638,10 +606,6 @@ fn video_negotiation_classified_on_pbx_fixture() {
     let path = Path::new(FIXTURES_DIR)
         .join("pbx")
         .join("freeswitch.log.2026-05-11-14-20-22.1.xz");
-    if !path.exists() {
-        eprintln!("skipping: {} not present", path.display());
-        return;
-    }
     let video = LogStream::new(lines_from_file(&path))
         .filter(|e| {
             matches!(
@@ -662,9 +626,6 @@ fn video_negotiation_classified_on_pbx_fixture() {
 #[cfg(feature = "sdp")]
 #[test]
 fn sdp_bodies_parse_across_the_corpus() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     let mut parsed = 0u64;
     let mut failures = Vec::new();
     for (corpus, files) in &fixture_corpora() {
@@ -716,9 +677,6 @@ fn sdp_bodies_parse_across_the_corpus() {
 /// overlapping a sibling.
 #[test]
 fn field_spans_are_well_formed_across_the_corpus() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     let mut total: u64 = 0;
     let violations = for_each_fixture(|corpus, name, _, entry| {
         let mut bad = Vec::new();
@@ -781,9 +739,6 @@ fn field_spans_are_well_formed_across_the_corpus() {
 /// and the report prints how far apart the two reach.
 #[test]
 fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     let mut truncated_spans: u64 = 0;
     let mut warned_spans: u64 = 0;
     let mut cut_entries: u64 = 0;
@@ -841,9 +796,6 @@ fn cut_spans_agree_with_truncation_warnings_across_the_corpus() {
 /// nothing is a byte-identical round trip, replacing everything never conflicts.
 #[test]
 fn render_with_round_trips_and_replaces_across_the_corpus() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     let violations = for_each_fixture(|corpus, name, _, entry| {
         let mut bad = Vec::new();
         let at = format!("{corpus}/{name} L{}", entry.line_number);
@@ -874,9 +826,6 @@ fn render_with_round_trips_and_replaces_across_the_corpus() {
 /// classification report above, for judging coverage rather than correctness.
 #[test]
 fn field_span_report() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     for (corpus, files) in &fixture_corpora() {
         eprintln!();
         eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());
@@ -919,9 +868,6 @@ fn field_span_report() {
 
 #[test]
 fn warning_report() {
-    if skip_if_no_fixtures() {
-        return;
-    }
     for (corpus, files) in &fixture_corpora() {
         eprintln!();
         eprintln!(">>> corpus: {corpus} ({} files) <<<", files.len());

@@ -53,6 +53,7 @@ cli = [
     "dep:xz2",
 ]
 tui = ["cli", "dep:ratatui", "dep:serde", "dep:serde_yml"]
+fixtures = []
 
 [dev-dependencies]
 xz2 = "0.1"

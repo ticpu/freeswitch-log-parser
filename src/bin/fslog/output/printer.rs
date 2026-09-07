@@ -83,19 +83,14 @@ impl EntryPrinter {
 
         let uuid = match &entry.uuid {
             None => format!("{}-{reset}", p.dim),
-            Some(u) if p.enabled => {
+            Some(u) => {
                 let mut s = String::new();
-                write_uuid(&mut s, u);
+                p.write_uuid(&mut s, u);
                 s
             }
-            Some(u) => u.clone(),
         };
 
-        let msg = if p.enabled {
-            colorize_uuids(head, lc)
-        } else {
-            Cow::Borrowed(head)
-        };
+        let msg = p.colorize_uuids(head, lc);
 
         if self.show_line_numbers {
             write!(w, "{lc}L{line:>6} ", line = entry.line_number)?;
@@ -132,18 +127,14 @@ impl EntryPrinter {
             AttachedView::Inline(head_data) => {
                 for line in head_data.into_iter().chain(&entry.attached) {
                     let line = strip_repeated_prefix(line, entry.uuid.as_deref().unwrap_or(""));
-                    let rendered = if p.enabled {
-                        // Chained through Cow so a line neither pass touches —
-                        // the common case — is never copied.
-                        match colorize_uuids(line, dim) {
-                            Cow::Borrowed(s) => colorize_pass_fail(s, dim),
-                            Cow::Owned(s) => match colorize_pass_fail(&s, dim) {
-                                Cow::Borrowed(_) => Cow::Owned(s),
-                                Cow::Owned(both) => Cow::Owned(both),
-                            },
-                        }
-                    } else {
-                        Cow::Borrowed(line)
+                    // Chained through Cow so a line neither pass touches — the
+                    // common case — is never copied.
+                    let rendered = match p.colorize_uuids(line, dim) {
+                        Cow::Borrowed(s) => p.colorize_pass_fail(s, dim),
+                        Cow::Owned(s) => match p.colorize_pass_fail(&s, dim) {
+                            Cow::Borrowed(_) => Cow::Owned(s),
+                            Cow::Owned(both) => Cow::Owned(both),
+                        },
                     };
                     writeln!(w, "{dim}         {rendered}{reset}")?;
                 }

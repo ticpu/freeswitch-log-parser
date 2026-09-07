@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use freeswitch_log_parser::MessageKind;
 use freeswitch_types::commands::endpoint::DialString;
-use freeswitch_types::{BridgeDialString, EslArray};
+use freeswitch_types::{BridgeDialString, ChannelVariable, EslArray};
 use log::debug;
 
 use crate::output::Palette;
@@ -76,7 +76,7 @@ pub fn print_dial_string(w: &mut dyn Write, arguments: &str, p: &Palette) -> io:
         for ep in group {
             let ext = ep
                 .variables()
-                .and_then(|v| v.get("presence_id"))
+                .and_then(|v| v.get(ChannelVariable::PresenceId.as_str()))
                 .map(|id| format!("ext={} ", id.split('@').next().unwrap_or(id)))
                 .unwrap_or_default();
             writeln!(w, "{value_color}         dial     {ext}{ep}{reset}")?;

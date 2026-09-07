@@ -10,7 +10,7 @@ use log::{debug, warn};
 use rayon::prelude::*;
 
 use crate::files::{open_log_file, Segment};
-use crate::output::ColorMode;
+use crate::output::{ColorMode, Palette};
 
 /// Whether `needle` can be prescanned without risking a false negative.
 ///
@@ -47,7 +47,9 @@ pub fn narrow(files: &[Segment], needle: &str, color: ColorMode) -> Vec<Segment>
     let done = AtomicUsize::new(0);
     // Progress rewrites its own line with ANSI escapes: to a pipe or a log, or
     // where the operator turned colour off, that is noise with no line to erase.
-    let progress = color == ColorMode::Always && std::io::stderr().is_terminal();
+    let palette = Palette::new(color);
+    let progress = palette.enabled && std::io::stderr().is_terminal();
+    let erase = palette.erase_line;
 
     let mut kept: Vec<(usize, Segment)> = files
         .par_iter()
@@ -56,13 +58,13 @@ pub fn narrow(files: &[Segment], needle: &str, color: ColorMode) -> Vec<Segment>
             let hit = file_contains(&seg.path, needle);
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if progress {
-                eprint!("\r\x1b[Kscanning {n}/{total}: {}", seg.name);
+                eprint!("{erase}scanning {n}/{total}: {}", seg.name);
             }
             hit.then(|| (i, seg.clone()))
         })
         .collect();
     if progress {
-        eprint!("\r\x1b[K");
+        eprint!("{erase}");
     }
 
     // par_iter yields in completion order; the parse depends on chronological

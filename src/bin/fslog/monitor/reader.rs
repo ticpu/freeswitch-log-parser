@@ -32,25 +32,6 @@ pub(super) fn build_update(
     let snap = enriched.session.as_ref();
     let state = sessions.get(&uuid);
 
-    // A state change to CS_DESTROY ends the row too: the leg's own lifecycle
-    // line may sit in a rotated file the monitor never read.
-    let event = match &enriched.entry.message_kind {
-        MessageKind::ChannelLifecycle {
-            event: LifecycleEvent::NewChannel,
-            ..
-        } => Some(CallEvent::NewChannel),
-        MessageKind::ChannelLifecycle {
-            event: LifecycleEvent::Hangup | LifecycleEvent::Destroy,
-            ..
-        } => Some(CallEvent::Hangup),
-        MessageKind::StateChange { detail }
-            if detail.contains(ChannelState::CsDestroy.to_string().as_str()) =>
-        {
-            Some(CallEvent::Hangup)
-        }
-        _ => None,
-    };
-
     let fields = CallFields {
         other_leg_uuid: state
             .and_then(|s| s.other_leg_uuid.clone())
@@ -87,6 +68,25 @@ pub(super) fn build_update(
                 state.and_then(|s| s.variables.get(SofiaVariable::SipToUser.as_str()).cloned())
             })
             .or_else(|| state.and_then(|s| s.dialplan_to.clone())),
+    };
+
+    // A state change to CS_DESTROY ends the row too: the leg's own lifecycle
+    // line may sit in a rotated file the monitor never read.
+    let event = match &enriched.entry.message_kind {
+        MessageKind::ChannelLifecycle {
+            event: LifecycleEvent::NewChannel,
+            ..
+        } => Some(CallEvent::NewChannel),
+        MessageKind::ChannelLifecycle {
+            event: LifecycleEvent::Hangup | LifecycleEvent::Destroy,
+            ..
+        } => Some(CallEvent::Hangup),
+        MessageKind::StateChange { .. }
+            if fields.channel_state == Some(ChannelState::CsDestroy) =>
+        {
+            Some(CallEvent::Hangup)
+        }
+        _ => None,
     };
 
     Some(ReaderMsg {

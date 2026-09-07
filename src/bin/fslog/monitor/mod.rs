@@ -26,6 +26,7 @@ use freeswitch_log_parser::{LogStream, SessionTracker, TrackedChain};
 
 use crate::config;
 use crate::files::{open_log_reader, resolve_log_path, ReadFailures};
+use crate::run::RunCtx;
 
 use input::{execute_action, handle_key};
 use model::{AppState, ContextFilter, UiMode};
@@ -77,12 +78,8 @@ fn process_log(
     Ok(state)
 }
 
-pub fn run_dump(
-    dir: &Path,
-    args: &MonitorArgs,
-    max_line_bytes: usize,
-    linger: Duration,
-) -> anyhow::Result<()> {
+pub fn run_dump(ctx: &RunCtx, args: &MonitorArgs, linger: Duration) -> anyhow::Result<()> {
+    let dir = ctx.dir.as_path();
     let path = resolve_log_path(dir, args.file.as_deref());
 
     let context_filter = args
@@ -91,7 +88,7 @@ pub fn run_dump(
         .map(ContextFilter::parse)
         .unwrap_or(ContextFilter::None);
 
-    let state = process_log(dir, &path, context_filter, max_line_bytes, linger)?;
+    let state = process_log(dir, &path, context_filter, ctx.max_line_bytes, linger)?;
 
     // `println!` panics when the reader closes early; `fslog monitor --dump |
     // head` is exactly that.
@@ -107,14 +104,15 @@ pub fn run_dump(
     Ok(())
 }
 
-pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> anyhow::Result<()> {
+pub fn run(ctx: &RunCtx, args: MonitorArgs) -> anyhow::Result<()> {
     let cfg = config::load_config(args.config.as_deref())?;
     let linger = Duration::from_secs(cfg.monitor.hangup_linger_seconds);
 
     if args.dump {
-        return run_dump(dir, &args, max_line_bytes, linger);
+        return run_dump(ctx, &args, linger);
     }
 
+    let (dir, max_line_bytes) = (ctx.dir.as_path(), ctx.max_line_bytes);
     let path = resolve_log_path(dir, args.file.as_deref());
 
     let (tx, rx) = mpsc::channel();

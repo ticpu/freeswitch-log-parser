@@ -54,7 +54,7 @@ fn dispatch(cli: Cli) -> anyhow::Result<()> {
 
     match command {
         #[cfg(feature = "tui")]
-        Command::Monitor(args) => monitor::run(&ctx.dir, args, ctx.max_line_bytes),
+        Command::Monitor(args) => monitor::run(&ctx, args),
         Command::Completions { shell } => {
             complete::generate_completions(shell, &mut Cli::command());
             Ok(())

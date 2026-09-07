@@ -35,6 +35,11 @@ pub struct Palette {
     pub field: &'static str,
     pub sdp: &'static str,
     pub codec: &'static str,
+    pub pass: &'static str,
+    pub fail: &'static str,
+    /// Return to column zero and clear the line, for a progress line that
+    /// rewrites itself.
+    pub erase_line: &'static str,
 }
 
 impl Palette {
@@ -49,6 +54,9 @@ impl Palette {
                 field: "",
                 sdp: "",
                 codec: "",
+                pass: "",
+                fail: "",
+                erase_line: "",
             };
         }
         Palette {
@@ -60,6 +68,9 @@ impl Palette {
             field: DIM_GREEN,
             sdp: BRIGHT_GREEN,
             codec: DIM_YELLOW,
+            pass: BRIGHT_GREEN,
+            fail: RED,
+            erase_line: "\r\x1b[K",
         }
     }
 
@@ -77,6 +88,66 @@ impl Palette {
             Some(LogLevel::Console) => GREEN,
             _ => "",
         }
+    }
+
+    /// A UUID in its own stable hue, so each call is distinct across entries.
+    pub(super) fn write_uuid(&self, out: &mut String, uuid: &str) {
+        if !self.enabled {
+            out.push_str(uuid);
+            return;
+        }
+        let (r, g, b) = uuid_truecolor(uuid);
+        write!(out, "\x1b[38;2;{r};{g};{b}m{uuid}{RESET}")
+            .expect("writing to a String cannot fail");
+    }
+
+    /// Paint UUIDs embedded in `text` with the hue the UUID column uses, so a
+    /// peer leg named mid-message is recognizable. `resume` restores the
+    /// caller's colour after each match.
+    pub(super) fn colorize_uuids<'a>(&self, text: &'a str, resume: &str) -> Cow<'a, str> {
+        if !self.enabled {
+            return Cow::Borrowed(text);
+        }
+        let mut hits = find_uuids(text).peekable();
+        if hits.peek().is_none() {
+            return Cow::Borrowed(text);
+        }
+        let mut out = String::with_capacity(text.len() + 64);
+        let mut last = 0;
+        for (start, uuid) in hits {
+            out.push_str(&text[last..start]);
+            self.write_uuid(&mut out, uuid);
+            out.push_str(resume);
+            last = start + uuid.len();
+        }
+        out.push_str(&text[last..]);
+        Cow::Owned(out)
+    }
+
+    /// Paint a dialplan condition's verdict, the one thing worth spotting in a
+    /// wall of `Regex (PASS|FAIL)` continuation lines.
+    pub(super) fn colorize_pass_fail<'a>(&self, text: &'a str, resume: &str) -> Cow<'a, str> {
+        if !self.enabled || (!text.contains("(PASS)") && !text.contains("(FAIL)")) {
+            return Cow::Borrowed(text);
+        }
+        let mut out = String::with_capacity(text.len() + 32);
+        let mut rest = text;
+        while let Some((idx, verdict, color)) = rest
+            .find("(PASS)")
+            .map(|i| (i, "(PASS)", self.pass))
+            .into_iter()
+            .chain(rest.find("(FAIL)").map(|i| (i, "(FAIL)", self.fail)))
+            .min_by_key(|(i, _, _)| *i)
+        {
+            out.push_str(&rest[..idx]);
+            out.push_str(color);
+            out.push_str(verdict);
+            out.push_str(self.reset);
+            out.push_str(resume);
+            rest = &rest[idx + verdict.len()..];
+        }
+        out.push_str(rest);
+        Cow::Owned(out)
     }
 }
 
@@ -128,55 +199,4 @@ pub(super) fn strip_repeated_prefix<'a>(line: &'a str, uuid: &str) -> &'a str {
         .and_then(|r| r.strip_prefix(' '))
         .unwrap_or(line);
     split_dialplan_line(rest).map_or(rest, |(_, data)| data)
-}
-
-pub(super) fn write_uuid(out: &mut String, uuid: &str) {
-    let (r, g, b) = uuid_truecolor(uuid);
-    write!(out, "\x1b[38;2;{r};{g};{b}m{uuid}{RESET}").expect("writing to a String cannot fail");
-}
-
-/// Paint UUIDs embedded in `text` with the same per-UUID color the UUID column
-/// uses, so a peer leg named mid-message is recognizable at a glance. `resume`
-/// restores the caller's color after each match.
-pub(super) fn colorize_uuids<'a>(text: &'a str, resume: &str) -> Cow<'a, str> {
-    let mut hits = find_uuids(text).peekable();
-    if hits.peek().is_none() {
-        return Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len() + 64);
-    let mut last = 0;
-    for (start, uuid) in hits {
-        out.push_str(&text[last..start]);
-        write_uuid(&mut out, uuid);
-        out.push_str(resume);
-        last = start + uuid.len();
-    }
-    out.push_str(&text[last..]);
-    Cow::Owned(out)
-}
-
-/// Paint a dialplan condition's verdict, the one thing worth spotting in a wall
-/// of `Regex (PASS|FAIL)` continuation lines.
-pub(super) fn colorize_pass_fail<'a>(text: &'a str, resume: &str) -> Cow<'a, str> {
-    if !text.contains("(PASS)") && !text.contains("(FAIL)") {
-        return Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len() + 32);
-    let mut rest = text;
-    while let Some((idx, verdict, color)) = rest
-        .find("(PASS)")
-        .map(|i| (i, "(PASS)", BRIGHT_GREEN))
-        .into_iter()
-        .chain(rest.find("(FAIL)").map(|i| (i, "(FAIL)", RED)))
-        .min_by_key(|(i, _, _)| *i)
-    {
-        out.push_str(&rest[..idx]);
-        out.push_str(color);
-        out.push_str(verdict);
-        out.push_str(RESET);
-        out.push_str(resume);
-        rest = &rest[idx + verdict.len()..];
-    }
-    out.push_str(rest);
-    Cow::Owned(out)
 }

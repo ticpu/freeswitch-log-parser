@@ -23,7 +23,7 @@ if ! cargo fmt --all -- --check; then
 fi
 
 echo "Running cargo clippy..."
-if ! cargo clippy --all-targets --features tui --message-format=short -- -D warnings; then
+if ! cargo clippy --all-targets --features tui,fixtures --message-format=short -- -D warnings; then
 	echo "Clippy found warnings. Fix them before committing."
 	exit 1
 fi

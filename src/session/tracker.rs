@@ -120,9 +120,8 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// (e.g. `CS_DESTROY` or hangup) to free memory.
     pub fn remove_session(&mut self, uuid: &str) -> Option<SessionState> {
         let state = self.sessions.remove(uuid)?;
-        // Removal is the every-field-to-None diff, so it goes through the same
-        // bracket as every other mutation rather than unwinding each index by
-        // hand — a field indexed later cannot then be forgotten here.
+        // Removal is the every-field-to-None diff, so a field indexed later
+        // cannot be forgotten here.
         self.apply_index_changes(uuid, IndexedFields::of(&state), IndexedFields::default());
         // The peer's own pointer at this session is not in that diff, and left
         // standing it back-links the next channel to reuse the uuid.
@@ -326,9 +325,8 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
 
         let state = self.sessions.entry(uuid.clone()).or_default();
 
-        // Snapshot indexed fields before the pre-hook and diff after the
-        // post-hook so hook-set fields maintain the cross-session indexes
-        // exactly like built-in extraction.
+        // One bracket over pre-hook, extraction and post-hook, so a hook-set
+        // field maintains the cross-session indexes too.
         let old = IndexedFields::of(state);
 
         if let Some(hook) = &self.pre_hook {

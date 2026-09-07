@@ -350,9 +350,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         }
 
         let mut block = BlockBuilder::open(&message_kind);
-        // A codec run's opening line is itself a trace line, and the entry it
-        // belongs to does not exist until below — so its warning is collected
-        // here rather than routed through `warn`.
+        // The entry this warning belongs to does not exist until below, so
+        // `warn` has nothing to attach it to yet.
         let opening_warning = block.push_codec_trace(parsed.message);
 
         let entry = LogEntry {
@@ -393,9 +392,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
         let bytes = line.as_bytes();
         let prepended = is_uuid_at(bytes, 0);
 
-        // A write starts at every prefixed line and is extended by the bare
-        // lines after it; anything else came off the verbatim path, which has
-        // no budget to spend and no start to carry forward.
+        // A prefixed line starts a write and a bare line extends it; anything
+        // else came off the verbatim path, which has no budget and no start.
         if prepended {
             self.cursor.begin();
         } else if bytes.is_empty() || is_date_at(bytes, 0) {

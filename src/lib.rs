@@ -95,7 +95,9 @@ pub use session::{
     media::{CodecImpl, MediaCodecs, SessionMedia},
     parse_bridge_args, BridgeInfo, EnrichedEntry, SessionSnapshot, SessionState, SessionTracker,
 };
-pub use stamp::{log_rotation_stamp, normalize_entry_timestamp};
+pub use stamp::{
+    log_rotation_stamp, normalize_entry_timestamp, stamp_lower_bound, stamp_upper_bound,
+};
 pub use stream::{
     Block, LogEntry, LogStream, ParseStats, ParseWarning, SessionReading, UnclassifiedLine,
     UnclassifiedReason, UnclassifiedTracking,

@@ -62,7 +62,9 @@ message or a needle without a regex, `for_each_peer_uuid` walks the
 channel variables that name another leg (`for_each_peer_uuid_with` takes a
 predicate for names a deployment adds), `parse_bridge_args` reads a
 `bridge()` argument list, and `log_rotation_stamp`/`normalize_entry_timestamp`
-put a rotated filename and an entry timestamp into one comparable form.
+put a rotated filename and an entry timestamp into one comparable form, and
+`stamp_lower_bound`/`stamp_upper_bound` widen a partial date into a window
+in that same form.
 
 For rewriting log text — redacting a caller id, colorizing a channel
 name — `message_fields` and `LogEntry::fields` return the byte ranges the

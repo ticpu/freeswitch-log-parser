@@ -36,11 +36,47 @@ pub fn normalize_entry_timestamp(ts: &str) -> String {
     if let (Some(date), Some(time)) = (ts.get(..10), ts.get(11..STAMP_LEN)) {
         return format!("{date}-{}", time.replace(':', "-"));
     }
-    let mut s = ts.replace(['T', ':', ' '], "-");
+    loose_stamp(ts)
+}
+
+/// The stamp form of whatever `input` spells, however partial: the separators
+/// an operator is likely to type become `-`, and a trailing one is dropped.
+fn loose_stamp(input: &str) -> String {
+    let mut s = input.replace(['T', ':', ' '], "-");
     while s.ends_with('-') {
         s.pop();
     }
     s
+}
+
+/// Fill a partial stamp out to all six components, taking each missing one
+/// from `defaults`.
+fn pad_stamp(s: &str, defaults: [&str; 6]) -> String {
+    let parts: Vec<&str> = s.split('-').collect();
+    defaults
+        .iter()
+        .enumerate()
+        .map(|(i, default)| match parts.get(i) {
+            Some(p) if !p.is_empty() => *p,
+            _ => default,
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The earliest stamp a partial date names — `"2026-03"` becomes
+/// `"2026-03-01-00-00-00"` — for use as an inclusive window start.
+pub fn stamp_lower_bound(input: &str) -> String {
+    pad_stamp(&loose_stamp(input), ["0000", "01", "01", "00", "00", "00"])
+}
+
+/// The latest stamp a partial date names — `"2026-03"` becomes
+/// `"2026-03-31-23-59-59"` — for use as an inclusive window end.
+///
+/// The day defaults to 31 whatever the month holds: the stamp is compared
+/// lexicographically, so a bound past the month's last day excludes nothing.
+pub fn stamp_upper_bound(input: &str) -> String {
+    pad_stamp(&loose_stamp(input), ["9999", "12", "31", "23", "59", "59"])
 }
 
 #[cfg(test)]
@@ -107,6 +143,34 @@ mod tests {
             "2026-03-0é-16-52-07"
         );
         assert_eq!(normalize_entry_timestamp("ééééééééé"), "ééééééééé");
+    }
+
+    #[test]
+    fn bounds_fill_a_partial_date_from_both_ends() {
+        for (input, lower, upper) in [
+            ("2026", "2026-01-01-00-00-00", "2026-12-31-23-59-59"),
+            ("2026-03", "2026-03-01-00-00-00", "2026-03-31-23-59-59"),
+            ("2026-03-08", "2026-03-08-00-00-00", "2026-03-08-23-59-59"),
+            (
+                "2026-03-08T15:48",
+                "2026-03-08-15-48-00",
+                "2026-03-08-15-48-59",
+            ),
+            (
+                "2026-03-08 15:48:07",
+                "2026-03-08-15-48-07",
+                "2026-03-08-15-48-07",
+            ),
+        ] {
+            assert_eq!(stamp_lower_bound(input), lower, "lower for {input}");
+            assert_eq!(stamp_upper_bound(input), upper, "upper for {input}");
+        }
+    }
+
+    #[test]
+    fn an_empty_bound_spans_everything() {
+        assert!(stamp_lower_bound("") < stamp_upper_bound(""));
+        assert!(stamp_lower_bound("") < normalize_entry_timestamp("2026-03-08 16:52:07.123456"));
     }
 
     #[test]

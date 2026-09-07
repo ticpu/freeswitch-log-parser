@@ -5,7 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use freeswitch_log_parser::log_rotation_stamp;
+use freeswitch_log_parser::{log_rotation_stamp, stamp_lower_bound, stamp_upper_bound};
 
 pub struct LogFile {
     pub path: PathBuf,
@@ -40,50 +40,13 @@ pub fn discover_log_files(dir: &Path) -> io::Result<Vec<LogFile>> {
     Ok(files)
 }
 
-pub fn normalize_date(input: &str) -> String {
-    let mut s = input.replace(['T', ':', ' '], "-");
-    // Remove trailing dashes from replacement
-    while s.ends_with('-') {
-        s.pop();
-    }
-    s
-}
-
-pub fn normalize_date_from(input: &str) -> String {
-    pad_date(
-        &normalize_date(input),
-        &["0000", "01", "01", "00", "00", "00"],
-    )
-}
-
-pub fn normalize_date_until(input: &str) -> String {
-    pad_date(
-        &normalize_date(input),
-        &["9999", "12", "31", "23", "59", "59"],
-    )
-}
-
-/// Pad a partial `YYYY-MM-DD-HH-MM-SS` date with per-component defaults.
-fn pad_date(s: &str, defaults: &[&str; 6]) -> String {
-    let parts: Vec<&str> = s.split('-').collect();
-    let mut result = Vec::new();
-    for (i, default) in defaults.iter().enumerate() {
-        if i < parts.len() && !parts[i].is_empty() {
-            result.push(parts[i].to_string());
-        } else {
-            result.push(default.to_string());
-        }
-    }
-    result.join("-")
-}
-
 pub fn filter_files_by_date<'a>(
     files: &'a [LogFile],
     from: Option<&str>,
     until: Option<&str>,
 ) -> Vec<&'a LogFile> {
-    let from_norm = from.map(normalize_date_from);
-    let until_norm = until.map(normalize_date_until);
+    let from_norm = from.map(stamp_lower_bound);
+    let until_norm = until.map(stamp_upper_bound);
 
     files
         .iter()
@@ -133,41 +96,6 @@ pub fn filter_files_by_date<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_iso_date() {
-        assert_eq!(normalize_date("2026-03-08T15:48"), "2026-03-08-15-48");
-    }
-
-    #[test]
-    fn normalize_fs_style() {
-        assert_eq!(normalize_date("2026-03-08-15-48"), "2026-03-08-15-48");
-    }
-
-    #[test]
-    fn normalize_space_date() {
-        assert_eq!(normalize_date("2026-03-08 15:48"), "2026-03-08-15-48");
-    }
-
-    #[test]
-    fn pad_from_year_month() {
-        assert_eq!(normalize_date_from("2026-03"), "2026-03-01-00-00-00");
-    }
-
-    #[test]
-    fn pad_until_year_month() {
-        assert_eq!(normalize_date_until("2026-03"), "2026-03-31-23-59-59");
-    }
-
-    #[test]
-    fn pad_from_date() {
-        assert_eq!(normalize_date_from("2026-03-08"), "2026-03-08-00-00-00");
-    }
-
-    #[test]
-    fn pad_until_date() {
-        assert_eq!(normalize_date_until("2026-03-08"), "2026-03-08-23-59-59");
-    }
 
     /// A rotation stamp is the *end* of the file's span, so the selection has to
     /// reach one file past each bound. These fixtures rotate daily at midnight.

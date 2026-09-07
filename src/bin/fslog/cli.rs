@@ -7,9 +7,11 @@ use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use freeswitch_log_parser::{LogLevel, MessageKind, UnclassifiedTracking};
+use freeswitch_log_parser::{
+    stamp_lower_bound, stamp_upper_bound, LogLevel, MessageKind, UnclassifiedTracking,
+};
 
-use crate::files::{normalize_date_from, normalize_date_until, DEFAULT_MAX_LINE_BYTES};
+use crate::files::DEFAULT_MAX_LINE_BYTES;
 
 use crate::output::{ColorMode, EntryPrinter, FilterConfig, FilterParams};
 
@@ -315,8 +317,8 @@ pub fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>
         fgrep: filter.fgrep.clone(),
         grep,
         codec: filter.codec.clone(),
-        from_ts: from.map(normalize_date_from),
-        until_ts: until.map(normalize_date_until),
+        from_ts: from.map(stamp_lower_bound),
+        until_ts: until.map(stamp_upper_bound),
     })
     .unwrap_or_else(|e| {
         eprintln!("fslog: {e}");

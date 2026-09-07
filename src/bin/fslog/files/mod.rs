@@ -6,9 +6,7 @@ mod read;
 
 use std::path::{Path, PathBuf};
 
-pub use discover::{
-    discover_log_files, filter_files_by_date, normalize_date_from, normalize_date_until, LogFile,
-};
+pub use discover::{discover_log_files, filter_files_by_date, LogFile};
 #[cfg(feature = "tui")]
 pub use read::open_full_tail_reader;
 pub use read::{

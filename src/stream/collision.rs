@@ -41,15 +41,30 @@ impl WriteCursor {
         self.0 = None;
     }
 
-    /// Offset within a line of `line_len` bytes at which the write spends its
-    /// budget, or `None` if it cannot reach it here.
+    /// Offset within a line of `line_len` bytes at which a write with `spent`
+    /// bytes behind it spends its budget, or `None` if it cannot reach it here.
     ///
     /// An intact write owes a newline it can still afford, so reaching the
     /// budget inside the line is itself the cut: `line_len + 1` remaining is
     /// the largest write that fits, `line_len` the smallest that does not.
-    pub(super) fn boundary_in(&self, line_len: usize) -> Option<usize> {
-        let remaining = WRITE_LIMIT.checked_sub(self.0?)?;
+    fn budget_ends(spent: usize, line_len: usize) -> Option<usize> {
+        let remaining = WRITE_LIMIT.checked_sub(spent)?;
         (remaining <= line_len).then_some(remaining)
+    }
+
+    /// Offset within a line of `line_len` bytes at which the write in progress
+    /// spends its budget, or `None` if it cannot reach it here.
+    pub(super) fn boundary_in(&self, line_len: usize) -> Option<usize> {
+        Self::budget_ends(self.0?, line_len)
+    }
+
+    /// Where the next cut would fall after a split at `at`, if the chunk
+    /// starting there is a prepend write that can reach its budget in the line.
+    pub(super) fn boundary_after(prepended: bool, at: usize, line_len: usize) -> Option<usize> {
+        if !prepended {
+            return None;
+        }
+        Some(at + Self::budget_ends(0, line_len - at)?)
     }
 
     /// Account for a line of `line_len` bytes and the newline after it.

@@ -8,6 +8,7 @@ mod grouping;
 mod stats;
 mod warnings;
 
+use super::collision::WRITE_LIMIT;
 use super::entry::WARNING_EXCERPT_LEN;
 use super::*;
 use crate::codec::{CodecMedia, CodecOffer};

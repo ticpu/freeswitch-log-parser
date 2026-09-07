@@ -20,16 +20,10 @@ use crate::line::{
 use crate::message::{classify_message, MessageKind};
 
 use block::BlockBuilder;
-use collision::{WriteCursor, DECODE_DRIFT, WRITE_LIMIT};
+use collision::{WriteCursor, DECODE_DRIFT};
 
 pub use entry::{Block, LogEntry, ParseWarning, SessionReading};
 pub use stats::{ParseStats, UnclassifiedLine, UnclassifiedReason, UnclassifiedTracking};
-
-/// Where the next cut would fall after a split at `at`, if the chunk starting
-/// there is a prepend write that can reach its budget inside this line.
-fn arm_boundary(prepended: bool, at: usize, line_len: usize) -> Option<usize> {
-    (prepended && at + WRITE_LIMIT <= line_len).then_some(at + WRITE_LIMIT)
-}
 
 /// Bytes of the line's own header, which the heuristic must not match inside or
 /// every line would split on itself.
@@ -81,7 +75,7 @@ fn scan_splits(
                     splits.push(offset);
                     cut_verdicts.push(true);
                     chunk_start = offset;
-                    next_boundary = arm_boundary(uuid, offset, end);
+                    next_boundary = WriteCursor::boundary_after(uuid, offset, end);
                     offset += UUID_PREFIX_LEN;
                     continue;
                 }
@@ -102,7 +96,8 @@ fn scan_splits(
                 splits.push(split_at);
                 cut_verdicts.push(false);
                 chunk_start = split_at;
-                next_boundary = arm_boundary(is_uuid_at(bytes, split_at), split_at, end);
+                next_boundary =
+                    WriteCursor::boundary_after(is_uuid_at(bytes, split_at), split_at, end);
                 offset += 27;
             } else {
                 // Header at the current chunk's own start, already accounted

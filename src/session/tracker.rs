@@ -8,7 +8,7 @@ use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 use super::conference::{
     self, ConferenceEvent, ConferenceMembership, ConferenceRegistry, ConferenceTarget,
 };
-use super::index::{deindex, IndexedFields};
+use super::index::IndexedFields;
 use super::loopback;
 use super::parse::parse_new_channel;
 use super::state::{SessionSnapshot, SessionState};
@@ -219,30 +219,19 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         self.unique_live_leg(&a_channel, b_uuid)
     }
 
-    /// Point two legs at each other, retire the A leg's pending bridge target,
-    /// and bring both directions of `by_other_leg` in line.
+    /// Point two legs at each other and retire the A leg's pending bridge target.
     ///
-    /// The diff bracket around `next()` would reindex whichever leg produced the
-    /// entry, but not its peer — indexing both here keeps the pair symmetric
-    /// whichever side the log spoke from.
+    /// The diff bracket around `next()` covers whichever leg produced the entry
+    /// and neither the peer nor, on the back-link path, the A leg — so each side
+    /// takes a bracket of its own and one mechanism maintains every index.
     fn link_pair(&mut self, a_uuid: &str, b_uuid: &str) {
-        let a_old_pending = self
-            .sessions
-            .get(a_uuid)
-            .and_then(|s| s.pending_bridge_target.clone());
-
-        let a_state = self.sessions.entry(a_uuid.to_string()).or_default();
-        let a_old_leg = a_state.other_leg_uuid.replace(b_uuid.to_string());
-        a_state.pending_bridge_target = None;
-
-        let b_state = self.sessions.entry(b_uuid.to_string()).or_default();
-        let b_old_leg = b_state.other_leg_uuid.replace(a_uuid.to_string());
-
-        self.index_other_leg(a_uuid, a_old_leg, b_uuid);
-        self.index_other_leg(b_uuid, b_old_leg, a_uuid);
-        if let Some(old_target) = a_old_pending {
-            deindex(&mut self.by_pending_target, &old_target, a_uuid);
-        }
+        self.mutate_indexed(a_uuid, |a| {
+            a.other_leg_uuid = Some(b_uuid.to_string());
+            a.pending_bridge_target = None;
+        });
+        self.mutate_indexed(b_uuid, |b| {
+            b.other_leg_uuid = Some(a_uuid.to_string());
+        });
     }
 
     /// Cross-session leg linking. Called after `update_from_entry` so per-session

@@ -9,7 +9,7 @@ use super::tracker::SessionTracker;
 
 /// Drop `uuid` from the set under `key`, and the key itself once it is empty —
 /// a lingering empty set would read as a live candidate list.
-pub(super) fn deindex(map: &mut HashMap<String, HashSet<String>>, key: &str, uuid: &str) {
+fn deindex(map: &mut HashMap<String, HashSet<String>>, key: &str, uuid: &str) {
     if let Some(set) = map.get_mut(key) {
         set.remove(uuid);
         if set.is_empty() {
@@ -58,6 +58,17 @@ impl IndexedFields {
 }
 
 impl<I: Iterator<Item = String>> SessionTracker<I> {
+    /// Mutate one session inside its own diff bracket, for writes the bracket
+    /// around `next()` does not cover — a peer's, or a session the entry is
+    /// not about.
+    pub(super) fn mutate_indexed(&mut self, uuid: &str, edit: impl FnOnce(&mut SessionState)) {
+        let state = self.sessions.entry(uuid.to_string()).or_default();
+        let old = IndexedFields::of(state);
+        edit(state);
+        let new = IndexedFields::of(state);
+        self.apply_index_changes(uuid, old, new);
+    }
+
     /// Bring every index in line with one bracket's worth of mutation.
     pub(super) fn apply_index_changes(
         &mut self,
@@ -122,7 +133,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// Record `uuid`'s `other_leg_uuid` transition in `by_other_leg`,
     /// removing the superseded key so a stale entry cannot mislink a later
     /// `New Channel` back-link. Every write to the index goes through here.
-    pub(super) fn index_other_leg(&mut self, uuid: &str, old_leg: Option<String>, new_leg: &str) {
+    fn index_other_leg(&mut self, uuid: &str, old_leg: Option<String>, new_leg: &str) {
         if let Some(old) = old_leg {
             if old != new_leg {
                 self.deindex_other_leg(&old, uuid);
@@ -134,7 +145,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
 
     /// Drop `key` only while it still names `uuid`: a later pair may have
     /// re-pointed it at another session, whose link this would otherwise cut.
-    pub(super) fn deindex_other_leg(&mut self, key: &str, uuid: &str) {
+    fn deindex_other_leg(&mut self, key: &str, uuid: &str) {
         if self.by_other_leg.get(key).is_some_and(|u| u == uuid) {
             self.by_other_leg.remove(key);
         }

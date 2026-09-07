@@ -419,131 +419,164 @@ impl<I: Iterator<Item = String>> LogStream<I> {
     }
 }
 
+/// What the line source has for the dispatcher.
+enum Sourced {
+    Line(String),
+    /// A segment ended and its context is already cleared; a pending entry is
+    /// the last of that segment, not the first of the next.
+    Segment,
+    Eof,
+}
+
+impl<I: Iterator<Item = String>> LogStream<I> {
+    /// The next chunk to dispatch: a queued split first, then the underlying
+    /// iterator. A queued chunk skips `detect_collision`, which already walked it.
+    fn next_line(&mut self) -> Sourced {
+        if let Some(split) = self.split_pending.pop_front() {
+            self.stats.lines_split += 1;
+            return Sourced::Line(split);
+        }
+
+        let Some(mut line) = self.lines.next() else {
+            return Sourced::Eof;
+        };
+
+        // Exactly the sentinel, never merely starting with it: crash padding
+        // leaves real log lines with a leading NUL that decodes as valid text.
+        if line == SEGMENT_BOUNDARY {
+            self.last_uuid.clear();
+            self.last_timestamp.clear();
+            // A write cannot continue across files, and the cut verdicts
+            // describe lines the next segment never saw.
+            self.cursor.lose();
+            self.cut_verdicts.clear();
+            self.prev_line_cut = false;
+            self.line_cut = false;
+            return Sourced::Segment;
+        }
+
+        self.line_number += 1;
+        self.stats.lines_processed += 1;
+
+        // Trimmed here rather than at decode so the CR is still on the line
+        // when its cost is counted; offsets are against the trimmed text.
+        let on_disk_len = line.len() + 1;
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        Sourced::Line(self.detect_collision(line, on_disk_len))
+    }
+
+    /// Move to the current chunk's verdict, returning the previous chunk's.
+    ///
+    /// Only the boundary mechanism's verdict: a contention split concatenated
+    /// records that were each written whole.
+    fn take_verdict(&mut self) -> bool {
+        self.line_cut = self.cut_verdicts.pop_front().unwrap_or(false);
+        if self.line_cut {
+            self.line_warning = Some(ParseWarning::CutLine);
+        }
+        std::mem::replace(&mut self.prev_line_cut, self.line_cut)
+    }
+
+    /// A line carrying its own header starts an entry, so it closes the one
+    /// before it — unless it extends the codec run that entry already owns.
+    fn dispatch_primary(&mut self, parsed: &RawLine<'_>, line: &str) -> Option<LogEntry> {
+        let uuid = parsed.uuid.unwrap_or("").to_string();
+        if self.merge_codec_run(parsed, &uuid, line) {
+            return None;
+        }
+
+        let yielded = self.take_pending();
+        let timestamp = parsed
+            .timestamp
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| self.last_timestamp.clone());
+        self.open_entry(parsed, uuid, timestamp);
+        yielded
+    }
+
+    fn dispatch_uuid_continuation(
+        &mut self,
+        parsed: &RawLine<'_>,
+        line: &str,
+        prev_cut: bool,
+    ) -> Option<LogEntry> {
+        let uuid = parsed.uuid.unwrap_or("").to_string();
+        // An EXECUTE trace is its own entry even mid-block, and a different
+        // UUID means a different session's output.
+        let continues = !parsed.message.starts_with("EXECUTE ")
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.entry.uuid.as_deref() == Some(uuid.as_str()));
+
+        if continues {
+            self.accumulate_continuation(parsed.message, line, true, prev_cut);
+            return None;
+        }
+        let yielded = self.take_pending();
+        self.open_entry(parsed, uuid, self.last_timestamp.clone());
+        yielded
+    }
+
+    /// A bare line joins the pending entry, or opens one on inherited context
+    /// when there is none to join.
+    fn dispatch_bare_continuation(&mut self, parsed: &RawLine<'_>, line: &str, prev_cut: bool) {
+        if self.pending.is_some() {
+            self.accumulate_continuation(parsed.message, line, false, prev_cut);
+            return;
+        }
+        self.record_unclassified(UnclassifiedReason::OrphanContinuation, Some(line));
+        let (uuid, timestamp) = (self.last_uuid.clone(), self.last_timestamp.clone());
+        self.open_entry(parsed, uuid, timestamp);
+    }
+
+    fn dispatch_empty(&mut self, line: &str) {
+        if self.pending.is_some() {
+            self.attach(line);
+        } else {
+            self.stats.lines_empty_orphan += 1;
+        }
+    }
+}
+
 impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
     type Item = LogEntry;
 
     fn next(&mut self) -> Option<LogEntry> {
         loop {
-            let line = if let Some(split) = self.split_pending.pop_front() {
-                self.stats.lines_split += 1;
-                // Already split out by a prior detect_collision pass —
-                // skip re-scanning, which would just walk the chunk again
-                // and find nothing.
-                split
-            } else {
-                let Some(mut line) = self.lines.next() else {
-                    return self.take_pending();
-                };
-
-                // Exactly the sentinel, never merely starting with it: crash
-                // padding leaves real log lines with a leading NUL, and decode
-                // passes those through as valid text. Treating one as a segment
-                // boundary would discard its content before any counter saw it.
-                if line == SEGMENT_BOUNDARY {
-                    let yielded = self.take_pending();
-                    self.last_uuid.clear();
-                    self.last_timestamp.clear();
-                    // A write cannot continue across files, and the cut
-                    // verdicts describe lines the next segment never saw.
-                    self.cursor.lose();
-                    self.cut_verdicts.clear();
-                    self.prev_line_cut = false;
-                    self.line_cut = false;
-                    if yielded.is_some() {
-                        return yielded;
-                    }
-                    continue;
-                }
-
-                self.line_number += 1;
-                self.stats.lines_processed += 1;
-
-                // Trimmed here rather than at decode so the CR is still on the
-                // line when its cost is counted. Split offsets are computed
-                // against the trimmed text; only the budget sees the byte.
-                let on_disk_len = line.len() + 1;
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-                self.detect_collision(line, on_disk_len)
+            let line = match self.next_line() {
+                Sourced::Line(line) => line,
+                Sourced::Segment => match self.take_pending() {
+                    Some(entry) => return Some(entry),
+                    None => continue,
+                },
+                Sourced::Eof => return self.take_pending(),
             };
 
-            // Only the boundary mechanism's verdict: a contention split
-            // concatenated records that were each written whole.
-            let chunk_cut = self.cut_verdicts.pop_front().unwrap_or(false);
-            self.line_cut = chunk_cut;
-            if chunk_cut {
-                self.line_warning = Some(ParseWarning::CutLine);
-            }
-            let prev_cut = std::mem::replace(&mut self.prev_line_cut, self.line_cut);
-
+            let prev_cut = self.take_verdict();
             let parsed = parse_line(&line);
 
-            match parsed.kind {
+            let yielded = match parsed.kind {
                 LineKind::Full | LineKind::System | LineKind::Truncated => {
-                    let uuid = parsed.uuid.unwrap_or("").to_string();
-
-                    // Merge consecutive codec negotiation entries with the same
-                    // UUID *and* media type — a video run following an audio one
-                    // describes a different negotiation and gets its own block.
-                    if self.merge_codec_run(&parsed, &uuid, &line) {
-                        continue;
-                    }
-
-                    let yielded = self.take_pending();
-                    let timestamp = parsed
-                        .timestamp
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|| self.last_timestamp.clone());
-                    self.open_entry(&parsed, uuid, timestamp);
-
-                    if yielded.is_some() {
-                        return yielded;
-                    }
+                    self.dispatch_primary(&parsed, &line)
                 }
-
                 LineKind::UuidContinuation => {
-                    let uuid = parsed.uuid.unwrap_or("").to_string();
-                    // An EXECUTE trace is its own entry even mid-block, and a
-                    // different UUID means a different session's output.
-                    let continues = !parsed.message.starts_with("EXECUTE ")
-                        && self
-                            .pending
-                            .as_ref()
-                            .is_some_and(|p| p.entry.uuid.as_deref() == Some(uuid.as_str()));
-
-                    if continues {
-                        self.accumulate_continuation(parsed.message, &line, true, prev_cut);
-                    } else {
-                        let yielded = self.take_pending();
-                        self.open_entry(&parsed, uuid, self.last_timestamp.clone());
-                        if yielded.is_some() {
-                            return yielded;
-                        }
-                    }
+                    self.dispatch_uuid_continuation(&parsed, &line, prev_cut)
                 }
-
                 LineKind::BareContinuation => {
-                    if self.pending.is_some() {
-                        self.accumulate_continuation(parsed.message, &line, false, prev_cut);
-                    } else {
-                        self.record_unclassified(
-                            UnclassifiedReason::OrphanContinuation,
-                            Some(&line),
-                        );
-                        let (uuid, timestamp) =
-                            (self.last_uuid.clone(), self.last_timestamp.clone());
-                        self.open_entry(&parsed, uuid, timestamp);
-                    }
+                    self.dispatch_bare_continuation(&parsed, &line, prev_cut);
+                    None
                 }
-
                 LineKind::Empty => {
-                    if self.pending.is_some() {
-                        self.attach(&line);
-                    } else {
-                        self.stats.lines_empty_orphan += 1;
-                    }
+                    self.dispatch_empty(&line);
+                    None
                 }
+            };
+
+            if yielded.is_some() {
+                return yielded;
             }
         }
     }

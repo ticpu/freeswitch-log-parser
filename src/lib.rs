@@ -1,7 +1,7 @@
 //! Parser for FreeSWITCH log files.
 //!
-//! Handles the full complexity of `mod_logfile` output: five distinct line
-//! formats, multi-line CHANNEL_DATA and SDP dumps, truncated buffer collisions,
+//! Handles the full complexity of `mod_logfile` output: the six [`LineKind`]
+//! shapes, multi-line CHANNEL_DATA and SDP dumps, truncated buffer collisions,
 //! and per-session state tracking — no regex, a single dependency
 //! (`freeswitch-types`).
 //!
@@ -47,7 +47,13 @@
 //!
 //! # Feature flags
 //!
-//! - **`cli`** — enables the `fslog` binary with clap, xz decompression, and regex filtering
+//! All off by default; docs.rs builds with all of them on.
+//!
+//! - **`sdp`** — `Block::sdp_codecs`, which parses an SDP body through `freeswitch-types`
+//! - **`cli`** — the `fslog` binary: clap, xz decompression, regex filtering. Enables `sdp`
+//! - **`tui`** — `fslog monitor`, the live call table. Enables `cli`
+//! - **`fixtures`** — the production-log test suite, which requires a corpus in
+//!   `tests/fixtures/` and fails rather than skips without one. Affects tests only
 
 mod attached;
 mod chain;

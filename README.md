@@ -18,9 +18,13 @@ Layer 2: LogStream          Iterator -> LogEntry    (structural state machine)
 Layer 3: SessionTracker     LogStream -> EnrichedEntry (per-UUID state)
 ```
 
-**Layer 1** classifies individual log lines into five formats (Full,
-System, UuidContinuation, BareContinuation, Truncated) and extracts
-positional fields (UUID, timestamp, log level, source, message).
+**Layer 1** classifies individual log lines into the six `LineKind`
+variants (Full, System, UuidContinuation, BareContinuation, Truncated,
+Empty) and extracts positional fields (UUID, timestamp, idle percentage,
+log level, source, message). The level is `freeswitch-types`' `LogLevel`,
+re-exported here along with its `ParseLogLevelError`, and
+`level_from_bracketed` reads the log's upper-case `[LEVEL]` token into
+one.
 
 **Layer 2** groups continuation lines, detects block boundaries
 (CHANNEL_DATA dumps, SDP bodies), reassembles multi-line variable
@@ -28,11 +32,25 @@ values, and classifies messages into semantic `MessageKind` variants:
 `Execute`, `Dialplan`, `ChannelData`, `ChannelField`, `Variable`,
 `SdpMarker`, `StateChange`, `CodecNegotiation`, `Media`,
 `ChannelLifecycle`, `OriginateSuccess`, `SipInvite`, `EventSocket`,
-`General`, plus the
+`Dtmf`, `General`, plus the
 synthetic `FileChange`/`DateChange` markers. `SipInvite` is the
 canonical `sip_call_id ↔ channel_uuid` correlation primitive — sofia
 emits it for every inbound and outbound call regardless of dialplan.
 Every entry carries both a typed `Block` and raw `attached` lines.
+
+`MessageKind::Variable` carries the bare variable name: the dump's
+`variable_` prefix is stripped before the variant is built, so downstream
+code stripping it a second time compiles and silently does nothing. Use
+`freeswitch_types::variable_key` when you need the prefixed spelling
+back.
+
+`attached` is `AttachedLines`, a bounded buffer. A line past
+`LogStream::max_attached_bytes` — or past the 4 GiB its offsets address —
+is refused rather than stored, reported as
+`ParseWarning::AttachedOverflow` on the entry and counted in
+`ParseStats::lines_dropped`, so nothing goes missing quietly.
+`ParseStats::unaccounted_lines` returns an `i64`: zero when the
+accounting balances, either sign when it does not.
 
 Codec negotiation blocks are typed per media type: audio and video traces
 carry different fields and never share a block, and near-match verdicts are
@@ -81,10 +99,10 @@ corpus yields.
 Built to handle the worst `mod_logfile` produces — 2 KiB buffer
 truncations, multi-line CHANNEL_DATA dumps with embedded SDP/XML,
 write-contention collisions. An 11 MB fixture (185 physical lines
-averaging ~60 KB each) parses in ~60 ms. `LogEntry::attached` uses
-a compact contiguous buffer (`AttachedLines`) instead of
-`Vec<String>` to amortize allocations on CHANNEL_DATA-heavy entries
-— iteration via `&entry.attached` works unchanged.
+averaging ~60 KB each) parses in ~60 ms. `LogEntry::attached` stores its
+lines end to end in one buffer, which keeps a CHANNEL_DATA-heavy entry to
+a handful of allocations; iteration via `&entry.attached` yields each line
+as `&str`.
 
 ## Usage
 
@@ -193,7 +211,10 @@ They are built in a Debian bullseye container, so they run on any glibc
 From source, build with `cargo build --release --features cli` for
 everything below, or `--features tui` to also get the `monitor`
 dashboard. The library itself pulls no CLI dependencies unless a feature
-is enabled.
+is enabled. The four features are `sdp` (SDP body parsing through
+`freeswitch-types`), `cli`, `tui` — each enabling the one before it — and
+`fixtures`, which is orthogonal and gates the production-log test suite on
+a corpus in `tests/fixtures/`. docs.rs builds them all.
 
 ### Commands
 
@@ -344,8 +365,10 @@ fslog search --today -c dialplan -c execute --blocks
 FreeSWITCH and SIP crates by the same author, usable independently:
 
 - [`freeswitch-types`](https://crates.io/crates/freeswitch-types) — typed
-  FreeSWITCH enums (call direction, channel/call state, hangup causes). This
-  crate's only runtime dependency.
+  FreeSWITCH vocabulary: call direction, channel and call state, hangup causes,
+  the log level and its parse error, the event-header names, the channel
+  variable enums and their `variable_` prefix, and the loopback channel-name
+  parser. This crate's only runtime dependency.
 - [`freeswitch-sofia-trace-parser`](https://crates.io/crates/freeswitch-sofia-trace-parser)
   — parses sofia's `tport` SIP traces. Complements this crate: `fslog` gives you
   the channel-level view, the trace parser gives you the SIP messages behind it.

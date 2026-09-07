@@ -128,10 +128,9 @@ fn variables_learned_from_set_execute() {
         format!("{UUID1} EXECUTE [depth=0] sofia/internal/+15550001234@192.0.2.1 set(call_direction=inbound)"),
         full_line(UUID1, TS2, "After set"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let entries: Vec<_> = tracker.by_ref().collect();
+    let entries = collect_enriched(lines.clone());
     assert_eq!(entries.len(), 3);
+    let tracker = track(lines);
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(
         state.variables.get("call_direction").map(|s| s.as_str()),

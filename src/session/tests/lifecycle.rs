@@ -198,9 +198,7 @@ fn remove_session() {
         TS1,
         "Processing 5551111111->5552222222 in context public",
     )];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let mut tracker = track(lines);
     assert!(tracker.sessions().contains_key(UUID1));
     let removed = tracker.remove_session(UUID1).unwrap();
     assert_eq!(removed.dialplan_context.as_deref(), Some("public"));
@@ -213,9 +211,7 @@ fn stats_delegation() {
         full_line(UUID1, TS1, "First"),
         full_line(UUID1, TS2, "Second"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
     assert_eq!(tracker.stats().lines_processed, 2);
 }
 

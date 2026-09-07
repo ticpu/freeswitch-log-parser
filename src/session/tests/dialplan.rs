@@ -66,9 +66,8 @@ fn initial_context_preserved_across_transfers() {
             "Processing 5551234567->start_recording in context recordings",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let entries: Vec<_> = tracker.by_ref().collect();
+    let entries = collect_enriched(lines.clone());
+    let tracker = track(lines);
 
     let first = entries[0].session.as_ref().unwrap();
     assert_eq!(
@@ -100,9 +99,7 @@ fn attached_processing_line_updates_context() {
         full_line(UUID1, TS1, "Ring-Ready sofia/internal-v4/sos!"),
         format!("{UUID1} Processing Extension 1263 <1263>->start_recording in context recordings"),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(state.dialplan_context.as_deref(), Some("recordings"));
@@ -203,9 +200,7 @@ fn initial_destination_first_wins() {
             "Processing Jane Doe <5550009999>->check_end_call in context features",
         ),
     ];
-    let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream);
-    let _: Vec<_> = tracker.by_ref().collect();
+    let tracker = track(lines);
 
     let state = tracker.sessions().get(UUID1).unwrap();
     assert_eq!(

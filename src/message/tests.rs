@@ -280,8 +280,6 @@ fn variable_no_brackets() {
     }
 }
 
-// --- New: Extended patterns found in production ---
-
 #[test]
 fn execute_lowercase() {
     let msg = "Execute [depth=2] set(RECORD_STEREO=true)";

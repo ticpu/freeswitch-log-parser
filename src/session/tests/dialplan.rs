@@ -38,8 +38,6 @@ fn processing_line_extracts_context() {
     assert_eq!(session.dialplan_to.as_deref(), Some("5559876543"));
 }
 
-/// The context span used to be derived by adding the token's length to the
-/// marker offset, which omitted any padding before it and could end mid-codepoint.
 #[test]
 fn padded_multibyte_context_survives_the_tracker() {
     let lines = vec![full_line(
@@ -93,8 +91,7 @@ fn initial_context_preserved_across_transfers() {
 
 #[test]
 fn attached_processing_line_updates_context() {
-    // Format C continuation: a `Processing ...` line attached under a
-    // primary entry must update dialplan context like the primary path.
+    // A Format C continuation must update context like a primary line.
     let lines = vec![
         full_line(UUID1, TS1, "Ring-Ready sofia/internal-v4/sos!"),
         format!("{UUID1} Processing Extension 1263 <1263>->start_recording in context recordings"),

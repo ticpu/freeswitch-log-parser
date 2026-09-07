@@ -5,8 +5,6 @@ use freeswitch_types::ChannelVariable;
 
 use super::*;
 
-// --- New: Block detection tests ---
-
 #[test]
 fn channel_data_block_fields_and_variables() {
     let lines = vec![

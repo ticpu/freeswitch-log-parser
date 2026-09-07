@@ -23,8 +23,6 @@ fn a_nul_prefixed_line_is_not_a_segment_boundary() {
     );
 }
 
-// --- New: ParseStats tests ---
-
 #[test]
 fn stats_lines_processed() {
     let lines = vec![

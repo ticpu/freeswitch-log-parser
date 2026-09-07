@@ -17,8 +17,8 @@ fn codec_block(entry: &LogEntry) -> (&CodecMedia, &Vec<CodecOffer>, &Vec<CodecOf
 #[cfg(feature = "sdp")]
 #[test]
 fn sdp_body_parses_into_typed_codecs() {
-    // Shaped like sofia.c:7634's output, RFC 5737/3849 addresses. The body
-    // keeps the CRLF that reaches the log, which the parser must tolerate.
+    // Shaped like sofia.c:7634's output. The body keeps the CRLF that
+    // reaches the log, which the parser must tolerate.
     let lines = vec![
         full_line(UUID1, TS1, "Remote SDP:"),
         format!("{UUID1} v=0\r"),

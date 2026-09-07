@@ -542,8 +542,7 @@ fn attached_spans_index_the_raw_line_including_its_prefix() {
     let entry = entry_from(&lines);
     let fields = entry.fields();
 
-    // The prefix UUID of the attached line is located, and the caller-id
-    // span sits past it in the same coordinate system.
+    // The caller-id span's offset is in the same coordinate system as the prefix.
     let attached: Vec<_> = fields
         .iter()
         .filter(|f| f.at == FieldLocation::Attached(0))

@@ -85,8 +85,7 @@ fn typed_variable_accessor() {
 
 #[test]
 fn multi_line_variable_survives_attached_rescan() {
-    // The block carries the reassembled multi-line value; re-scanning the
-    // raw attached opening fragment must not clobber it back to "v=0".
+    // Must not clobber the reassembled value back to its opening fragment, "v=0".
     let lines = vec![
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
         format!("{UUID1} Channel-Name: [sofia/internal/+15550001234@192.0.2.1]"),

@@ -3,8 +3,6 @@
 
 use super::*;
 
-// --- Existing behavior tests (preserved) ---
-
 #[test]
 fn inherits_uuid_for_bare_continuation() {
     let lines = vec![
@@ -207,8 +205,6 @@ fn uuid_continuation_different_uuid_yields() {
 
 #[test]
 fn system_line_uuid_continuation_not_absorbed() {
-    // After the bug fix, a UUID continuation should NOT be absorbed
-    // by a pending system line (empty UUID).
     let lines = vec![
         format!("{TS1} 95.97% [INFO] mod_event_socket.c:1772 Event Socket command"),
         format!("{UUID1} Channel-State: [CS_EXECUTE]"),
@@ -225,8 +221,6 @@ fn system_line_uuid_continuation_not_absorbed() {
 
 #[test]
 fn system_line_with_embedded_uuid_gets_entry_uuid() {
-    // System lines (Format B) where switch_cpp.cpp logs the UUID at the
-    // start of the message body should produce entries with the correct UUID.
     let lines = vec![
         format!("{TS1} 95.97% [DEBUG] switch_cpp.cpp:1466 {UUID1} DAA-LOG WaveManager originate"),
         format!(

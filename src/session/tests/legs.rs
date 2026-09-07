@@ -296,7 +296,6 @@ fn originate_success_corrects_wrong_target_match() {
 
 #[test]
 fn channel_data_other_leg_uuid() {
-    // Other-Leg-Unique-ID in CHANNEL_DATA (post-bridge info dump) sets other_leg_uuid
     let lines = vec![
         full_line(UUID1, TS1, "CHANNEL_DATA:"),
         format!("{UUID1} Other-Leg-Unique-ID: [{UUID2}]"),

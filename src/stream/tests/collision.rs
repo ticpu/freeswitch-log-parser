@@ -3,13 +3,6 @@
 
 use super::*;
 
-// BUG 1: When LogStream processes a TrackedChain of multiple file segments,
-// last_timestamp from the previous segment bleeds into continuation lines
-// at the start of the next segment. This causes entries to get timestamps
-// from a completely different file (potentially hours earlier).
-//
-// Reproduces: f2cb66d4 getting timestamp 23:58:03 from the rotated file
-// when freeswitch.log starts with its continuation lines.
 #[test]
 fn continuation_lines_at_file_boundary_must_not_inherit_previous_timestamp() {
     use crate::TrackedChain;

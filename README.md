@@ -210,6 +210,10 @@ Global flags: `--dir <PATH>` (or `FSLOG_DIR`, default
 `/var/log/freeswitch`), `--color auto|always|never`, `--pager` (alias
 `--less`), `--version`.
 
+A `FILE` argument is resolved the same way by every command that takes one: a
+path that is absolute or already exists is used as typed, anything else is a
+name looked for under `--dir`. Omitted, it is `freeswitch.log` there.
+
 Output goes straight to stdout unless `--pager` is given, and the pager is
 started only once there is something to show, so an empty search never leaves
 `less` holding the terminal. `FSLOG_PAGER` overrides the command (default

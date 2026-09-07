@@ -1,7 +1,6 @@
 //! `fslog search` — the file set a date window selects, and the parse over it.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
 use std::process;
 
 use crate::cli::{build_filter, SearchArgs};
@@ -55,8 +54,8 @@ fn coverage_note(files: &[files::LogFile]) -> Option<String> {
 /// date-filtered discovery in `dir`. Returns `None` when nothing matches or the
 /// user declines the large-scan confirmation.
 fn resolve_search_files(
-    dir: &Path,
     args: &SearchArgs,
+    all_files: &[files::LogFile],
     from: Option<&str>,
     until: Option<&str>,
 ) -> io::Result<Option<Vec<Segment>>> {
@@ -65,8 +64,7 @@ fn resolve_search_files(
         return Ok(Some(v));
     }
 
-    let all_files = discover_log_files(dir)?;
-    let selected = filter_files_by_date(&all_files, from, until);
+    let selected = filter_files_by_date(all_files, from, until);
     if selected.is_empty() {
         eprintln!("no log files match the date range");
         return Ok(None);
@@ -123,24 +121,22 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
         filter.set_fgrep(p)?;
     }
 
-    let files = match resolve_search_files(dir, args, from.as_deref(), until.as_deref())? {
+    // One directory walk feeds both the file set and the coverage note. With
+    // explicit --file paths there is nothing to discover: the operator already
+    // knows what was searched, so the note has nothing to add either.
+    let discovered = match args.files.is_empty() {
+        true => discover_log_files(dir)?,
+        false => Vec::new(),
+    };
+
+    let files = match resolve_search_files(args, &discovered, from.as_deref(), until.as_deref())? {
         Some(f) => f,
         None => return Ok(()),
     };
 
-    // Coverage is only meaningful for the files discovery chose; with explicit
-    // --file paths the operator already knows what was searched.
-    let report_empty = || -> io::Result<()> {
-        let note = if args.files.is_empty() {
-            coverage_note(&discover_log_files(dir)?)
-        } else {
-            None
-        };
-        match note {
-            Some(n) => eprintln!("no matching entries; {n}"),
-            None => eprintln!("no matching entries"),
-        }
-        Ok(())
+    let report_empty = || match coverage_note(&discovered) {
+        Some(n) => eprintln!("no matching entries; {n}"),
+        None => eprintln!("no matching entries"),
     };
 
     // A needle that cannot span a line break lets whole files be ruled out before
@@ -163,7 +159,8 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
         files.clone()
     };
     if seeded.is_empty() {
-        return Ok(report_empty()?);
+        report_empty();
+        return Ok(());
     }
 
     let printer = args.filter.printer(ctx.color);
@@ -173,14 +170,15 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
     // the discovered peer legs, and a peer's own file need never mention the seed.
     let mut rendered = seeded;
     if args.related {
-        let discovered = related::discover(
+        let legs = related::discover(
             build_segments(&rendered, ctx.max_line_bytes),
             &filter.for_discovery(),
         );
-        if discovered.is_empty() {
-            return Ok(report_empty()?);
+        if legs.is_empty() {
+            report_empty();
+            return Ok(());
         }
-        let seeds: Vec<String> = discovered.into_iter().collect();
+        let seeds: Vec<String> = legs.into_iter().collect();
         filter.set_uuids(&seeds)?;
         filter.uuid_strict = true;
         rendered = files;
@@ -196,7 +194,7 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
     let run = run_output(out, build_segments(&rendered, ctx.max_line_bytes), &plan)?;
 
     if run.matched == 0 {
-        report_empty()?;
+        report_empty();
     }
     print_hidden(
         &filter,

@@ -43,11 +43,17 @@ pub fn display_name(path: &Path) -> String {
         .into_owned()
 }
 
-/// Resolve an optional FILE argument, defaulting to the live log in `dir`.
+/// Resolve an optional FILE argument, defaulting to the live log in `dir`. A
+/// path that is absolute or already exists is taken as typed; anything else is
+/// a name to look for in `dir`, so the same argument works for every command.
 pub fn resolve_log_path(dir: &Path, file: Option<&str>) -> PathBuf {
-    match file {
-        Some(p) => PathBuf::from(p),
-        None => dir.join("freeswitch.log"),
+    let Some(path) = file.map(PathBuf::from) else {
+        return dir.join("freeswitch.log");
+    };
+    if path.is_absolute() || path.exists() {
+        path
+    } else {
+        dir.join(path)
     }
 }
 

@@ -1,7 +1,6 @@
 //! `fslog read` — one file, or stdin, through the shared parse loop.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
 
 use crate::cli::{build_filter, ReadArgs};
 use crate::files::{display_name, lossy_line_iter, open_log_reader, resolve_log_path};
@@ -20,17 +19,8 @@ pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> anyhow::Result
                 max_line_bytes,
             ),
         ),
-        Some(path) => {
-            let p = PathBuf::from(path);
-            let p = if p.is_absolute() || p.exists() {
-                p
-            } else {
-                dir.join(&p)
-            };
-            (display_name(&p), open_log_reader(&p, max_line_bytes)?)
-        }
-        None => {
-            let p = resolve_log_path(dir, None);
+        file => {
+            let p = resolve_log_path(dir, file);
             (display_name(&p), open_log_reader(&p, max_line_bytes)?)
         }
     };

@@ -379,3 +379,33 @@ fn concurrent_loopbacks_to_one_destination_do_not_link() {
         "two live A legs share the name; picking one would be a guess"
     );
 }
+
+#[test]
+fn relinking_a_leg_keeps_a_later_pairs_back_link() {
+    let tracker = track(vec![
+        full_line(
+            UUID1,
+            TS1,
+            &format!("Originate Resulted in Success: [sofia/internal/one] Peer UUID: {UUID3}"),
+        ),
+        full_line(
+            UUID2,
+            TS1,
+            &format!("Originate Resulted in Success: [sofia/internal/two] Peer UUID: {UUID3}"),
+        ),
+        full_line(
+            UUID1,
+            TS2,
+            &format!("Originate Resulted in Success: [sofia/internal/three] Peer UUID: {UUID4}"),
+        ),
+    ]);
+    assert_eq!(
+        tracker.by_other_leg.get(UUID3).map(String::as_str),
+        Some(UUID2),
+        "the second pair owns UUID3's back-link; the first leg moving on must not cut it"
+    );
+    assert_eq!(
+        tracker.by_other_leg.get(UUID4).map(String::as_str),
+        Some(UUID1)
+    );
+}

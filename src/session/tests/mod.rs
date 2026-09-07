@@ -18,6 +18,7 @@ use crate::testdata::{full_line, TS1, TS2, UUID1, UUID2};
 use super::*;
 
 const UUID3: &str = "c3d4e5f6-a7b8-9012-cdef-234567890123";
+const UUID4: &str = "d4e5f6a7-b8c9-0123-def0-345678901234";
 
 fn collect_enriched(lines: Vec<String>) -> Vec<EnrichedEntry> {
     let stream = LogStream::new(lines.into_iter());

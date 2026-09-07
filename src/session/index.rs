@@ -105,7 +105,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                 Some(new_leg) => self.index_other_leg(uuid, old.clone(), new_leg),
                 None => {
                     if let Some(old_leg) = old {
-                        self.by_other_leg.remove(old_leg);
+                        self.deindex_other_leg(old_leg, uuid);
                     }
                 }
             }
@@ -131,10 +131,18 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     pub(super) fn index_other_leg(&mut self, uuid: &str, old_leg: Option<String>, new_leg: &str) {
         if let Some(old) = old_leg {
             if old != new_leg {
-                self.by_other_leg.remove(&old);
+                self.deindex_other_leg(&old, uuid);
             }
         }
         self.by_other_leg
             .insert(new_leg.to_string(), uuid.to_string());
+    }
+
+    /// Drop `key` only while it still names `uuid`: a later pair may have
+    /// re-pointed it at another session, whose link this would otherwise cut.
+    pub(super) fn deindex_other_leg(&mut self, key: &str, uuid: &str) {
+        if self.by_other_leg.get(key).is_some_and(|u| u == uuid) {
+            self.by_other_leg.remove(key);
+        }
     }
 }

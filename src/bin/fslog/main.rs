@@ -69,7 +69,9 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     if let Err(e) = dispatch(Cli::parse()) {
-        eprintln!("fslog: {e}");
+        // `{e:#}` prints the whole context chain; `{e}` prints only the
+        // outermost, which is the one the caller already knew.
+        eprintln!("fslog: {e:#}");
         process::exit(1);
     }
 }

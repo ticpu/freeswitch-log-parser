@@ -56,6 +56,7 @@ fn process_log(
     path: &Path,
     context_filter: ContextFilter,
     max_line_bytes: usize,
+    linger: Duration,
 ) -> io::Result<AppState> {
     let segments = monitor_segments(dir, path, open_log_reader, max_line_bytes)?;
 
@@ -63,12 +64,7 @@ fn process_log(
     let stream = LogStream::new(chain);
     let mut tracker = SessionTracker::new(stream);
 
-    let mut state = AppState::new(
-        dir.to_path_buf(),
-        context_filter,
-        Vec::new(),
-        Duration::from_secs(3600),
-    );
+    let mut state = AppState::new(dir.to_path_buf(), context_filter, Vec::new(), linger);
 
     while let Some(enriched) = tracker.next() {
         if let Some(msg) = build_update(&enriched, tracker.sessions()) {
@@ -79,7 +75,12 @@ fn process_log(
     Ok(state)
 }
 
-pub fn run_dump(dir: &Path, args: &MonitorArgs, max_line_bytes: usize) -> io::Result<()> {
+pub fn run_dump(
+    dir: &Path,
+    args: &MonitorArgs,
+    max_line_bytes: usize,
+    linger: Duration,
+) -> io::Result<()> {
     let path = resolve_log_path(dir, args.file.as_deref());
 
     let context_filter = args
@@ -88,7 +89,7 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs, max_line_bytes: usize) -> io::Re
         .map(ContextFilter::parse)
         .unwrap_or(ContextFilter::None);
 
-    let state = process_log(dir, &path, context_filter, max_line_bytes)?;
+    let state = process_log(dir, &path, context_filter, max_line_bytes, linger)?;
 
     // `println!` panics when the reader closes early; `fslog monitor --dump |
     // head` is exactly that.
@@ -105,11 +106,12 @@ pub fn run_dump(dir: &Path, args: &MonitorArgs, max_line_bytes: usize) -> io::Re
 }
 
 pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> anyhow::Result<()> {
-    if args.dump {
-        return Ok(run_dump(dir, &args, max_line_bytes)?);
-    }
-
     let cfg = config::load_config(args.config.as_deref())?;
+    let linger = Duration::from_secs(cfg.monitor.hangup_linger_seconds);
+
+    if args.dump {
+        return Ok(run_dump(dir, &args, max_line_bytes, linger)?);
+    }
 
     let path = resolve_log_path(dir, args.file.as_deref());
 
@@ -128,12 +130,7 @@ pub fn run(dir: &Path, args: MonitorArgs, max_line_bytes: usize) -> anyhow::Resu
         .map(ContextFilter::parse)
         .unwrap_or(ContextFilter::None);
 
-    let mut state = AppState::new(
-        dir.to_path_buf(),
-        context_filter,
-        cfg.tools,
-        Duration::from_secs(cfg.monitor.hangup_linger_seconds),
-    );
+    let mut state = AppState::new(dir.to_path_buf(), context_filter, cfg.tools, linger);
     state.remove_tx = Some(remove_tx);
 
     let mut table_state = TableState::default();

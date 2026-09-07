@@ -12,7 +12,6 @@ pub fn run(ctx: &RunCtx, out: &mut dyn Write) -> anyhow::Result<()> {
             .date
             .as_deref()
             .map(|d| {
-                // "2026-03-08-16-52-07" → "2026-03-08 16:52"
                 if d.len() >= 16 {
                     format!("{} {}:{}", &d[..10], &d[11..13], &d[14..16])
                 } else {

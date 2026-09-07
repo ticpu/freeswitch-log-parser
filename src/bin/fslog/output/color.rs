@@ -21,9 +21,8 @@ pub(super) const DIM_YELLOW: &str = "\x1b[33;2m";
 pub(super) const DIM_GREEN: &str = "\x1b[32;2m";
 pub(super) const BRIGHT_GREEN: &str = "\x1b[92m";
 
-/// Every escape a rendered entry can carry, resolved once from the colour mode.
-/// Empty strings when colour is off, so a call site interpolates the same
-/// format string either way instead of choosing between two.
+/// Every escape a render can emit, resolved once from the colour mode. Empty
+/// with colour off, so a call site interpolates one format string either way.
 pub struct Palette {
     /// Whether the escapes are real, for the passes that rewrite text rather
     /// than wrap it.
@@ -101,9 +100,8 @@ impl Palette {
             .expect("writing to a String cannot fail");
     }
 
-    /// Paint UUIDs embedded in `text` with the hue the UUID column uses, so a
-    /// peer leg named mid-message is recognizable. `resume` restores the
-    /// caller's colour after each match.
+    /// Paint UUIDs inside `text` with the hue the UUID column uses; `resume`
+    /// restores the caller's colour after each match.
     pub(super) fn colorize_uuids<'a>(&self, text: &'a str, resume: &str) -> Cow<'a, str> {
         if !self.enabled {
             return Cow::Borrowed(text);
@@ -179,8 +177,7 @@ pub(super) fn uuid_truecolor(uuid: &str) -> (u8, u8, u8) {
 }
 
 /// Split `Dialplan: <channel> <data>` into the part every line of the block
-/// repeats and the part that differs. The channel never contains a space, so the
-/// one after it ends the prefix.
+/// repeats and the part that differs. The channel never contains a space.
 pub(super) fn split_dialplan_line(msg: &str) -> Option<(&str, &str)> {
     let tag = ["Dialplan: ", "Chatplan: "]
         .into_iter()
@@ -189,10 +186,8 @@ pub(super) fn split_dialplan_line(msg: &str) -> Option<(&str, &str)> {
     Some((&msg[..msg.len() - data.len() - 1], data))
 }
 
-/// Drop what a continuation line repeats from the entry that owns it: its own
-/// UUID, and the `Dialplan:`/`Chatplan:` channel the header already names. Every
-/// line of a dialplan block carries both, which buries the verdict past column 90
-/// where nothing lines up.
+/// Drop the UUID and dialplan channel a continuation line repeats from its own
+/// entry's header, which otherwise buries the verdict where nothing lines up.
 pub(super) fn strip_repeated_prefix<'a>(line: &'a str, uuid: &str) -> &'a str {
     let rest = line
         .strip_prefix(uuid)

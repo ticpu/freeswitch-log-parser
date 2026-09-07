@@ -117,9 +117,8 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
         filter.set_fgrep(p)?;
     }
 
-    // One directory walk feeds both the file set and the coverage note. With
-    // explicit --file paths there is nothing to discover: the operator already
-    // knows what was searched, so the note has nothing to add either.
+    // One walk feeds both the file set and the coverage note; explicit --file
+    // paths need neither.
     let discovered = match args.files.is_empty() {
         true => discover_log_files(dir)?,
         false => Vec::new(),
@@ -162,9 +161,8 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
     let printer = args.filter.printer(ctx.color);
     let failures = ReadFailures::default();
 
-    // The narrowed set is sound for discovery, which matches the seed the prescan
-    // looked for. It is not sound for output: `--related` re-keys the filter onto
-    // the discovered peer legs, and a peer's own file need never mention the seed.
+    // The narrowed set is unsound for output under `--related`: a discovered
+    // peer's own file need never mention the seed the prescan looked for.
     let mut rendered = seeded;
     if args.related {
         let legs = related::discover(
@@ -195,9 +193,8 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
         &plan,
     )?;
 
-    // Before the counts are reported: a file the scan could not open makes every
-    // one of them, "no matching entries" most of all, an answer about less than
-    // the operator asked for.
+    // Before any count is reported: a file the scan never read makes "no
+    // matching entries" an answer about less than was asked for.
     failures.check()?;
 
     if run.matched == 0 {

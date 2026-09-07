@@ -114,9 +114,8 @@ pub fn pattern_flag(fargs: &FilterArgs, positional: bool) -> &'static str {
     }
 }
 
-/// Report what a narrowed scope kept out of the output. Pattern search reads the
-/// message only and `-u` the UUID column only, both deliberately; the silence is
-/// what misleads, since hiding nothing and hiding hundreds print identically.
+/// Report what a narrowed scope kept out. The narrowing is deliberate; the
+/// silence is not, since hiding nothing and hiding hundreds print identically.
 pub fn print_hidden(filter: &FilterConfig, flag: &str, related: bool, hidden: &HiddenCounts) {
     if hidden.pattern_in_uuid > 0 {
         eprintln!(

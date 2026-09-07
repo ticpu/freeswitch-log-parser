@@ -44,6 +44,8 @@ pub fn discover_log_files(dir: &Path) -> anyhow::Result<Vec<LogFile>> {
     Ok(files)
 }
 
+/// A rotation stamp is the *end* of the span a file holds, so each bound reaches
+/// one file past itself, and the unstamped active log is never excluded.
 pub fn filter_files_by_date<'a>(
     files: &'a [LogFile],
     from: Option<&str>,
@@ -57,12 +59,10 @@ pub fn filter_files_by_date<'a>(
         .enumerate()
         .filter(|(i, f)| {
             let Some(ref file_date) = f.date else {
-                // Current log (no date) — always include
                 return true;
             };
 
             if let Some(ref until) = until_norm {
-                // Skip file N if file_date > until AND previous file also > until
                 if file_date.as_str() > until.as_str() && *i > 0 {
                     if let Some(ref prev_date) = files[*i - 1].date {
                         if prev_date.as_str() > until.as_str() {
@@ -73,17 +73,13 @@ pub fn filter_files_by_date<'a>(
             }
 
             if let Some(ref from) = from_norm {
-                // Include if file_date >= from (file might contain entries up to file_date)
-                // But also include the file just before from, since it spans from previous rotation
                 if file_date.as_str() < from.as_str() {
-                    // Check if next file's date >= from (this file might contain the start)
                     if *i + 1 < files.len() {
                         if let Some(ref next_date) = files[*i + 1].date {
                             if next_date.as_str() >= from.as_str() {
                                 return true;
                             }
                         } else {
-                            // Next is current log — include this file
                             return true;
                         }
                     }
@@ -101,8 +97,7 @@ pub fn filter_files_by_date<'a>(
 mod tests {
     use super::*;
 
-    /// A rotation stamp is the *end* of the file's span, so the selection has to
-    /// reach one file past each bound. These fixtures rotate daily at midnight.
+    /// These fixtures rotate daily at midnight.
     fn day_files(days: &[Option<&str>]) -> Vec<LogFile> {
         days.iter()
             .map(|d| LogFile {

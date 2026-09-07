@@ -9,11 +9,8 @@ use crate::config::Tool;
 
 use freeswitch_log_parser::{CallDirection, CallState, ChannelState};
 
-/// The state column's label.
-///
-/// The call state is what an operator is watching a call for, so it wins where
-/// both are known — but a terminal channel state outranks it, or a leg being
-/// torn down would sit at ACTIVE until it vanished.
+/// The state column's label. Call state wins where both are known, except a
+/// terminal channel state, or a leg being torn down would sit at ACTIVE.
 pub(super) fn state_label(
     channel: Option<ChannelState>,
     call: Option<CallState>,

@@ -17,10 +17,8 @@ use xz2::read::XzDecoder;
 
 use super::display_name;
 
-/// One file's line-level anomalies. The first of each kind is reported where it
-/// happens, the rest counted into a single summary when the reader is dropped —
-/// a corrupt file otherwise emits the same warning once per line, thousands of
-/// times, and buries every other diagnostic under it.
+/// One file's line-level anomalies: first of each kind reported where it
+/// happens, rest counted into one summary, or a corrupt file warns per line.
 struct LineReport {
     name: String,
     over_cap: u64,
@@ -102,13 +100,8 @@ pub fn open_log_reader(
     ))
 }
 
-/// Yield log lines as `String`, replacing invalid UTF-8 with U+FFFD instead of
-/// panicking. mod_logfile's 2 KiB buffer truncation can chop a multi-byte
-/// codepoint mid-character; that benign case is recovered silently. A byte that
-/// can't be part of any UTF-8 sequence is genuine corruption — warn, don't hide.
-///
-/// A line past `max_line_bytes` is read only that far; what was dropped is
-/// reported, never silently missing.
+/// Yield log lines as `String`. A codepoint mod_logfile's buffer chopped is
+/// recovered silently; genuine corruption and an over-cap line are reported.
 pub fn lossy_line_iter(
     reader: Box<dyn BufRead>,
     name: String,
@@ -135,10 +128,8 @@ pub fn lossy_line_iter(
     ))
 }
 
-/// Where a reader parks a failure it cannot return. The parser takes an
-/// `Iterator<Item = String>`, so a file that dies mid-scan has no way back to
-/// the caller — and a scan that quietly covered fewer files than it was asked to
-/// prints an empty result that reads exactly like a real one.
+/// Where a reader parks a failure it cannot return: its item type is the
+/// parser's `String`, and a scan that skipped a file must not exit clean.
 #[derive(Clone, Default)]
 pub struct ReadFailures(Rc<RefCell<Vec<anyhow::Error>>>);
 

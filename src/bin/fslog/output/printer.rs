@@ -18,9 +18,8 @@ pub struct EntryPrinter {
     pub show_line_numbers: bool,
 }
 
-/// The clock and calendar halves of an entry's timestamp, by `get` rather than a
-/// byte range: a lossy decode puts a 3-byte U+FFFD wherever the log was corrupt,
-/// and one straddling either offset panics a slice.
+/// The clock and calendar halves of a timestamp. `get`, not a byte range: a
+/// lossy decode's U+FFFD straddling either offset panics a slice.
 pub fn stamp_time(ts: &str) -> &str {
     ts.get(11..).unwrap_or(ts)
 }
@@ -57,9 +56,8 @@ impl EntryPrinter {
                 false => (msg, AttachedView::Counted),
             };
         }
-        // With a body to head, the channel goes on the header alone and its data
-        // joins the body — otherwise the header would be the one line carrying
-        // both, and the block would not read as a column.
+        // The channel goes on the header alone and its data joins the body, or
+        // the block does not read as a column.
         match split_dialplan_line(msg) {
             Some((channel, data)) => (channel, AttachedView::Inline(Some(data))),
             None => (msg, AttachedView::Inline(None)),
@@ -96,9 +94,8 @@ impl EntryPrinter {
             write!(w, "{lc}L{line:>6} ", line = entry.line_number)?;
         }
 
-        // Time and level share the level color: a run of one severity reads as a
-        // single band down the left edge. The line kind is Layer 1's business —
-        // `[{mkind}]` is what a reader of a call actually wants there.
+        // Time and level share the level colour, so a run of one severity reads
+        // as a single band down the left edge.
         writeln!(
             w,
             "{lc}{time:>15} {level:>7}{reset} {uuid} {lc}[{mkind}]{reset} {lc}{msg}{reset}",
@@ -121,9 +118,8 @@ impl EntryPrinter {
                 "{dim}         ({} attached lines){reset}",
                 entry.attached.len()
             ),
-            // Continuation lines the parser did not fold into a typed block are
-            // the entry's only content — dialplan regex verdicts, EXECUTE traces.
-            // Collapsing those to a count leaves nothing readable behind.
+            // Lines the parser folded into no typed block are the entry's only
+            // content; collapsing them to a count leaves nothing readable.
             AttachedView::Inline(head_data) => {
                 for line in head_data.into_iter().chain(&entry.attached) {
                     let line = strip_repeated_prefix(line, entry.uuid.as_deref().unwrap_or(""));

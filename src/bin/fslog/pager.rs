@@ -108,10 +108,8 @@ impl Write for PagedWriter {
     }
 }
 
-/// A reader that closed its end — the pager quit, or a downstream `| head` had
-/// enough — is normal termination. Every other write error is real and must
-/// surface: stopping on any I/O error would hide the difference between "the
-/// reader went away" and "we wrote truncated garbage".
+/// A reader that closed its end — the pager quit, `| head` had enough — is
+/// normal termination; every other write error means truncated output.
 pub fn is_broken_pipe(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::BrokenPipe
 }

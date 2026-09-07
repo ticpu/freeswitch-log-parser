@@ -12,13 +12,8 @@ use rayon::prelude::*;
 use crate::files::{open_log_file, Segment};
 use crate::output::{ColorMode, Palette};
 
-/// Whether `needle` can be prescanned without risking a false negative.
-///
-/// The prescan matches within one physical line. A free-text pattern can
-/// legitimately match only across an entry and the continuation lines the parser
-/// reassembles into it — physically separate lines the raw scan never joins — so
-/// prescanning free text could drop a file that really does match. A full UUID
-/// or a `token@host` Call-ID never spans a line break, so both are safe.
+/// Whether `needle` can be prescanned without risking a false negative. The scan
+/// matches within one physical line, and only an identifier cannot span two.
 pub fn is_single_line_safe(needle: &str) -> bool {
     is_uuid(needle) || is_sip_call_id(needle)
 }
@@ -34,10 +29,8 @@ fn is_sip_call_id(s: &str) -> bool {
     }
 }
 
-/// Narrow `files` to those whose decompressed bytes contain `needle`, scanning in
-/// parallel. Files that cannot be opened are kept rather than dropped: a prescan
-/// exists to save work, and guessing "no match" from a read failure would hide
-/// entries the full parse would have reported.
+/// Narrow `files` to those whose decompressed bytes contain `needle`. A file that
+/// will not open is kept: reading "no match" out of a read failure invents one.
 pub fn narrow(files: &[Segment], needle: &str, color: ColorMode) -> Vec<Segment> {
     // Not a debug_assert: an empty needle reaches `windows(0)`, which panics in
     // release too, with nothing to say about where it came from.

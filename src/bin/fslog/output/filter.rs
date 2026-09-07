@@ -7,9 +7,8 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 
 use freeswitch_log_parser::{find_uuids, normalize_entry_timestamp, Block, LogLevel};
 
-/// Build a case-insensitive multi-needle matcher. One automaton scans a haystack
-/// once for every needle, so a `--related` pass carrying hundreds of discovered
-/// leg UUIDs costs the same per entry as a single `-u`.
+/// Build a case-insensitive multi-needle matcher. One automaton scans once for
+/// every needle, so `--related`'s hundreds of legs cost what a single `-u` does.
 fn build_matcher(needles: &[String]) -> anyhow::Result<Option<AhoCorasick>> {
     if needles.is_empty() {
         return Ok(None);
@@ -74,10 +73,8 @@ pub struct FilterConfig {
     fgrep_ac: Option<AhoCorasick>,
     fgrep_needle: Option<String>,
     pub grep: Option<regex::Regex>,
-    /// `grep` recompiled case-insensitively. The UUID-column probe advertises
-    /// `-u`, which is case-insensitive, so probing with the case-sensitive regex
-    /// would report zero for an uppercase-hex pattern against a lowercase log —
-    /// the case most in need of the count.
+    /// `grep` recompiled case-insensitively: the UUID-column probe advertises
+    /// `-u`, so a case-sensitive one reports zero exactly where it matters.
     grep_ci: Option<regex::Regex>,
     /// Codec names, lowercased; an entry matches if its negotiation or SDP
     /// block names any of them.
@@ -130,10 +127,8 @@ impl FilterConfig {
         self.uuid_needles.len()
     }
 
-    /// A UUID named anywhere in the pattern, so a `PatternInUuid` report can name
-    /// the command instead of only the flag — `--grep 'Hangup on <uuid>'` is the
-    /// case that matters. `None` when the pattern names none, or when that UUID
-    /// is already a `-u` needle and the suggestion would change nothing.
+    /// A UUID named in the pattern, so a `PatternInUuid` report can name the
+    /// command. `None` where suggesting it would change nothing.
     pub fn suggested_uuid(&self) -> Option<&str> {
         let sources = self
             .fgrep_needle

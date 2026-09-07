@@ -17,8 +17,8 @@ const FIXTURES_DIR: &str = "tests/fixtures";
 /// dumps, SDP bodies and a video negotiation.
 const BUSY: &str = "pbx/freeswitch.log.2026-05-11-14-20-22.1.xz";
 
-/// Smallest fixture carrying write-budget collisions (234 lines longer than the
-/// 2047-byte budget, each colliding on it) and System lines with an embedded UUID.
+/// Smallest fixture carrying write-budget collisions and System lines whose UUID
+/// sits in the message.
 const CUT: &str = "bcf/freeswitch.log.2026-02-21-02-20-10.1.xz";
 
 const RA221: &str = "ra221/freeswitch.log.30.xz";
@@ -50,6 +50,17 @@ fn is_log_file(path: &Path) -> bool {
     name.ends_with(".xz") || name.ends_with(".log") || name.ends_with(".1")
 }
 
+fn log_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_log_file(p))
+        .collect();
+    files.sort();
+    files
+}
+
 fn fixture_corpora() -> Vec<(String, Vec<PathBuf>)> {
     let dir = Path::new(FIXTURES_DIR);
     let mut corpora: Vec<(String, Vec<PathBuf>)> = std::fs::read_dir(dir)
@@ -61,17 +72,15 @@ fn fixture_corpora() -> Vec<(String, Vec<PathBuf>)> {
         .filter(|p| p.is_dir())
         .map(|subdir| {
             let name = subdir.file_name().unwrap().to_string_lossy().into_owned();
-            let mut files: Vec<_> = std::fs::read_dir(&subdir)
-                .expect("read corpus dir")
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| is_log_file(p))
-                .collect();
-            files.sort();
+            let files = log_files_in(&subdir);
             (name, files)
         })
         .filter(|(_, files)| !files.is_empty())
         .collect();
+    let root = log_files_in(dir);
+    if !root.is_empty() {
+        corpora.push(("root".to_string(), root));
+    }
     corpora.sort_by(|a, b| a.0.cmp(&b.0));
     assert!(
         !corpora.is_empty(),
@@ -167,71 +176,6 @@ fn sdp_has_typed_block() {
         vec![]
     });
     assert_no_violations(violations, "SDP entries missing typed block");
-}
-
-#[test]
-fn channel_data_bare_continuations_accumulated() {
-    // mod_logfile stops prepending the UUID mid-dump; the bare variable_ lines
-    // that follow must still land in the block.
-    let mut blocks_with_bare: u64 = 0;
-
-    for (corpus, files) in &fixture_corpora() {
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            for entry in LogStream::new(lines_from_file(file)) {
-                if let Some(Block::ChannelData { fields, variables }) = &entry.block {
-                    let bare_count = entry
-                        .attached
-                        .iter()
-                        .filter(|line| parse_line(line).kind == LineKind::BareContinuation)
-                        .count();
-
-                    if bare_count > 0 {
-                        blocks_with_bare += 1;
-                        assert!(
-                            !fields.is_empty() || !variables.is_empty(),
-                            "{corpus}/{name}: L{} CHANNEL_DATA has {bare_count} bare lines \
-                             but block has 0 fields+variables",
-                            entry.line_number,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    assert!(
-        blocks_with_bare > 0,
-        "expected fixture data to contain CHANNEL_DATA blocks with bare continuations"
-    );
-}
-
-#[test]
-fn line_accounting_balances_across_the_corpus() {
-    for (corpus, files) in &fixture_corpora() {
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            let mut stream = LogStream::new(lines_from_file(file));
-            for _ in stream.by_ref() {}
-            let stats = stream.stats();
-
-            assert!(
-                stats.lines_processed > 0,
-                "{corpus}/{name}: no lines processed"
-            );
-            assert_eq!(
-                stats.unaccounted_lines(),
-                0,
-                "{corpus}/{name}: line accounting invariant violated: \
-                 processed={} + split={} != in_entries={} + empty_orphan={} + dropped={}",
-                stats.lines_processed,
-                stats.lines_split,
-                stats.lines_in_entries,
-                stats.lines_empty_orphan,
-                stats.lines_dropped,
-            );
-        }
-    }
 }
 
 #[test]
@@ -396,56 +340,8 @@ fn video_negotiation_classified_on_pbx_fixture() {
     );
 }
 
-#[cfg(feature = "sdp")]
-#[test]
-fn sdp_bodies_parse_across_the_corpus() {
-    let mut parsed = 0u64;
-    let mut failures = Vec::new();
-    for (corpus, files) in &fixture_corpora() {
-        for file in files {
-            let name = file.file_name().unwrap().to_string_lossy();
-            for entry in LogStream::new(lines_from_file(file)) {
-                let Some(block) = &entry.block else { continue };
-                // A body describes codecs only if it reached an m= line with a
-                // live port: a port-0 section is media declined, not codecs.
-                let has_media = matches!(
-                    block,
-                    Block::Sdp { body, .. } if body.iter().any(|l| {
-                        l.strip_prefix("m=")
-                            .and_then(|m| m.split_whitespace().nth(1))
-                            .is_some_and(|port| port != "0")
-                    })
-                );
-                match block.sdp_codecs() {
-                    None => {}
-                    Some(Ok(codecs)) => {
-                        parsed += 1;
-                        // A body cut before its a=rtpmap lines leaves dynamic
-                        // payloads unmapped, which is still a description.
-                        let described = !codecs.is_empty()
-                            || codecs.non_codec_payloads().next().is_some()
-                            || codecs.unmapped().next().is_some();
-                        if has_media && !described {
-                            failures.push(format!(
-                                "{corpus}/{name}: L{} has an m= line but parsed to nothing",
-                                entry.line_number
-                            ));
-                        }
-                    }
-                    Some(Err(e)) => {
-                        failures.push(format!("{corpus}/{name}: L{} {e}", entry.line_number))
-                    }
-                }
-            }
-        }
-    }
-    assert!(parsed > 0, "corpus should contain SDP blocks");
-    assert_no_violations(failures, "SDP bodies that did not parse");
-}
-
-/// Every span an entry reports must be usable: in bounds, on character
-/// boundaries, non-empty, ordered container-first, and never partially
-/// overlapping a sibling.
+/// A span must be usable: in bounds, on character boundaries, non-empty, ordered
+/// container-first, and never partially overlapping a sibling.
 #[test]
 fn field_spans_are_well_formed() {
     let mut total: u64 = 0;
@@ -577,4 +473,107 @@ fn render_with_round_trips_and_replaces() {
         bad
     });
     assert_no_violations(violations, "render_with failures");
+}
+
+/// The one full-corpus pass: every check that needs more than a single file
+/// runs off the same decompression.
+#[test]
+fn corpus_sweep() {
+    let mut accounting = Vec::new();
+    let mut bare_blocks = Vec::new();
+    let mut blocks_with_bare: u64 = 0;
+    #[cfg(feature = "sdp")]
+    let mut sdp_failures = Vec::new();
+    #[cfg(feature = "sdp")]
+    let mut sdp_parsed: u64 = 0;
+
+    for (corpus, files) in &fixture_corpora() {
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy();
+            let mut stream = LogStream::new(lines_from_file(file));
+
+            for entry in stream.by_ref() {
+                // mod_logfile stops prepending the UUID mid-dump; the bare
+                // variable_ lines that follow must still land in the block.
+                if let Some(Block::ChannelData { fields, variables }) = &entry.block {
+                    let bare = entry
+                        .attached
+                        .iter()
+                        .filter(|line| parse_line(line).kind == LineKind::BareContinuation)
+                        .count();
+                    if bare > 0 {
+                        blocks_with_bare += 1;
+                        if fields.is_empty() && variables.is_empty() {
+                            bare_blocks.push(format!(
+                                "{corpus}/{name}: L{} CHANNEL_DATA has {bare} bare lines but no \
+                                 fields or variables",
+                                entry.line_number
+                            ));
+                        }
+                    }
+                }
+
+                #[cfg(feature = "sdp")]
+                if let Some(block) = &entry.block {
+                    // A body describes codecs only if it reached an m= line with
+                    // a live port: a port-0 section is media declined, not codecs.
+                    let has_media = matches!(
+                        block,
+                        Block::Sdp { body, .. } if body.iter().any(|l| {
+                            l.strip_prefix("m=")
+                                .and_then(|m| m.split_whitespace().nth(1))
+                                .is_some_and(|port| port != "0")
+                        })
+                    );
+                    match block.sdp_codecs() {
+                        None => {}
+                        Some(Ok(codecs)) => {
+                            sdp_parsed += 1;
+                            // A body cut before its a=rtpmap lines leaves dynamic
+                            // payloads unmapped, which is still a description.
+                            let described = !codecs.is_empty()
+                                || codecs.non_codec_payloads().next().is_some()
+                                || codecs.unmapped().next().is_some();
+                            if has_media && !described {
+                                sdp_failures.push(format!(
+                                    "{corpus}/{name}: L{} has an m= line but parsed to nothing",
+                                    entry.line_number
+                                ));
+                            }
+                        }
+                        Some(Err(e)) => sdp_failures
+                            .push(format!("{corpus}/{name}: L{} {e}", entry.line_number)),
+                    }
+                }
+            }
+
+            let stats = stream.stats();
+            if stats.lines_processed == 0 {
+                accounting.push(format!("{corpus}/{name}: no lines processed"));
+            }
+            if stats.unaccounted_lines() != 0 {
+                accounting.push(format!(
+                    "{corpus}/{name}: processed={} + split={} != in_entries={} + empty_orphan={} \
+                     + dropped={}",
+                    stats.lines_processed,
+                    stats.lines_split,
+                    stats.lines_in_entries,
+                    stats.lines_empty_orphan,
+                    stats.lines_dropped,
+                ));
+            }
+        }
+    }
+
+    assert!(
+        blocks_with_bare > 0,
+        "corpus should contain CHANNEL_DATA blocks with bare continuations"
+    );
+    assert_no_violations(accounting, "line accounting invariant violated");
+    assert_no_violations(bare_blocks, "bare continuations not accumulated");
+    #[cfg(feature = "sdp")]
+    {
+        assert!(sdp_parsed > 0, "corpus should contain SDP blocks");
+        assert_no_violations(sdp_failures, "SDP bodies that did not parse");
+    }
 }

@@ -1,20 +1,14 @@
 //! `fslog read` — one file, or stdin, through the shared parse loop.
 
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::cli::{build_filter, ReadArgs};
 use crate::files::{display_name, lossy_line_iter, open_log_reader, resolve_log_path};
-use crate::output::ColorMode;
-use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output};
+use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output, RunCtx, RunPlan};
 
-pub fn run(
-    dir: &Path,
-    args: &ReadArgs,
-    color: ColorMode,
-    out: &mut dyn Write,
-    max_line_bytes: usize,
-) -> io::Result<()> {
+pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> io::Result<()> {
+    let (dir, max_line_bytes) = (ctx.dir.as_path(), ctx.max_line_bytes);
     let filter = build_filter(&args.filter, None, None);
 
     let (name, lines): (String, Box<dyn Iterator<Item = String>>) = match args.file.as_deref() {
@@ -41,16 +35,15 @@ pub fn run(
         }
     };
 
-    let printer = args.filter.printer(color);
-    let run = run_output(
-        out,
-        vec![(name, lines)],
-        &filter,
-        &printer,
-        &args.filter,
-        0,
-        0,
-    )?;
+    let printer = args.filter.printer(ctx.color);
+    let plan = RunPlan {
+        filter: &filter,
+        printer: &printer,
+        fargs: &args.filter,
+        before: 0,
+        after: 0,
+    };
+    let run = run_output(out, vec![(name, lines)], &plan)?;
 
     print_hidden(
         &filter,
@@ -58,5 +51,5 @@ pub fn run(
         false,
         &run.hidden,
     );
-    print_epilogue(&printer, &args.filter, &run)
+    print_epilogue(&plan, &run)
 }

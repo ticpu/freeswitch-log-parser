@@ -1,12 +1,12 @@
 //! `fslog list` — the log files on hand, with their rotation dates and sizes.
 
 use std::io::{self, Write};
-use std::path::Path;
 
 use crate::files::{discover_log_files, format_size};
+use crate::run::RunCtx;
 
-pub fn run(dir: &Path, out: &mut dyn Write) -> io::Result<()> {
-    let files = discover_log_files(dir)?;
+pub fn run(ctx: &RunCtx, out: &mut dyn Write) -> io::Result<()> {
+    let files = discover_log_files(&ctx.dir)?;
     for f in &files {
         let date = f
             .date

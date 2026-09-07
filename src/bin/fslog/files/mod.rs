@@ -18,6 +18,22 @@ pub use read::{
 /// once against a memory limit.
 pub const DEFAULT_MAX_LINE_BYTES: usize = 1 << 20;
 
+/// One file of a scan, and the name its entries are reported under.
+#[derive(Clone)]
+pub struct Segment {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl Segment {
+    pub fn new(path: PathBuf) -> Self {
+        Segment {
+            name: display_name(&path),
+            path,
+        }
+    }
+}
+
 /// A path's file name for display, falling back to empty rather than the
 /// full path when it has none (a `..` or root path, in practice never a log file).
 pub fn display_name(path: &Path) -> String {

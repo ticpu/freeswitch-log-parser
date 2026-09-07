@@ -2,6 +2,7 @@
 //! the two report identically.
 
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 use freeswitch_log_parser::{
     LogEntry, LogStream, MessageKind, ParseStats, SessionTracker, TrackedChain,
@@ -9,8 +10,25 @@ use freeswitch_log_parser::{
 
 use crate::cli::FilterArgs;
 use crate::context::{Emitter, FieldCounts, HiddenCounts};
-use crate::output::{EntryPrinter, FilterConfig};
+use crate::output::{ColorMode, EntryPrinter, FilterConfig};
 use crate::pager::is_broken_pipe;
+
+/// What every subcommand needs from the global flags, resolved once.
+pub struct RunCtx {
+    pub dir: PathBuf,
+    pub color: ColorMode,
+    pub max_line_bytes: usize,
+}
+
+/// What one parse run renders and how wide: the filter it admits by, the
+/// printer it renders through, and the grep-style context around each match.
+pub struct RunPlan<'a> {
+    pub filter: &'a FilterConfig,
+    pub printer: &'a EntryPrinter,
+    pub fargs: &'a FilterArgs,
+    pub before: usize,
+    pub after: usize,
+}
 
 pub struct RunSummary {
     pub stats: ParseStats,
@@ -26,15 +44,12 @@ pub struct RunSummary {
 pub fn run_output(
     out: &mut dyn Write,
     segments: Vec<(String, Box<dyn Iterator<Item = String>>)>,
-    filter: &FilterConfig,
-    printer: &EntryPrinter,
-    fargs: &FilterArgs,
-    before: usize,
-    after: usize,
+    plan: &RunPlan,
 ) -> io::Result<RunSummary> {
+    let fargs = plan.fargs;
     let (chain, seg_tracker) = TrackedChain::new(segments);
     let stream = LogStream::new(chain).unclassified_tracking(fargs.tracking());
-    let mut emitter = Emitter::new(printer, filter, &seg_tracker, fargs.stats, before, after);
+    let mut emitter = Emitter::new(plan, &seg_tracker);
 
     let (stats, session_count) = if fargs.session {
         let mut tracker = SessionTracker::new(stream);
@@ -74,11 +89,8 @@ pub(crate) fn separator_entry(kind: MessageKind, msg: String) -> LogEntry {
 }
 
 /// Stats/unclassified epilogue on stderr, shared by search and read.
-pub fn print_epilogue(
-    printer: &EntryPrinter,
-    fargs: &FilterArgs,
-    run: &RunSummary,
-) -> io::Result<()> {
+pub fn print_epilogue(plan: &RunPlan, run: &RunSummary) -> io::Result<()> {
+    let (printer, fargs) = (plan.printer, plan.fargs);
     if fargs.stats || fargs.unclassified {
         printer.print_stats(&mut io::stderr(), &run.stats, run.count, run.session_count)?;
     }

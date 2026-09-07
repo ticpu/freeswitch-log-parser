@@ -70,7 +70,7 @@ pub enum Command {
     },
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Default)]
 pub struct FilterArgs {
     /// UUID substring filter (case-insensitive, repeatable, OR logic)
     ///

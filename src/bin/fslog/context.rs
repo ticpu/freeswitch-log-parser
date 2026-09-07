@@ -6,7 +6,7 @@ use freeswitch_log_parser::{
 };
 
 use crate::output::{EntryPrinter, FilterConfig, Hidden, Verdict};
-use crate::run::separator_entry;
+use crate::run::{separator_entry, RunPlan};
 
 /// Entries the filter rejected on a scope boundary alone, by the scope that
 /// would have admitted them.
@@ -97,21 +97,15 @@ impl FieldCounts {
 }
 
 impl<'a> Emitter<'a> {
-    pub fn new(
-        printer: &'a EntryPrinter,
-        filter: &'a FilterConfig,
-        seg_tracker: &'a SegmentTracker,
-        stats_only: bool,
-        before: usize,
-        after: usize,
-    ) -> Self {
+    pub fn new(plan: &RunPlan<'a>, seg_tracker: &'a SegmentTracker) -> Self {
+        let before = plan.before;
         Emitter {
-            printer,
-            filter,
+            printer: plan.printer,
+            filter: plan.filter,
             seg_tracker,
-            stats_only,
+            stats_only: plan.fargs.stats,
             before,
-            after,
+            after: plan.after,
             ring: VecDeque::with_capacity(before),
             remaining_after: 0,
             has_printed: false,
@@ -285,7 +279,15 @@ mod tests {
             ..Default::default()
         });
         let (_chain, tracker) = TrackedChain::new(Vec::new());
-        let mut emitter = Emitter::new(&printer, &filter, &tracker, false, before, after);
+        let fargs = crate::cli::FilterArgs::default();
+        let plan = RunPlan {
+            filter: &filter,
+            printer: &printer,
+            fargs: &fargs,
+            before,
+            after,
+        };
+        let mut emitter = Emitter::new(&plan, &tracker);
         let mut out: Vec<u8> = Vec::new();
         for u in uuids {
             emitter.on_entry(&mut out, &entry(u), None).unwrap();
@@ -340,7 +342,15 @@ mod tests {
             show_line_numbers: false,
         };
         let (_chain, tracker) = TrackedChain::new(Vec::new());
-        let mut emitter = Emitter::new(&printer, filter, &tracker, false, 0, 0);
+        let fargs = crate::cli::FilterArgs::default();
+        let plan = RunPlan {
+            filter,
+            printer: &printer,
+            fargs: &fargs,
+            before: 0,
+            after: 0,
+        };
+        let mut emitter = Emitter::new(&plan, &tracker);
         let mut out: Vec<u8> = Vec::new();
         for e in freeswitch_log_parser::LogStream::new(session_log().into_iter()) {
             emitter.on_entry(&mut out, &e, None).unwrap();

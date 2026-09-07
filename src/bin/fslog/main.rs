@@ -21,6 +21,7 @@ use clap::{CommandFactory, Parser};
 
 use cli::{resolve_color, Cli, Command};
 use pager::PagedWriter;
+use run::RunCtx;
 
 /// Run `body` against the output sink, through a pager when asked for one.
 fn paged(pager: bool, body: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> io::Result<()> {
@@ -40,25 +41,23 @@ fn dispatch(cli: Cli) -> io::Result<()> {
         max_line_bytes,
         command,
     } = cli;
-    let color = resolve_color(color);
+    let ctx = RunCtx {
+        dir,
+        color: resolve_color(color),
+        max_line_bytes,
+    };
 
     match command {
         #[cfg(feature = "tui")]
-        Command::Monitor(args) => monitor::run(&dir, args, max_line_bytes),
+        Command::Monitor(args) => monitor::run(&ctx.dir, args, ctx.max_line_bytes),
         Command::Completions { shell } => {
             complete::generate_completions(shell, &mut Cli::command());
             Ok(())
         }
-        Command::Tail(args) => {
-            commands::tail::run(&dir, &args, color, &mut io::stdout(), max_line_bytes)
-        }
-        Command::List => paged(pager, |out| commands::list::run(&dir, out)),
-        Command::Search(args) => paged(pager, |out| {
-            commands::search::run(&dir, &args, color, out, max_line_bytes)
-        }),
-        Command::Read(args) => paged(pager, |out| {
-            commands::read::run(&dir, &args, color, out, max_line_bytes)
-        }),
+        Command::Tail(args) => commands::tail::run(&ctx, &args, &mut io::stdout()),
+        Command::List => paged(pager, |out| commands::list::run(&ctx, out)),
+        Command::Search(args) => paged(pager, |out| commands::search::run(&ctx, &args, out)),
+        Command::Read(args) => paged(pager, |out| commands::read::run(&ctx, &args, out)),
     }
 }
 

@@ -2,14 +2,14 @@
 //! search term, so the full parse never opens them.
 
 use std::io::{BufRead, IsTerminal};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use freeswitch_log_parser::is_uuid;
 use log::{debug, warn};
 use rayon::prelude::*;
 
-use crate::files::open_log_file;
+use crate::files::{open_log_file, Segment};
 
 /// Whether `needle` can be prescanned without risking a false negative.
 ///
@@ -37,7 +37,7 @@ fn is_sip_call_id(s: &str) -> bool {
 /// parallel. Files that cannot be opened are kept rather than dropped: a prescan
 /// exists to save work, and guessing "no match" from a read failure would hide
 /// entries the full parse would have reported.
-pub fn narrow(files: &[(String, PathBuf)], needle: &str) -> Vec<(String, PathBuf)> {
+pub fn narrow(files: &[Segment], needle: &str) -> Vec<Segment> {
     // Not a debug_assert: an empty needle reaches `windows(0)`, which panics in
     // release too, with nothing to say about where it came from.
     assert!(!needle.is_empty(), "prescan needle is empty");
@@ -47,17 +47,16 @@ pub fn narrow(files: &[(String, PathBuf)], needle: &str) -> Vec<(String, PathBuf
     // Progress is a terminal affordance; to a pipe or a log it is only escape noise.
     let progress = std::io::stderr().is_terminal();
 
-    let mut kept: Vec<(usize, (String, PathBuf))> = files
+    let mut kept: Vec<(usize, Segment)> = files
         .par_iter()
         .enumerate()
-        .filter_map(|(i, entry)| {
-            let (name, path) = entry;
-            let hit = file_contains(path, needle);
+        .filter_map(|(i, seg)| {
+            let hit = file_contains(&seg.path, needle);
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if progress {
-                eprint!("\r\x1b[Kscanning {n}/{total}: {name}");
+                eprint!("\r\x1b[Kscanning {n}/{total}: {}", seg.name);
             }
-            hit.then(|| (i, entry.clone()))
+            hit.then(|| (i, seg.clone()))
         })
         .collect();
     if progress {

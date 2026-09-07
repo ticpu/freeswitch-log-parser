@@ -1,17 +1,16 @@
 //! `fslog search` — the file set a date window selects, and the parse over it.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process;
 
 use crate::cli::{build_filter, SearchArgs};
 use crate::files::{
-    self, discover_log_files, display_name, filter_files_by_date, format_size, lazy_log_reader,
+    self, discover_log_files, filter_files_by_date, format_size, lazy_log_reader, Segment,
 };
-use crate::output::ColorMode;
 use crate::prescan;
 use crate::related;
-use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output};
+use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output, RunCtx, RunPlan};
 
 const MAX_UNCONFIRMED_FILES: usize = 20;
 const MAX_UNCONFIRMED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -60,13 +59,9 @@ fn resolve_search_files(
     args: &SearchArgs,
     from: Option<&str>,
     until: Option<&str>,
-) -> io::Result<Option<Vec<(String, PathBuf)>>> {
+) -> io::Result<Option<Vec<Segment>>> {
     if !args.files.is_empty() {
-        let v = args
-            .files
-            .iter()
-            .map(|p| (display_name(p), p.clone()))
-            .collect();
+        let v = args.files.iter().cloned().map(Segment::new).collect();
         return Ok(Some(v));
     }
 
@@ -96,28 +91,28 @@ fn resolve_search_files(
     }
     let v = selected
         .iter()
-        .map(|f| (display_name(&f.path), f.path.clone()))
+        .map(|f| Segment::new(f.path.clone()))
         .collect();
     Ok(Some(v))
 }
 
 fn build_segments(
-    files: &[(String, PathBuf)],
+    files: &[Segment],
     max_line_bytes: usize,
 ) -> Vec<(String, Box<dyn Iterator<Item = String>>)> {
     files
         .iter()
-        .map(|(name, path)| (name.clone(), lazy_log_reader(path.clone(), max_line_bytes)))
+        .map(|s| {
+            (
+                s.name.clone(),
+                lazy_log_reader(s.path.clone(), max_line_bytes),
+            )
+        })
         .collect()
 }
 
-pub fn run(
-    dir: &Path,
-    args: &SearchArgs,
-    color: ColorMode,
-    out: &mut dyn Write,
-    max_line_bytes: usize,
-) -> io::Result<()> {
+pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> io::Result<()> {
+    let dir = ctx.dir.as_path();
     if args.pattern.is_some() && args.filter.fgrep.is_some() {
         return Err(io::Error::other(
             "provide either a positional PATTERN or --fgrep, not both",
@@ -173,7 +168,7 @@ pub fn run(
         return report_empty();
     }
 
-    let printer = args.filter.printer(color);
+    let printer = args.filter.printer(ctx.color);
 
     // The narrowed set is sound for discovery, which matches the seed the prescan
     // looked for. It is not sound for output: `--related` re-keys the filter onto
@@ -181,7 +176,7 @@ pub fn run(
     let mut rendered = seeded;
     if args.related {
         let discovered = related::discover(
-            build_segments(&rendered, max_line_bytes),
+            build_segments(&rendered, ctx.max_line_bytes),
             &filter.for_discovery(),
         );
         if discovered.is_empty() {
@@ -193,15 +188,14 @@ pub fn run(
         rendered = files;
     }
 
-    let run = run_output(
-        out,
-        build_segments(&rendered, max_line_bytes),
-        &filter,
-        &printer,
-        &args.filter,
-        args.before(),
-        args.after(),
-    )?;
+    let plan = RunPlan {
+        filter: &filter,
+        printer: &printer,
+        fargs: &args.filter,
+        before: args.before(),
+        after: args.after(),
+    };
+    let run = run_output(out, build_segments(&rendered, ctx.max_line_bytes), &plan)?;
 
     if run.matched == 0 {
         report_empty()?;
@@ -212,12 +206,13 @@ pub fn run(
         args.related,
         &run.hidden,
     );
-    print_epilogue(&printer, &args.filter, &run)
+    print_epilogue(&plan, &run)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn log_file(date: Option<&str>) -> files::LogFile {
         files::LogFile {

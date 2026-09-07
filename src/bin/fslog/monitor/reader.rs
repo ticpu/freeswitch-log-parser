@@ -115,7 +115,7 @@ pub(super) type LineIter = Box<dyn Iterator<Item = String>>;
 /// Build the parse segments: the newest rotated file (if any, skipped with a
 /// warning on failure) followed by the current log opened via `open_current`
 /// (full-then-tail for the TUI, plain read for --dump).
-pub(super) fn build_segments(
+pub(super) fn monitor_segments(
     dir: &Path,
     path: &Path,
     open_current: fn(&Path, usize) -> io::Result<LineIter>,
@@ -162,7 +162,7 @@ pub(super) fn spawn_reader(
         ));
     }
     let handle = std::thread::spawn(move || {
-        let segments = match build_segments(&dir, &path, open_full_tail_reader, max_line_bytes) {
+        let segments = match monitor_segments(&dir, &path, open_full_tail_reader, max_line_bytes) {
             Ok(s) => s,
             Err(e) => {
                 error!("reader failed to open {}: {e}", path.display());

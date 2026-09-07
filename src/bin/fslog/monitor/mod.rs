@@ -29,7 +29,7 @@ use crate::files::{open_log_reader, resolve_log_path};
 
 use input::{execute_action, handle_key};
 use model::{AppState, ContextFilter, UiMode};
-use reader::{apply_update, build_segments, build_update, gc_ended, spawn_reader};
+use reader::{apply_update, build_update, gc_ended, monitor_segments, spawn_reader};
 use ui::{render_ui, row_cells};
 
 #[derive(clap::Args)]
@@ -57,7 +57,7 @@ fn process_log(
     context_filter: ContextFilter,
     max_line_bytes: usize,
 ) -> io::Result<AppState> {
-    let segments = build_segments(dir, path, open_log_reader, max_line_bytes)?;
+    let segments = monitor_segments(dir, path, open_log_reader, max_line_bytes)?;
 
     let (chain, _) = TrackedChain::new(segments);
     let stream = LogStream::new(chain);

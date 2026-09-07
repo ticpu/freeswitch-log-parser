@@ -2,8 +2,16 @@
 //! somewhere other than a line's session prefix — inside a message body, a
 //! channel-variable value, or an operator-supplied search needle.
 
+use crate::mask::Mask;
+
 /// Length of a session UUID in canonical 8-4-4-4-12 hex form.
 pub(crate) const UUID_LEN: usize = 36;
+
+const UUID_MASK: Mask = Mask {
+    len: UUID_LEN,
+    separators: &[(8, b'-'), (13, b'-'), (18, b'-'), (23, b'-')],
+    filler: u8::is_ascii_hexdigit,
+};
 
 /// Length of a UUID followed by its trailing space — the prefix
 /// `mod_logfile` prepends to every line when `log_uuid=true`.
@@ -17,13 +25,7 @@ const MAX_COLLISION_PREFIX: usize = 50;
 /// The 36 canonical UUID bytes at `offset`, with nothing required after them —
 /// an embedded UUID can end a line or abut punctuation.
 pub(crate) fn is_uuid_body_at(bytes: &[u8], offset: usize) -> bool {
-    let Some(uuid) = bytes.get(offset..offset + UUID_LEN) else {
-        return false;
-    };
-    uuid.iter().enumerate().all(|(i, &b)| match i {
-        8 | 13 | 18 | 23 => b == b'-',
-        _ => b.is_ascii_hexdigit(),
-    })
+    UUID_MASK.matches_at(bytes, offset)
 }
 
 /// A UUID at `offset` acting as a line's session prefix: the space delimiter is

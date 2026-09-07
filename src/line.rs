@@ -1,6 +1,7 @@
 use crate::level::LogLevel;
 pub(crate) use crate::uuid::{is_uuid_at, UUID_PREFIX_LEN};
 
+use crate::mask::Mask;
 use crate::uuid::{find_uuid_in, UUID_LEN};
 
 use std::fmt;
@@ -75,6 +76,19 @@ pub(crate) fn is_date_at(bytes: &[u8], offset: usize) -> bool {
 /// `YYYY-MM-DD HH:MM:SS.ffffff`, the width `mod_logfile` writes.
 const TIMESTAMP_LEN: usize = 26;
 
+const TIMESTAMP_MASK: Mask = Mask {
+    len: TIMESTAMP_LEN,
+    separators: &[
+        (4, b'-'),
+        (7, b'-'),
+        (10, b' '),
+        (13, b':'),
+        (16, b':'),
+        (19, b'.'),
+    ],
+    filler: u8::is_ascii_digit,
+};
+
 /// Widest idle field the logger can write, `"100.00%"`.
 const MAX_IDLE_PCT_LEN: usize = 7;
 
@@ -111,15 +125,8 @@ fn idle_pct_span(bytes: &[u8], from: usize) -> Option<Range<usize>> {
 /// line the logger cut before it reads as no header rather than as one with an
 /// idle field and nothing else.
 pub(crate) fn header_at(bytes: &[u8], offset: usize) -> Option<HeaderSpan> {
-    let stamp = bytes.get(offset..offset + TIMESTAMP_LEN)?;
-    let stamped = stamp.iter().enumerate().all(|(i, &b)| match i {
-        4 | 7 => b == b'-',
-        10 => b == b' ',
-        13 | 16 => b == b':',
-        19 => b == b'.',
-        _ => b.is_ascii_digit(),
-    });
-    if !stamped || bytes.get(offset + TIMESTAMP_LEN) != Some(&b' ') {
+    if !TIMESTAMP_MASK.matches_at(bytes, offset) || bytes.get(offset + TIMESTAMP_LEN) != Some(&b' ')
+    {
         return None;
     }
 

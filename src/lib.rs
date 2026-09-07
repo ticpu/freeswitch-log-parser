@@ -56,6 +56,7 @@ mod decode;
 mod fields;
 mod level;
 mod line;
+mod mask;
 mod message;
 mod peer;
 mod session;

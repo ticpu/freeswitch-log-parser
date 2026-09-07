@@ -1,22 +1,27 @@
 //! The `YYYY-MM-DD-HH-MM-SS` stamp form, which sorts lexicographically and so
 //! lets a caller order rotated files and window entries without a date library.
 
+use crate::mask::Mask;
+
+/// Width of the `YYYY-MM-DD-HH-MM-SS` stamp form.
+const STAMP_LEN: usize = 19;
+
+const STAMP_MASK: Mask = Mask {
+    len: STAMP_LEN,
+    separators: &[(4, b'-'), (7, b'-'), (10, b'-'), (13, b'-'), (16, b'-')],
+    filler: u8::is_ascii_digit,
+};
+
 /// The rotation stamp encoded in a `freeswitch.log.*` filename, or `None` for the
 /// active log and for any name that does not carry one.
 ///
 /// Only the stamp is read; whatever logrotate appends after it (a sequence
 /// number, a compression suffix) is ignored.
 pub fn log_rotation_stamp(filename: &str) -> Option<&str> {
-    const STAMP_LEN: usize = 19;
     let rest = filename.strip_prefix("freeswitch.log.")?;
     let candidate = rest.get(..STAMP_LEN)?;
-    candidate
-        .bytes()
-        .enumerate()
-        .all(|(i, b)| match i {
-            4 | 7 | 10 | 13 | 16 => b == b'-',
-            _ => b.is_ascii_digit(),
-        })
+    STAMP_MASK
+        .matches_at(candidate.as_bytes(), 0)
         .then_some(candidate)
 }
 
@@ -26,10 +31,9 @@ pub fn log_rotation_stamp(filename: &str) -> Option<&str> {
 /// Input too short to hold a full timestamp is normalized as best it can be
 /// rather than rejected, so a partially parsed entry still windows sanely.
 pub fn normalize_entry_timestamp(ts: &str) -> String {
-    const TS_LEN: usize = 19;
     // `get` rather than a byte slice: a caller can hand this any string, and a
     // multibyte codepoint straddling either bound would panic on `&ts[..n]`.
-    if let (Some(date), Some(time)) = (ts.get(..10), ts.get(11..TS_LEN)) {
+    if let (Some(date), Some(time)) = (ts.get(..10), ts.get(11..STAMP_LEN)) {
         return format!("{date}-{}", time.replace(':', "-"));
     }
     let mut s = ts.replace(['T', ':', ' '], "-");

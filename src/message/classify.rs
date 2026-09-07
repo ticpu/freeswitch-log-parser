@@ -1,6 +1,8 @@
 //! The classification dispatcher — the ordered prefix checks that map a
 //! message to its [`MessageKind`], and the shape-specific constructors.
 
+use freeswitch_types::{variable_key, VARIABLE_PREFIX};
+
 use crate::codec::CodecMedia;
 
 use super::dtmf::parse_dtmf;
@@ -59,7 +61,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
         return MessageKind::ChannelData;
     }
 
-    if msg.starts_with("variable_") {
+    if msg.starts_with(VARIABLE_PREFIX) {
         if let Some((name, value)) = parse_bracketed_value(msg, 0) {
             return MessageKind::Variable {
                 name: name.to_string(),
@@ -113,7 +115,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
     if let Some(rest) = msg.strip_prefix("set variable ") {
         if let Some((name, value)) = rest.split_once('=') {
             return MessageKind::Variable {
-                name: format!("variable_{name}"),
+                name: variable_key(name),
                 value: value.to_string(),
             };
         }
@@ -196,7 +198,7 @@ fn parse_core_session_set_variable(msg: &str) -> MessageKind {
     if let Some(end) = rest.strip_suffix(')') {
         if let Some(comma) = end.find(", ") {
             return MessageKind::Variable {
-                name: format!("variable_{}", &end[..comma]),
+                name: variable_key(&end[..comma]),
                 value: end[comma + 2..].to_string(),
             };
         }
@@ -215,7 +217,7 @@ fn parse_unset(msg: &str) -> MessageKind {
         rest
     };
     MessageKind::Variable {
-        name: format!("variable_{name}"),
+        name: variable_key(name),
         value: String::new(),
     }
 }
@@ -230,7 +232,7 @@ fn parse_dialplan_processing(msg: &str) -> MessageKind {
 fn parse_set_or_export(msg: &str) -> Option<MessageKind> {
     let parts = set_export_parts(msg)?;
     Some(MessageKind::Variable {
-        name: format!("variable_{}", parts.name),
+        name: variable_key(parts.name),
         value: parts.value.to_string(),
     })
 }

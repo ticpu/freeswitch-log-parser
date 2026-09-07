@@ -9,7 +9,7 @@
 use std::str::FromStr;
 
 use freeswitch_types::variables::LoopbackVariable;
-use freeswitch_types::ChannelVariable;
+use freeswitch_types::{ChannelVariable, VARIABLE_PREFIX};
 
 use crate::message::MessageKind;
 use crate::session::parse_bridge_args;
@@ -71,7 +71,7 @@ pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
     mut f: F,
 ) {
     let wanted = |name: &str| {
-        let name = name.strip_prefix("variable_").unwrap_or(name);
+        let name = name.strip_prefix(VARIABLE_PREFIX).unwrap_or(name);
         is_peer_uuid_var(name) || extra_var(name)
     };
     let mut harvest = |value: &str| {

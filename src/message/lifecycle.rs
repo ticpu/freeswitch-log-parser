@@ -1,5 +1,7 @@
 //! Channel lifecycle lines and the sofia-prefixed shapes that carry a SIP INVITE.
 
+use freeswitch_types::variable_key;
+
 use super::kind::{MessageKind, SipInviteDirection};
 use super::media::detect_media;
 use super::parts::set_export_parts;
@@ -30,7 +32,7 @@ pub(super) fn classify_channel_prefixed(channel_part: &str, rest: &str) -> Messa
     if is_channel_variable_narration(rest) {
         if let Some(parts) = set_export_parts(rest) {
             return MessageKind::Variable {
-                name: format!("variable_{}", parts.name),
+                name: variable_key(parts.name),
                 value: parts.value.to_string(),
             };
         }

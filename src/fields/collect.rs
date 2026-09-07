@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;
 
-use freeswitch_types::ChannelVariable;
+use freeswitch_types::{ChannelVariable, VARIABLE_PREFIX};
 
 use crate::message::{
     classify_message, dialplan_parts, execute_parts, hangup_channel, is_channel_variable_narration,
@@ -169,7 +169,7 @@ fn push_channel(out: &mut Vec<Field>, msg: &str, channel: &str) {
 /// The slot a variable's name names; a name outside the identity vocabulary
 /// falls to the neutral value slot rather than going unspanned.
 fn variable_value_kind(name: &str) -> FieldKind {
-    let bare = name.strip_prefix("variable_").unwrap_or(name);
+    let bare = name.strip_prefix(VARIABLE_PREFIX).unwrap_or(name);
     match ChannelVariable::from_str(bare) {
         Ok(ChannelVariable::CallerIdName)
         | Ok(ChannelVariable::EffectiveCallerIdName)
@@ -190,7 +190,7 @@ fn collect_variable(msg: &str, name: &str, out: &mut Vec<Field>) {
             push(out, variable_value_kind(name), range);
         }
     };
-    if msg.starts_with("variable_") {
+    if msg.starts_with(VARIABLE_PREFIX) {
         if let Some((_, value)) = parse_bracketed_value(msg, 0) {
             push_value(out, value);
         }

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::message::{LifecycleEvent, MessageKind};
 use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
+use crate::uuid::is_uuid;
 
 use super::conference::{
     self, ConferenceEvent, ConferenceMembership, ConferenceRegistry, ConferenceTarget,
@@ -238,10 +239,16 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// state (bridge target, channel name) is already populated.
     fn link_legs(&mut self, uuid: &str, entry: &LogEntry) {
         match &entry.message_kind {
+            // A suffix that is not a UUID names a peer this cannot resolve, and
+            // falling through to the channel name would link the wrong leg.
             MessageKind::OriginateSuccess {
                 peer_uuid: Some(peer),
                 ..
-            } => self.link_pair(uuid, peer),
+            } => {
+                if is_uuid(peer) {
+                    self.link_pair(uuid, peer);
+                }
+            }
             // Builds whose originate line omits the `Peer UUID:` suffix leave the
             // channel name as the only handle on the B leg.
             MessageKind::OriginateSuccess {

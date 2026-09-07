@@ -3,7 +3,6 @@
 use super::kind::{LifecycleEvent, MessageKind, SipInviteDirection};
 use super::media::detect_media;
 use super::parts::set_export_parts;
-use crate::uuid::is_uuid;
 
 /// The originating leg's success line, whose channel name can itself hold a
 /// UUID — so the peer is read from after the marker, never scanned for.
@@ -13,9 +12,7 @@ pub(super) fn originate_success(msg: &str) -> Option<MessageKind> {
     let close = inner.find(']')?;
     let peer_uuid = inner[close..]
         .split_once("Peer UUID: ")
-        .map(|(_, u)| u.trim())
-        .filter(|u| is_uuid(u))
-        .map(str::to_string);
+        .map(|(_, u)| u.trim().to_string());
     Some(MessageKind::OriginateSuccess {
         channel: inner[..close].to_string(),
         peer_uuid,

@@ -12,6 +12,7 @@ use freeswitch_types::{
 use crate::line::parse_line;
 use crate::message::{classify_message, LifecycleEvent, MessageKind};
 use crate::stream::{Block, LogEntry, ParseWarning, SessionReading};
+use crate::uuid::is_uuid;
 
 use super::conference::ConferenceMembership;
 use super::media::SessionMedia;
@@ -320,6 +321,15 @@ impl SessionState {
             MessageKind::ChannelField { name, value } => {
                 self.apply_channel_field(name, value, warnings)
             }
+            // A suffix the log wrote is evidence of a peer, so a value that is
+            // not a UUID is named rather than left to read as an absent suffix.
+            MessageKind::OriginateSuccess {
+                peer_uuid: Some(peer),
+                ..
+            } if !is_uuid(peer) => warnings.push(ParseWarning::UnreadableValue {
+                reading: SessionReading::PeerUuid,
+                value: ParseWarning::excerpt(peer),
+            }),
             MessageKind::StateChange { detail } => match parse_state_change(detail) {
                 Some(StateChange::Channel(to)) => read(
                     &mut self.channel_state,

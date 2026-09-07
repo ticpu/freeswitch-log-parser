@@ -129,6 +129,7 @@ pub enum SessionReading {
     CallState,
     CallDirection,
     HangupCause,
+    PeerUuid,
 }
 
 impl fmt::Display for SessionReading {
@@ -138,6 +139,7 @@ impl fmt::Display for SessionReading {
             SessionReading::CallState => "call state",
             SessionReading::CallDirection => "call direction",
             SessionReading::HangupCause => "hangup cause",
+            SessionReading::PeerUuid => "peer uuid",
         };
         f.write_str(label)
     }
@@ -178,9 +180,9 @@ pub enum ParseWarning {
     /// line could not be stored. Counted in
     /// [`ParseStats::lines_dropped`](super::ParseStats::lines_dropped).
     AttachedOverflow { line: String },
-    /// A per-session reading met a value its vocabulary does not know — either
-    /// FreeSWITCH gained one or the line is corrupt. The state that reading
-    /// feeds keeps its last resolved value.
+    /// A per-session reading met a value its vocabulary or shape does not
+    /// admit — either FreeSWITCH gained one or the line is corrupt. The state
+    /// that reading feeds keeps its last resolved value.
     UnreadableValue {
         reading: SessionReading,
         value: String,

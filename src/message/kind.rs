@@ -132,7 +132,11 @@ pub enum MessageKind {
     OriginateSuccess {
         /// The bracketed target channel name, which may itself hold a UUID.
         channel: String,
-        /// The reached leg's UUID; `None` on builds whose line omits the suffix.
+        /// The `Peer UUID:` suffix as the line spelled it, `None` only on
+        /// builds that omit the suffix. A value the write buffer cut is still
+        /// present here and is not a UUID — see
+        /// [`is_uuid`](crate::is_uuid), which the per-session layer applies
+        /// before it links anything.
         peer_uuid: Option<String>,
     },
     /// Sofia logged a SIP INVITE on this channel — the line is one of:

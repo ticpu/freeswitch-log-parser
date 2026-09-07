@@ -301,6 +301,21 @@ fn originate_success_reads_the_peer_after_its_marker() {
     );
 }
 
+/// A suffix the write buffer cut still tells us a peer existed, which an
+/// omitted suffix does not.
+#[test]
+fn originate_success_keeps_a_peer_it_cannot_read() {
+    assert_eq!(
+        classify_message(
+            "Originate Resulted in Success: [sofia/custom/6244] Peer UUID: b2c3d4e5-f6a7-89"
+        ),
+        MessageKind::OriginateSuccess {
+            channel: "sofia/custom/6244".to_string(),
+            peer_uuid: Some("b2c3d4e5-f6a7-89".to_string()),
+        }
+    );
+}
+
 #[test]
 fn originate_success_without_the_suffix_keeps_its_channel() {
     assert_eq!(

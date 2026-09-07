@@ -1,6 +1,7 @@
 //! Cross-session leg linking — originate, bridge and loopback pairing.
 
 use super::*;
+use crate::stream::{ParseWarning, SessionReading};
 
 #[test]
 fn originate_success_links_both_legs() {
@@ -59,6 +60,34 @@ fn originate_success_channel_fallback_links_legs() {
         Some(UUID1),
         "B-leg linked back to A-leg"
     );
+}
+
+/// The suffix is there, so the channel-name fallback — which exists for builds
+/// that write none — must not stand in for a peer nobody can read.
+#[test]
+fn an_unreadable_peer_uuid_links_nothing_and_warns() {
+    let entries = collect_enriched(vec![
+        full_line(
+            UUID2,
+            TS1,
+            "New Channel sofia/internal/6244@192.0.2.72:50744 [b2c3d4e5-f6a7-8901-bcde-f12345678901]",
+        ),
+        full_line(
+            UUID1,
+            TS2,
+            "Originate Resulted in Success: [sofia/internal/6244@192.0.2.72:50744] Peer UUID: b2c3d4e5-f6a7-89",
+        ),
+    ]);
+
+    let last = entries.last().unwrap();
+    assert_eq!(
+        last.entry.warnings,
+        [ParseWarning::UnreadableValue {
+            reading: SessionReading::PeerUuid,
+            value: "b2c3d4e5-f6a7-89".to_string(),
+        }]
+    );
+    assert_eq!(last.session.as_ref().unwrap().other_leg_uuid, None);
 }
 
 #[test]

@@ -533,3 +533,18 @@ fn no_command_for_a_uuid_already_being_filtered_on() {
     });
     assert_eq!(plain.suggested_uuid(), None, "no uuid in the pattern");
 }
+
+#[test]
+fn a_replacement_char_in_the_timestamp_does_not_panic() {
+    // A lossy decode puts a 3-byte U+FFFD wherever the log was corrupt. Here it
+    // lands on the date/time separator, straddling both slice offsets.
+    let stamp = "2026-03-0\u{fffd}16:52:07.123456";
+    let e = LogEntry {
+        timestamp: stamp.to_string(),
+        ..LogEntry::synthetic("hello")
+    };
+    let out = render(&printer(ColorMode::Never, false), &e);
+    assert!(out.contains("hello"), "{out}");
+    assert_eq!(stamp_date(stamp), None);
+    assert_eq!(stamp_time(stamp), stamp);
+}

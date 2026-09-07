@@ -8,7 +8,9 @@ pub mod tests;
 
 pub use color::Palette;
 pub use filter::{FilterConfig, FilterParams, Hidden, Verdict};
-pub use printer::EntryPrinter;
+#[cfg(test)]
+pub use printer::stamp_time;
+pub use printer::{stamp_date, EntryPrinter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {

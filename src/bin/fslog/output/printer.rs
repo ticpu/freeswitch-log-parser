@@ -18,6 +18,17 @@ pub struct EntryPrinter {
     pub show_line_numbers: bool,
 }
 
+/// The clock and calendar halves of an entry's timestamp, by `get` rather than a
+/// byte range: a lossy decode puts a 3-byte U+FFFD wherever the log was corrupt,
+/// and one straddling either offset panics a slice.
+pub fn stamp_time(ts: &str) -> &str {
+    ts.get(11..).unwrap_or(ts)
+}
+
+pub fn stamp_date(ts: &str) -> Option<&str> {
+    ts.get(..10)
+}
+
 /// What becomes of an entry's continuation lines.
 enum AttachedView<'a> {
     /// Printed one per line, the header's own data first where it was split off.
@@ -66,11 +77,7 @@ impl EntryPrinter {
             .level
             .map(|l| l.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let time = if entry.timestamp.len() >= 11 {
-            &entry.timestamp[11..]
-        } else {
-            &entry.timestamp
-        };
+        let time = stamp_time(&entry.timestamp);
         let lc = p.level(entry.level);
         let reset = p.reset;
 

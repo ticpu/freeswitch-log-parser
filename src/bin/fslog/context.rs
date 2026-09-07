@@ -5,7 +5,7 @@ use freeswitch_log_parser::{
     FieldLocation, LogEntry, MessageKind, SegmentTracker, SessionSnapshot,
 };
 
-use crate::output::{EntryPrinter, FilterConfig, Hidden, Verdict};
+use crate::output::{stamp_date, EntryPrinter, FilterConfig, Hidden, Verdict};
 use crate::run::{separator_entry, RunPlan};
 
 /// Entries the filter rejected on a scope boundary alone, by the scope that
@@ -240,8 +240,7 @@ impl<'a> Emitter<'a> {
                 self.printer.print_entry(out, &sep, None)?;
             }
         }
-        if timestamp.len() >= 10 {
-            let date = &timestamp[..10];
+        if let Some(date) = stamp_date(timestamp) {
             if date != self.last_date {
                 self.last_date = date.to_string();
                 let sep = separator_entry(MessageKind::DateChange, self.last_date.clone());
@@ -381,5 +380,34 @@ mod tests {
         // two matches separated by enough non-matches that after/before don't overlap
         let out = run(1, 1, &["Mx", "a", "b", "c", "My"]);
         assert!(out.contains("\n--\n"));
+    }
+
+    #[test]
+    fn a_replacement_char_in_the_timestamp_emits_no_date_separator() {
+        let printer = EntryPrinter {
+            color: ColorMode::Never,
+            show_blocks: false,
+            show_session: false,
+            show_line_numbers: false,
+        };
+        let filter = crate::output::tests::filter(FilterParams::default());
+        let (_chain, tracker) = TrackedChain::new(Vec::new());
+        let fargs = crate::cli::FilterArgs::default();
+        let plan = RunPlan {
+            filter: &filter,
+            printer: &printer,
+            fargs: &fargs,
+            before: 0,
+            after: 0,
+        };
+        let mut emitter = Emitter::new(&plan, &tracker);
+        let mut out: Vec<u8> = Vec::new();
+        let e = LogEntry {
+            timestamp: "2026-03-0\u{fffd}16:52:07.123456".to_string(),
+            ..LogEntry::synthetic("hello")
+        };
+        emitter.on_entry(&mut out, &e, None).expect("no panic");
+        let out = String::from_utf8(out).expect("utf-8");
+        assert!(out.contains("hello"), "{out}");
     }
 }

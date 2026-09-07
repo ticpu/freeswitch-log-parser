@@ -19,7 +19,7 @@ fn deindex(map: &mut HashMap<String, HashSet<String>>, key: &str, uuid: &str) {
 }
 
 /// One indexed field on either side of the mutation bracket.
-pub(super) struct Change<T> {
+struct Change<T> {
     old: Option<T>,
     new: Option<T>,
 }
@@ -93,37 +93,29 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             },
         );
 
-        let leg = Change {
-            old: old.other_leg_uuid,
-            new: new.other_leg_uuid,
-        };
-        if leg.old != leg.new {
-            match leg.new {
-                Some(new_leg) => self.index_other_leg(uuid, leg.old, &new_leg),
+        if old.other_leg_uuid != new.other_leg_uuid {
+            match new.other_leg_uuid {
+                Some(new_leg) => self.index_other_leg(uuid, old.other_leg_uuid, &new_leg),
                 None => {
-                    if let Some(old_leg) = leg.old {
+                    if let Some(old_leg) = old.other_leg_uuid {
                         self.deindex_other_leg(&old_leg, uuid);
                     }
                 }
             }
         }
 
-        let conference = Change {
-            old: old.conference,
-            new: new.conference,
-        };
         // The registry keys on the name and identifies on the instance, so the
         // seat is the pair: a name change carrying the instance forward still
         // moves the session, and only profile or member id moving is churn.
         let same_seat = matches!(
-            (&conference.old, &conference.new),
+            (&old.conference, &new.conference),
             (Some(o), Some(n)) if o.name == n.name && o.instance == n.instance
         );
         if !same_seat {
-            if let Some(old_conf) = conference.old {
+            if let Some(old_conf) = old.conference {
                 self.conferences.leave(&old_conf.name, uuid);
             }
-            if let Some(new_conf) = conference.new {
+            if let Some(new_conf) = new.conference {
                 self.conferences
                     .join(&new_conf.name, &new_conf.instance, uuid);
             }

@@ -5,15 +5,15 @@
 //! names carry the pairing: mod_loopback derives the B leg's name from the A
 //! leg's destination number, differing only in the trailing leg letter.
 
-const PREFIX: &str = "loopback/";
+use freeswitch_types::variables::{LoopbackChannelName, LoopbackLeg};
 
 /// A leg name of the loopback whose B leg is `channel_name`.
 pub(crate) fn a_leg_name(channel_name: &str) -> Option<String> {
-    let destination = channel_name.strip_prefix(PREFIX)?.strip_suffix("-b")?;
-    if destination.is_empty() {
+    let name = LoopbackChannelName::parse(channel_name)?;
+    if name.leg() != LoopbackLeg::B {
         return None;
     }
-    Some(format!("{PREFIX}{destination}-a"))
+    Some(format!("loopback/{}-a", name.extension()))
 }
 
 #[cfg(test)]

@@ -130,6 +130,47 @@ fn split_chunks(line: String, splits: &[usize]) -> (String, Vec<String>) {
     (head, chunks)
 }
 
+/// What the physical line in hand says about truncation, and the warning that
+/// says it, held until the entry that ends up owning the line claims them.
+///
+/// Emitting the warning on arrival would pin it on the pending entry, which for
+/// a line that starts a new one is the wrong entry entirely.
+#[derive(Default)]
+struct LineVerdict {
+    /// Per chunk of the line, whether it ends at the write's spent budget. One
+    /// physical line can hold several such cuts, and each is the record it ends.
+    chunks: VecDeque<bool>,
+    /// The chunk dispatched before the current one ended at a cut rather than
+    /// at its own newline.
+    prev_cut: bool,
+    cut: bool,
+    warning: Option<ParseWarning>,
+}
+
+impl LineVerdict {
+    /// Move to the next chunk's verdict, returning the previous chunk's.
+    fn advance(&mut self) -> bool {
+        self.cut = self.chunks.pop_front().unwrap_or(false);
+        if self.cut {
+            self.warning = Some(ParseWarning::CutLine);
+        }
+        std::mem::replace(&mut self.prev_cut, self.cut)
+    }
+
+    /// Take the warning for the entry now owning the line.
+    fn claim(&mut self) -> Option<ParseWarning> {
+        self.warning.take()
+    }
+
+    /// Drop the cut verdicts at a segment boundary. An unclaimed warning is
+    /// still owed to the entry that will claim it, so it stands.
+    fn clear_cuts(&mut self) {
+        self.chunks.clear();
+        self.prev_cut = false;
+        self.cut = false;
+    }
+}
+
 /// The entry being assembled, together with the block it owns. Pairing them
 /// is what keeps a block from outliving or preceding its entry.
 struct Pending {
@@ -155,23 +196,11 @@ pub struct LogStream<I> {
     tracking: UnclassifiedTracking,
     line_number: u64,
     split_pending: VecDeque<String>,
-    /// Whether the line dispatched before the current one ended at a split
-    /// rather than at its own newline — the logger cut it short.
-    prev_line_cut: bool,
-    /// The same verdict about the line currently being dispatched, claimed by
+    /// What the line being dispatched says about truncation, claimed by
     /// whichever of `open_entry`/`attach` ends up owning it.
-    line_cut: bool,
-    /// A warning about the line currently being dispatched, claimed by whichever
-    /// of `open_entry`/`attach` ends up owning it. Emitting it on arrival would
-    /// pin it on the pending entry, which for a line that starts a new one is
-    /// the wrong entry entirely.
-    line_warning: Option<ParseWarning>,
+    verdict: LineVerdict,
     /// How much of its budget the `mod_logfile` write in progress has spent.
     cursor: WriteCursor,
-    /// Per chunk of the physical line being dispatched, whether it ends at the
-    /// write's spent budget. One physical line can hold several such cuts, and
-    /// each is the record it ends, so a single slot would report only the first.
-    cut_verdicts: VecDeque<bool>,
     /// Bytes of attached lines one entry may hold before further ones are
     /// dropped. The caller's budget, not a shape of the log.
     max_attached: usize,
@@ -189,11 +218,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             tracking: UnclassifiedTracking::CountOnly,
             line_number: 0,
             split_pending: VecDeque::new(),
-            prev_line_cut: false,
-            line_cut: false,
-            line_warning: None,
+            verdict: LineVerdict::default(),
             cursor: WriteCursor::default(),
-            cut_verdicts: VecDeque::new(),
             max_attached: usize::MAX,
         }
     }
@@ -271,11 +297,11 @@ impl<I: Iterator<Item = String>> LogStream<I> {
                 line: ParseWarning::excerpt(line),
             });
             self.stats.lines_dropped += 1;
-        } else if self.line_cut {
+        } else if self.verdict.cut {
             let i = pending.entry.attached.len() - 1;
             pending.entry.cut_texts.push(FieldLocation::Attached(i));
         }
-        pending.entry.warnings.extend(self.line_warning.take());
+        pending.entry.warnings.extend(self.verdict.claim());
     }
 
     /// Absorb a codec trace line into the run the pending entry already owns,
@@ -358,12 +384,12 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             attached: AttachedLines::new(),
             line_number: self.line_number,
             warnings: self
-                .line_warning
-                .take()
+                .verdict
+                .claim()
                 .into_iter()
                 .chain(opening_warning)
                 .collect(),
-            cut_texts: if self.line_cut {
+            cut_texts: if self.verdict.cut {
                 vec![FieldLocation::Message]
             } else {
                 Vec::new()
@@ -394,7 +420,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
 
         let boundary = self.cursor.boundary_in(bytes.len());
         let (splits, cut_verdicts) = scan_splits(bytes, header_len(bytes), boundary);
-        self.cut_verdicts = cut_verdicts.into();
+        self.verdict.chunks = cut_verdicts.into();
 
         // The trailing chunk carries the write state into the next line.
         let last_start = splits.last().copied().unwrap_or(0);
@@ -449,9 +475,7 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             // A write cannot continue across files, and the cut verdicts
             // describe lines the next segment never saw.
             self.cursor.lose();
-            self.cut_verdicts.clear();
-            self.prev_line_cut = false;
-            self.line_cut = false;
+            self.verdict.clear_cuts();
             return Sourced::Segment;
         }
 
@@ -465,18 +489,6 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             line.pop();
         }
         Sourced::Line(self.detect_collision(line, on_disk_len))
-    }
-
-    /// Move to the current chunk's verdict, returning the previous chunk's.
-    ///
-    /// Only the boundary mechanism's verdict: a contention split concatenated
-    /// records that were each written whole.
-    fn take_verdict(&mut self) -> bool {
-        self.line_cut = self.cut_verdicts.pop_front().unwrap_or(false);
-        if self.line_cut {
-            self.line_warning = Some(ParseWarning::CutLine);
-        }
-        std::mem::replace(&mut self.prev_line_cut, self.line_cut)
     }
 
     /// A line carrying its own header starts an entry, so it closes the one
@@ -555,7 +567,7 @@ impl<I: Iterator<Item = String>> Iterator for LogStream<I> {
                 Sourced::Eof => return self.take_pending(),
             };
 
-            let prev_cut = self.take_verdict();
+            let prev_cut = self.verdict.advance();
             let parsed = parse_line(&line);
 
             let yielded = match parsed.kind {

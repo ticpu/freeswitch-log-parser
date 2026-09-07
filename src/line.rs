@@ -1,14 +1,10 @@
 use crate::level::LogLevel;
+pub(crate) use crate::uuid::{is_uuid_at, UUID_PREFIX_LEN};
+
+use crate::uuid::{find_uuid_in, UUID_LEN};
 
 use std::fmt;
 use std::ops::Range;
-
-/// Length of a session UUID in canonical 8-4-4-4-12 hex form.
-pub(crate) const UUID_LEN: usize = 36;
-
-/// Length of a UUID followed by its trailing space — the prefix
-/// `mod_logfile` prepends to every line when `log_uuid=true`.
-pub(crate) const UUID_PREFIX_LEN: usize = UUID_LEN + 1;
 
 /// Classification of a single log line's structural format.
 ///
@@ -67,32 +63,6 @@ pub struct RawLine<'a> {
     pub message: &'a str,
     /// Which of the five line formats this line matched.
     pub kind: LineKind,
-}
-
-/// The 36 canonical UUID bytes at `offset`, with nothing required after them —
-/// an embedded UUID can end a line or abut punctuation.
-pub(crate) fn is_uuid_body_at(bytes: &[u8], offset: usize) -> bool {
-    let Some(uuid) = bytes.get(offset..offset + UUID_LEN) else {
-        return false;
-    };
-    uuid.iter().enumerate().all(|(i, &b)| match i {
-        8 | 13 | 18 | 23 => b == b'-',
-        _ => b.is_ascii_hexdigit(),
-    })
-}
-
-/// A UUID at `offset` acting as a line's session prefix: the space delimiter is
-/// required, so a message that merely starts with hex is not mistaken for one.
-pub(crate) fn is_uuid_at(bytes: &[u8], offset: usize) -> bool {
-    bytes.get(offset + UUID_LEN) == Some(&b' ') && is_uuid_body_at(bytes, offset)
-}
-
-fn find_uuid_in(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < UUID_PREFIX_LEN {
-        return None;
-    }
-    let max_start = (bytes.len() - UUID_PREFIX_LEN).min(50);
-    (1..=max_start).find(|&start| is_uuid_at(bytes, start))
 }
 
 pub(crate) fn is_date_at(bytes: &[u8], offset: usize) -> bool {

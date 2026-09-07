@@ -2,7 +2,45 @@
 //! somewhere other than a line's session prefix — inside a message body, a
 //! channel-variable value, or an operator-supplied search needle.
 
-use crate::line::{is_uuid_body_at, UUID_LEN};
+/// Length of a session UUID in canonical 8-4-4-4-12 hex form.
+pub(crate) const UUID_LEN: usize = 36;
+
+/// Length of a UUID followed by its trailing space — the prefix
+/// `mod_logfile` prepends to every line when `log_uuid=true`.
+pub(crate) const UUID_PREFIX_LEN: usize = UUID_LEN + 1;
+
+/// How far into a collided line a session prefix is still looked for. Past it
+/// the fragment ahead of the UUID is data, not a cut token, and Layer 2's
+/// write budget is what finds the boundary.
+const MAX_COLLISION_PREFIX: usize = 50;
+
+/// The 36 canonical UUID bytes at `offset`, with nothing required after them —
+/// an embedded UUID can end a line or abut punctuation.
+pub(crate) fn is_uuid_body_at(bytes: &[u8], offset: usize) -> bool {
+    let Some(uuid) = bytes.get(offset..offset + UUID_LEN) else {
+        return false;
+    };
+    uuid.iter().enumerate().all(|(i, &b)| match i {
+        8 | 13 | 18 | 23 => b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
+}
+
+/// A UUID at `offset` acting as a line's session prefix: the space delimiter is
+/// required, so a message that merely starts with hex is not mistaken for one.
+pub(crate) fn is_uuid_at(bytes: &[u8], offset: usize) -> bool {
+    bytes.get(offset + UUID_LEN) == Some(&b' ') && is_uuid_body_at(bytes, offset)
+}
+
+/// The offset of a session prefix that a buffer collision pushed off the start
+/// of the line.
+pub(crate) fn find_uuid_in(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < UUID_PREFIX_LEN {
+        return None;
+    }
+    let max_start = (bytes.len() - UUID_PREFIX_LEN).min(MAX_COLLISION_PREFIX);
+    (1..=max_start).find(|&start| is_uuid_at(bytes, start))
+}
 
 /// Whether `s` is exactly one canonical UUID: 8-4-4-4-12 hex digits, either case.
 pub fn is_uuid(s: &str) -> bool {

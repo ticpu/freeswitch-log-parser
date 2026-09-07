@@ -100,10 +100,10 @@ pub struct SessionState {
     /// All variables learned so far, with the `variable_` prefix stripped from names.
     pub variables: HashMap<String, String>,
 }
-/// Immutable point-in-time copy of a session's state, attached to each [`EnrichedEntry`].
+/// Immutable point-in-time copy of a session's state, attached to each [`EnrichedEntry`](crate::EnrichedEntry).
 ///
 /// Does not include `variables` to keep snapshots lightweight — access the full
-/// variable map via [`SessionTracker::sessions()`].
+/// variable map via [`SessionTracker::sessions()`](crate::SessionTracker::sessions).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SessionSnapshot {

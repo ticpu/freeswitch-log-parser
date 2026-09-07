@@ -82,7 +82,7 @@ pub struct Field {
 
 /// Why a rewrite could not be applied.
 ///
-/// Every span handed to [`apply_fields`] is validated, replaced or not, so a
+/// Every span handed to [`apply_fields`](crate::apply_fields) is validated, replaced or not, so a
 /// malformed one fails the same way regardless of what the callback returns.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]

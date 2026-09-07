@@ -64,7 +64,17 @@ fn warning_on_unexpected_codec_continuation() {
     );
 }
 
-// --- Multi-byte content straddling the 80-byte warning truncation ---
+fn assert_excerpt_backed_off(line: &str) {
+    assert!(
+        line.len() < WARNING_EXCERPT_LEN,
+        "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
+        line.len()
+    );
+    assert!(
+        !line.contains("tail beyond eighty bytes"),
+        "expected the tail to be truncated away, got: {line:?}"
+    );
+}
 
 #[test]
 fn multibyte_at_warning_truncation_unrecognized_codec() {
@@ -92,15 +102,7 @@ fn multibyte_at_warning_truncation_unrecognized_codec() {
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected codec warning, got: {:?}", entries[0].warnings));
-    assert!(
-        line.len() < WARNING_EXCERPT_LEN,
-        "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
-        line.len()
-    );
-    assert!(
-        !line.contains("tail beyond eighty bytes"),
-        "expected the tail to be truncated away, got: {line:?}"
-    );
+    assert_excerpt_backed_off(line);
 }
 
 #[test]
@@ -126,15 +128,7 @@ fn multibyte_at_warning_truncation_channel_data() {
                 entries[0].warnings
             )
         });
-    assert!(
-        line.len() < WARNING_EXCERPT_LEN,
-        "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
-        line.len()
-    );
-    assert!(
-        !line.contains("tail beyond eighty bytes"),
-        "expected the tail to be truncated away, got: {line:?}"
-    );
+    assert_excerpt_backed_off(line);
 }
 
 #[test]
@@ -164,13 +158,5 @@ fn multibyte_at_warning_truncation_codec_continuation() {
                 entries[0].warnings
             )
         });
-    assert!(
-        line.len() < WARNING_EXCERPT_LEN,
-        "expected char-boundary back-off below {WARNING_EXCERPT_LEN} bytes, got {} bytes: {line:?}",
-        line.len()
-    );
-    assert!(
-        !line.contains("tail beyond eighty bytes"),
-        "expected the tail to be truncated away, got: {line:?}"
-    );
+    assert_excerpt_backed_off(line);
 }

@@ -1,6 +1,7 @@
 use crate::level::LogLevel;
 
 use std::fmt;
+use std::ops::Range;
 
 /// Length of a session UUID in canonical 8-4-4-4-12 hex form.
 pub(crate) const UUID_LEN: usize = 36;
@@ -101,101 +102,78 @@ pub(crate) fn is_date_at(bytes: &[u8], offset: usize) -> bool {
     bytes[offset..offset + 4].iter().all(u8::is_ascii_digit) && bytes[offset + 4] == b'-'
 }
 
-/// Check for a full FreeSWITCH log header at `offset`:
-/// `YYYY-MM-DD HH:MM:SS.UUUUUU [D+.D+% ][`
+/// `YYYY-MM-DD HH:MM:SS.ffffff`, the width `mod_logfile` writes.
+const TIMESTAMP_LEN: usize = 26;
+
+/// Widest idle field the logger can write, `"100.00%"`.
+const MAX_IDLE_PCT_LEN: usize = 7;
+
+/// Where a FreeSWITCH log header's fields sit, as offsets into the bytes it
+/// was found in.
+pub(crate) struct HeaderSpan {
+    timestamp: Range<usize>,
+    idle_pct: Option<Range<usize>>,
+    /// Offset of the `[` opening the level.
+    level: usize,
+}
+
+/// The `D+.D+%` idle field at `from`. The logger writes it followed by a
+/// space, so anything else there is not one.
+fn idle_pct_span(bytes: &[u8], from: usize) -> Option<Range<usize>> {
+    let end = (from + MAX_IDLE_PCT_LEN).min(bytes.len());
+    let window = bytes.get(from..end)?;
+    let pct = window.iter().position(|&b| b == b'%')?;
+    if !window[0].is_ascii_digit()
+        || !window[..pct]
+            .iter()
+            .all(|&b| b.is_ascii_digit() || b == b'.')
+    {
+        return None;
+    }
+    (bytes.get(from + pct + 1) == Some(&b' ')).then(|| from..from + pct + 1)
+}
+
+/// The spans of a full FreeSWITCH log header at `offset`:
+/// `YYYY-MM-DD HH:MM:SS.ffffff [D+.D+% ][LEVEL]`.
 ///
 /// The idle percentage is optional — older/eSInet FS builds omit it and emit
-/// `[LEVEL]` directly after the timestamp.
+/// `[LEVEL]` directly after the timestamp — but the level bracket is not, so a
+/// line the logger cut before it reads as no header rather than as one with an
+/// idle field and nothing else.
+pub(crate) fn header_at(bytes: &[u8], offset: usize) -> Option<HeaderSpan> {
+    let stamp = bytes.get(offset..offset + TIMESTAMP_LEN)?;
+    let stamped = stamp.iter().enumerate().all(|(i, &b)| match i {
+        4 | 7 => b == b'-',
+        10 => b == b' ',
+        13 | 16 => b == b':',
+        19 => b == b'.',
+        _ => b.is_ascii_digit(),
+    });
+    if !stamped || bytes.get(offset + TIMESTAMP_LEN) != Some(&b' ') {
+        return None;
+    }
+
+    let after_stamp = offset + TIMESTAMP_LEN + 1;
+    let idle_pct = idle_pct_span(bytes, after_stamp);
+    let level = idle_pct.as_ref().map_or(after_stamp, |r| r.end + 1);
+    if bytes.get(level) != Some(&b'[') {
+        return None;
+    }
+
+    Some(HeaderSpan {
+        timestamp: offset..offset + TIMESTAMP_LEN,
+        idle_pct,
+        level,
+    })
+}
+
+/// Whether a full FreeSWITCH log header starts at `offset`.
 ///
 /// Used by Layer 2 to detect same-line collisions where multiple log entries
 /// were concatenated without a newline (thread contention on file write, or a
 /// caller format string missing its trailing `\n`).
 pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
-    // Minimum: 27-byte timestamp + space + "0% [" = 31 bytes
-    if bytes.len() < offset + 31 {
-        return false;
-    }
-    // YYYY-MM-DD HH:MM:SS.UUUUUU (26 bytes + space)
-    if !(bytes[offset..offset + 4].iter().all(u8::is_ascii_digit)
-        && bytes[offset + 4] == b'-'
-        && bytes[offset + 5..offset + 7].iter().all(u8::is_ascii_digit)
-        && bytes[offset + 7] == b'-'
-        && bytes[offset + 8..offset + 10]
-            .iter()
-            .all(u8::is_ascii_digit)
-        && bytes[offset + 10] == b' '
-        && bytes[offset + 11..offset + 13]
-            .iter()
-            .all(u8::is_ascii_digit)
-        && bytes[offset + 13] == b':'
-        && bytes[offset + 14..offset + 16]
-            .iter()
-            .all(u8::is_ascii_digit)
-        && bytes[offset + 16] == b':'
-        && bytes[offset + 17..offset + 19]
-            .iter()
-            .all(u8::is_ascii_digit)
-        && bytes[offset + 19] == b'.'
-        && bytes[offset + 20..offset + 26]
-            .iter()
-            .all(u8::is_ascii_digit)
-        && bytes[offset + 26] == b' ')
-    {
-        return false;
-    }
-    // Idle percentage is optional — older/eSInet FS builds emit "[LEVEL]"
-    // directly after the microsecond timestamp (switch_log.c version difference).
-    let rest = &bytes[offset + 27..];
-    if rest[0] == b'[' {
-        return true;
-    }
-    // Otherwise it starts with the idle %: digit, % within 6 bytes, then " ["
-    if !rest[0].is_ascii_digit() {
-        return false;
-    }
-    let Some(pct_pos) = rest[..rest.len().min(7)].iter().position(|&b| b == b'%') else {
-        return false;
-    };
-    rest.len() > pct_pos + 2 && rest[pct_pos + 1] == b' ' && rest[pct_pos + 2] == b'['
-}
-
-/// Try to parse idle percentage from the start of `rest`.
-///
-/// The idle percentage appears immediately after the timestamp, starts with a
-/// digit, contains only digits and dots, and the `%` falls within the first 7
-/// bytes (max value: `"100.00%"`). When absent (some FS versions/configurations
-/// omit it), `rest` starts with `[LEVEL]` instead.
-///
-/// Returns `(Some(idle_pct), remaining)` on success, or `(None, rest)` unchanged.
-fn parse_idle_pct(rest: &str) -> (Option<&str>, &str) {
-    let bytes = rest.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_digit() {
-        return (None, rest);
-    }
-    let search_len = rest.len().min(7);
-    let pct_pos = match bytes[..search_len].iter().position(|&b| b == b'%') {
-        Some(p) => p,
-        None => return (None, rest),
-    };
-    if !bytes[..pct_pos]
-        .iter()
-        .all(|&b| b.is_ascii_digit() || b == b'.')
-    {
-        return (None, rest);
-    }
-    // The field is written "% ", so anything other than a space after the sign
-    // is not one — `is_log_header_at` requires the same, and two validators
-    // disagreeing on the same format is how a corrupt line gets read two ways.
-    if rest.len() > pct_pos + 1 && bytes[pct_pos + 1] != b' ' {
-        return (None, rest);
-    }
-    let idle_pct = &rest[0..=pct_pos];
-    let after = if rest.len() > pct_pos + 2 {
-        &rest[pct_pos + 2..]
-    } else {
-        ""
-    };
-    (Some(idle_pct), after)
+    header_at(bytes, offset).is_some()
 }
 
 /// The header slices at bytes 26/27 (timestamp + separating space) are only
@@ -205,43 +183,71 @@ fn header_boundaries_ok(s: &str) -> bool {
     s.len() < 27 || (s.is_char_boundary(26) && s.is_char_boundary(27))
 }
 
-fn parse_timestamped_fields(
-    s: &str,
-) -> (
-    Option<&str>,
-    Option<&str>,
-    Option<LogLevel>,
-    Option<&str>,
-    &str,
-) {
-    if s.len() < 27 {
-        return (None, None, None, None, s);
-    }
-    let timestamp = &s[0..26];
-    let rest = &s[27..];
+/// The structured fields of a timestamped line, each `None` where the line
+/// stops short of it.
+struct LineHeader<'a> {
+    timestamp: Option<&'a str>,
+    idle_pct: Option<&'a str>,
+    level: Option<LogLevel>,
+    source: Option<&'a str>,
+    message: &'a str,
+}
 
-    let (idle_pct, rest) = parse_idle_pct(rest);
+fn parse_timestamped_fields(s: &str) -> LineHeader<'_> {
+    if s.len() < TIMESTAMP_LEN + 1 {
+        return LineHeader {
+            timestamp: None,
+            idle_pct: None,
+            level: None,
+            source: None,
+            message: s,
+        };
+    }
+    let (timestamp, idle_pct, rest) = match header_at(s.as_bytes(), 0) {
+        Some(h) => (&s[h.timestamp], h.idle_pct.map(|r| &s[r]), &s[h.level..]),
+        None => (&s[..TIMESTAMP_LEN], None, &s[TIMESTAMP_LEN + 1..]),
+    };
+    let timestamp = Some(timestamp);
 
     let bracket_end = match rest.find(']') {
         Some(p) => p,
-        None => return (Some(timestamp), idle_pct, None, None, rest),
+        None => {
+            return LineHeader {
+                timestamp,
+                idle_pct,
+                level: None,
+                source: None,
+                message: rest,
+            }
+        }
     };
     let level = LogLevel::from_bracketed(&rest[0..=bracket_end]);
 
     if rest.len() < bracket_end + 3 || !rest.is_char_boundary(bracket_end + 2) {
-        return (Some(timestamp), idle_pct, level, None, "");
+        return LineHeader {
+            timestamp,
+            idle_pct,
+            level,
+            source: None,
+            message: "",
+        };
     }
     let rest = &rest[bracket_end + 2..];
 
     let source_end = rest.find(' ').unwrap_or(rest.len());
-    let source = &rest[0..source_end];
     let message = if source_end < rest.len() {
         &rest[source_end + 1..]
     } else {
         ""
     };
 
-    (Some(timestamp), idle_pct, level, Some(source), message)
+    LineHeader {
+        timestamp,
+        idle_pct,
+        level,
+        source: Some(&rest[0..source_end]),
+        message,
+    }
 }
 
 /// Layer 1 entry point: classify a single line and extract its fields.
@@ -269,15 +275,14 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
         let after_uuid = &line[UUID_PREFIX_LEN..];
 
         if is_date_at(bytes, UUID_PREFIX_LEN) && header_boundaries_ok(after_uuid) {
-            let (timestamp, idle_pct, level, source, message) =
-                parse_timestamped_fields(after_uuid);
+            let h = parse_timestamped_fields(after_uuid);
             return RawLine {
                 uuid: Some(uuid),
-                timestamp,
-                idle_pct,
-                level,
-                source,
-                message,
+                timestamp: h.timestamp,
+                idle_pct: h.idle_pct,
+                level: h.level,
+                source: h.source,
+                message: h.message,
                 kind: LineKind::Full,
             };
         }
@@ -294,18 +299,18 @@ pub fn parse_line(line: &str) -> RawLine<'_> {
     }
 
     if is_date_at(bytes, 0) && header_boundaries_ok(line) {
-        let (timestamp, idle_pct, level, source, message) = parse_timestamped_fields(line);
-        let (uuid, message) = if is_uuid_at(message.as_bytes(), 0) {
-            (Some(&message[0..UUID_LEN]), &message[UUID_PREFIX_LEN..])
+        let h = parse_timestamped_fields(line);
+        let (uuid, message) = if is_uuid_at(h.message.as_bytes(), 0) {
+            (Some(&h.message[0..UUID_LEN]), &h.message[UUID_PREFIX_LEN..])
         } else {
-            (None, message)
+            (None, h.message)
         };
         return RawLine {
             uuid,
-            timestamp,
-            idle_pct,
-            level,
-            source,
+            timestamp: h.timestamp,
+            idle_pct: h.idle_pct,
+            level: h.level,
+            source: h.source,
             message,
             kind: LineKind::System,
         };
@@ -648,6 +653,25 @@ mod tests {
         let line = "Session does not exist, aborting REFER.2024-04-02 10:31:28.785679 [WARNING] sofia_presence.c:4546 x";
         let offset = line.find("2024").unwrap();
         assert!(is_log_header_at(line.as_bytes(), offset));
+    }
+
+    /// The logger writes the idle field with `"%0.2f"`, so a run of anything
+    /// else before the sign is not one — and reading it as one claimed a
+    /// scheduler figure off text that never held one.
+    #[test]
+    fn idle_pct_rejects_non_numeric_run() {
+        let line = "2025-01-15 10:30:45.123456 ab% [DEBUG] sofia.c:100 Message";
+        assert!(!is_log_header_at(line.as_bytes(), 0));
+        assert_eq!(parse_line(line).idle_pct, None);
+    }
+
+    /// A header the write budget cut after the idle field carries no level, so
+    /// it is no header — and no idle reading either.
+    #[test]
+    fn idle_pct_needs_the_level_after_it() {
+        let line = "2025-01-15 10:30:45.123456 95.97%";
+        assert!(!is_log_header_at(line.as_bytes(), 0));
+        assert_eq!(parse_line(line).idle_pct, None);
     }
 
     #[test]

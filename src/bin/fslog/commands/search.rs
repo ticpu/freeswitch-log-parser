@@ -1,7 +1,8 @@
 //! `fslog search` — the file set a date window selects, and the parse over it.
 
 use std::io::{self, IsTerminal, Write};
-use std::process;
+
+use anyhow::Context;
 
 use crate::cli::{build_filter, SearchArgs};
 use crate::files::{
@@ -14,20 +15,12 @@ use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output, RunCtx,
 const MAX_UNCONFIRMED_FILES: usize = 20;
 const MAX_UNCONFIRMED_BYTES: u64 = 1024 * 1024 * 1024;
 
-fn max_unconfirmed_bytes() -> u64 {
-    let raw = match std::env::var("FSLOG_CONFIRM_SIZE") {
-        Ok(raw) => raw,
-        Err(std::env::VarError::NotPresent) => return MAX_UNCONFIRMED_BYTES,
-        // Set but unreadable is a misconfiguration, not an absent setting.
-        Err(e) => {
-            eprintln!("fslog: FSLOG_CONFIRM_SIZE is set but unusable: {e}");
-            process::exit(2);
-        }
+fn max_unconfirmed_bytes() -> anyhow::Result<u64> {
+    let Some(raw) = crate::env::var("FSLOG_CONFIRM_SIZE")? else {
+        return Ok(MAX_UNCONFIRMED_BYTES);
     };
-    raw.parse().unwrap_or_else(|e| {
-        eprintln!("fslog: FSLOG_CONFIRM_SIZE={raw} is not a byte count: {e}");
-        process::exit(2);
-    })
+    raw.parse()
+        .with_context(|| format!("FSLOG_CONFIRM_SIZE={raw} is not a byte count"))
 }
 
 /// A human-readable span of the log files on hand, so an empty result says
@@ -58,7 +51,7 @@ fn resolve_search_files(
     all_files: &[files::LogFile],
     from: Option<&str>,
     until: Option<&str>,
-) -> io::Result<Option<Vec<Segment>>> {
+) -> anyhow::Result<Option<Vec<Segment>>> {
     if !args.files.is_empty() {
         let v = args.files.iter().cloned().map(Segment::new).collect();
         return Ok(Some(v));
@@ -72,17 +65,18 @@ fn resolve_search_files(
     let total_size: u64 = selected.iter().map(|f| f.size).sum();
     // File count alone is a poor proxy for the wait: twenty rotated logs from a
     // quiet box are seconds, one from a busy one can be gigabytes decompressed.
-    if !args.yes && (selected.len() > MAX_UNCONFIRMED_FILES || total_size > max_unconfirmed_bytes())
+    if !args.yes
+        && (selected.len() > MAX_UNCONFIRMED_FILES || total_size > max_unconfirmed_bytes()?)
     {
         let scale = format!("{} files ({})", selected.len(), format_size(total_size));
         if !io::stdin().is_terminal() {
-            return Err(io::Error::other(format!(
-                "refusing to scan {scale} without confirmation; pass -y to override"
-            )));
+            anyhow::bail!("refusing to scan {scale} without confirmation; pass -y to override");
         }
         eprint!("about to scan {scale}, proceed? [y/N] ");
         let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
+        io::stdin()
+            .read_line(&mut answer)
+            .context("reading the confirmation answer")?;
         if !answer.trim().eq_ignore_ascii_case("y") {
             return Ok(None);
         }

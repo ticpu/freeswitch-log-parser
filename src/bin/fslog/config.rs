@@ -41,14 +41,8 @@ impl Tool {
     }
 }
 
-/// A directory named by an environment variable. A value set but unreadable is
-/// a misconfiguration, and reading it as unset is how it stays invisible.
 fn env_dir(name: &str) -> anyhow::Result<Option<PathBuf>> {
-    match std::env::var(name) {
-        Ok(v) => Ok(Some(PathBuf::from(v))),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(e) => Err(anyhow::Error::new(e).context(format!("{name} is set but unusable"))),
-    }
+    Ok(crate::env::var(name)?.map(PathBuf::from))
 }
 
 pub fn find_config(explicit: Option<&Path>) -> anyhow::Result<Option<PathBuf>> {

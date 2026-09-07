@@ -5,6 +5,7 @@ mod complete;
 mod config;
 mod context;
 mod dialstring;
+mod env;
 mod files;
 #[cfg(feature = "tui")]
 mod monitor;
@@ -28,7 +29,7 @@ fn paged(
     pager: bool,
     body: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let mut out = PagedWriter::new(pager);
+    let mut out = PagedWriter::new(pager)?;
     let result = body(&mut out);
     let finished = out.finish();
     result.and(finished.map_err(anyhow::Error::from))

@@ -7,9 +7,9 @@ use crate::attached::AttachedLines;
 use crate::codec::{CodecMedia, CodecOffer, CodecParseError};
 use crate::decode::truncate_at_char_boundary;
 use crate::fields::FieldLocation;
-use crate::level::LogLevel;
 use crate::line::LineKind;
 use crate::message::{MessageKind, SdpDirection};
+use freeswitch_types::LogLevel;
 
 use super::collision::MOD_LOGFILE_BUF_SIZE;
 

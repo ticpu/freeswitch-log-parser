@@ -351,13 +351,25 @@ fn resolve_color(when: ColorWhen) -> ColorMode {
     }
 }
 
+fn level_labels() -> Vec<&'static str> {
+    LogLevel::ALL
+        .iter()
+        .filter(|l| **l != LogLevel::Disable)
+        .map(LogLevel::as_str)
+        .collect()
+}
+
 fn build_filter(filter: &FilterArgs, from: Option<&str>, until: Option<&str>) -> FilterConfig {
     let min_level: Option<LogLevel> = filter.level.as_ref().map(|l| {
-        l.parse().unwrap_or_else(|_| {
-            eprintln!("invalid log level: {l}");
-            eprintln!("valid levels: {}", LogLevel::ALL_LABELS.join(", "));
-            process::exit(2);
-        })
+        // `disable` is the switch's "log nothing" sentinel, not a severity.
+        match l.to_ascii_lowercase().parse::<LogLevel>() {
+            Ok(LogLevel::Disable) | Err(_) => {
+                eprintln!("invalid log level: {l}");
+                eprintln!("valid levels: {}", level_labels().join(", "));
+                process::exit(2);
+            }
+            Ok(level) => level,
+        }
     });
 
     for cat in &filter.category {

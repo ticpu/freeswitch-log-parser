@@ -122,12 +122,12 @@ pub(super) fn colorize_pass_fail<'a>(text: &'a str, resume: &str) -> Cow<'a, str
 
 pub(super) fn level_color(level: Option<LogLevel>) -> &'static str {
     match level {
-        Some(LogLevel::Err | LogLevel::Crit | LogLevel::Alert) => RED,
+        Some(LogLevel::Error | LogLevel::Crit | LogLevel::Alert) => RED,
         Some(LogLevel::Warning) => MAGENTA,
         Some(LogLevel::Info) => GREEN,
         Some(LogLevel::Notice) => CYAN,
         Some(LogLevel::Debug) => YELLOW,
         Some(LogLevel::Console) => GREEN,
-        None => "",
+        _ => "",
     }
 }

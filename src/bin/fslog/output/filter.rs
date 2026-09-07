@@ -206,7 +206,8 @@ impl FilterConfig {
 
     fn level_ok(&self, entry: &freeswitch_log_parser::LogEntry) -> bool {
         match (self.min_level, entry.level) {
-            (Some(min), Some(level)) => level >= min,
+            // `switch_log_level_t` numbers the most severe lowest.
+            (Some(min), Some(level)) => level <= min,
             _ => true,
         }
     }

@@ -400,6 +400,29 @@ fn hidden(f: &FilterConfig, e: &LogEntry) -> Option<Hidden> {
     }
 }
 
+/// `switch_log_level_t` numbers the most severe lowest, so the threshold
+/// comparison runs the other way than a syslog reading of it would.
+#[test]
+fn a_level_floor_admits_the_more_severe_only() {
+    let f = filter(FilterParams {
+        min_level: Some(LogLevel::Info),
+        ..Default::default()
+    });
+    for (level, kept) in [
+        (LogLevel::Debug, false),
+        (LogLevel::Info, true),
+        (LogLevel::Error, true),
+    ] {
+        let mut e = entry(CALL, "Activating RTCP", &[]);
+        e.level = Some(level);
+        assert_eq!(
+            matches!(f.verdict(&e), Verdict::Match),
+            kept,
+            "failed for {level}"
+        );
+    }
+}
+
 fn grep(pattern: &str) -> Option<regex::Regex> {
     Some(regex::Regex::new(pattern).expect("test pattern compiles"))
 }
@@ -456,7 +479,7 @@ fn the_uuid_column_wins_over_the_attached_bucket() {
 fn a_rejection_on_another_predicate_advertises_nothing() {
     let f = filter(FilterParams {
         grep: grep(CALL),
-        min_level: Some(LogLevel::Err),
+        min_level: Some(LogLevel::Error),
         ..Default::default()
     });
     let mut e = entry(CALL, "Activating RTCP", &[]);

@@ -1,5 +1,5 @@
-use crate::level::LogLevel;
 pub(crate) use crate::uuid::{is_uuid_at, UUID_PREFIX_LEN};
+use freeswitch_types::LogLevel;
 
 use crate::mask::Mask;
 use crate::uuid::{find_uuid_in, UUID_LEN};
@@ -153,6 +153,16 @@ pub(crate) fn is_log_header_at(bytes: &[u8], offset: usize) -> bool {
     header_at(bytes, offset).is_some()
 }
 
+/// The [`LogLevel`] inside a header's `[LEVEL]` field, or `None` when the
+/// brackets are missing or hold no level the switch knows.
+///
+/// The log spells the level in upper case; `LogLevel`'s own `FromStr` is the
+/// switch's case-sensitive `LEVELS[]` lookup, so the name is folded first.
+pub fn level_from_bracketed(s: &str) -> Option<LogLevel> {
+    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
+    inner.to_ascii_lowercase().parse().ok()
+}
+
 /// The header slices at bytes 26/27 (timestamp + separating space) are only
 /// valid when both land on char boundaries — a multi-byte char straddling
 /// either offset means the line is not a Format A/B header.
@@ -198,7 +208,7 @@ fn parse_timestamped_fields(s: &str) -> LineHeader<'_> {
             }
         }
     };
-    let level = LogLevel::from_bracketed(&rest[0..=bracket_end]);
+    let level = level_from_bracketed(&rest[0..=bracket_end]);
 
     if rest.len() < bracket_end + 3 || !rest.is_char_boundary(bracket_end + 2) {
         return LineHeader {
@@ -352,7 +362,7 @@ mod tests {
             ("INFO", LogLevel::Info),
             ("NOTICE", LogLevel::Notice),
             ("WARNING", LogLevel::Warning),
-            ("ERR", LogLevel::Err),
+            ("ERR", LogLevel::Error),
             ("CRIT", LogLevel::Crit),
             ("ALERT", LogLevel::Alert),
             ("CONSOLE", LogLevel::Console),
@@ -608,6 +618,32 @@ mod tests {
         let parsed = parse_line(&line);
         assert_eq!(parsed.kind, LineKind::Truncated);
         assert_eq!(parsed.uuid, Some(UUID1));
+    }
+
+    // --- level_from_bracketed ---
+
+    #[test]
+    fn bracketed_level_folds_the_log_spelling() {
+        assert_eq!(level_from_bracketed("[DEBUG]"), Some(LogLevel::Debug));
+        assert_eq!(level_from_bracketed("[ERR]"), Some(LogLevel::Error));
+        assert_eq!(level_from_bracketed("[CONSOLE]"), Some(LogLevel::Console));
+    }
+
+    #[test]
+    fn bracketed_level_rejects_malformed() {
+        assert_eq!(level_from_bracketed("[FAKE]"), None);
+        assert_eq!(level_from_bracketed("DEBUG"), None);
+        assert_eq!(level_from_bracketed("[]"), None);
+        assert_eq!(level_from_bracketed("["), None);
+        assert_eq!(level_from_bracketed(""), None);
+    }
+
+    /// Least severe compares greatest, so `>= Debug` admits everything.
+    #[test]
+    fn levels_order_by_switch_log_level_numbering() {
+        assert!(LogLevel::Console < LogLevel::Alert);
+        assert!(LogLevel::Error < LogLevel::Warning);
+        assert!(LogLevel::Info < LogLevel::Debug);
     }
 
     // --- is_log_header_at (collision split marker) ---

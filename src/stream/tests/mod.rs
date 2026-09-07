@@ -11,9 +11,9 @@ mod warnings;
 use super::entry::WARNING_EXCERPT_LEN;
 use super::*;
 use crate::codec::{CodecMedia, CodecOffer};
-use crate::level::LogLevel;
 use crate::message::SdpDirection;
 use crate::testdata::{full_line, TS1, TS2, UUID1, UUID2};
+use freeswitch_types::LogLevel;
 
 /// A physical line holding a write that spent its budget: `head` padded to
 /// exactly what the write had left, with `successor` glued where the newline no

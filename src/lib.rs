@@ -54,7 +54,6 @@ mod chain;
 mod codec;
 mod decode;
 mod fields;
-mod level;
 mod line;
 mod mask;
 mod message;
@@ -79,10 +78,10 @@ pub use fields::{
 };
 pub use freeswitch_types::{
     variables::{ConferenceVariable, SofiaVariable, VariableName},
-    CallDirection, CallState, ChannelState, ChannelVariable, HangupCause,
+    CallDirection, CallState, ChannelState, ChannelVariable, HangupCause, LogLevel,
+    ParseLogLevelError,
 };
-pub use level::{LogLevel, ParseLevelError};
-pub use line::{parse_line, LineKind, RawLine};
+pub use line::{level_from_bracketed, parse_line, LineKind, RawLine};
 pub use message::{
     classify_message, regex_condition_parts, DtmfSource, MessageKind, RegexCondition, SdpDirection,
     SipInviteDirection,

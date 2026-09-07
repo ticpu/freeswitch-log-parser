@@ -33,7 +33,6 @@ check it *before* evaluating the request's mechanics.
 
 ### Key Files
 
-- `src/level.rs` — `LogLevel` enum with `FromStr`/`Display`/`Ord`
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
 - `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`; `parts.rs` holds the positional slicers `fields/` reuses
 - `src/fields/` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
@@ -256,7 +255,7 @@ Sessions are never automatically cleaned up — consumer calls `remove_session(u
 
 ### LogLevel ordering
 
-Ordered least to most severe: Debug < Info < Notice < Warning < Err < Crit < Alert < Console. Allows `level >= LogLevel::Info` for filtering (inverted from syslog numeric values, natural for Rust's `>=`).
+`LogLevel` is `freeswitch_types`', re-exported. It orders by `switch_log_level_t` numbering — `Console = 0` … `Debug = 7`, plus a `Disable = -1` sentinel that is not a severity — so **less severe compares greater**: a threshold filter keeps `level <= min`, and the level is named `Error`, not `Err`. `FromStr` is the switch's case-sensitive `LEVELS[]` lookup; `level_from_bracketed` folds the log's upper-case `[LEVEL]` before it.
 
 ## Test Data
 
@@ -297,5 +296,5 @@ Never copy production log lines verbatim into source.
 - Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`, `RegexCondition`
 - `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests. `SessionState`/`SessionSnapshot` are the same: build one from a tracker, or from `Default` plus field assignment. Hooks still get plain `&mut` field access
 - `LogEntry` is not marked, but `LogEntry::synthetic` exists so a consumer needing one does not spell out every field
-- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `LogLevel` (fixed syslog levels with Ord), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)
+- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)
 - New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

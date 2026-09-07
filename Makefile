@@ -1,9 +1,9 @@
 BINARY := fslog
 DOCKER := $(shell which podman || which docker)
 DEB_ARCH ?= amd64
-# Old base image on purpose: the released binary's glibc floor is whatever this
-# suite ships, and that floor is what makes it portable to production servers.
-DEBIAN_SUITE ?= bullseye
+# The released binary's glibc floor is whatever this suite ships, so it decides
+# which production servers can run it; the oldest suite Debian still serves wins.
+DEBIAN_SUITE ?= bookworm
 
 CARGO_VERSION := $(shell grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
 GIT_SHORT := $(shell git rev-parse --short HEAD)

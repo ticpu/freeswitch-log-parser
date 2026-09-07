@@ -5,7 +5,7 @@ use std::io::Write;
 use freeswitch_log_parser::{LogStream, SessionTracker};
 
 use crate::cli::{build_filter, TailArgs};
-use crate::files::{open_tail_reader, resolve_log_path};
+use crate::files::{open_tail_reader, resolve_log_path, ReadFailures};
 use crate::pager::is_broken_pipe;
 use crate::run::RunCtx;
 
@@ -13,7 +13,8 @@ pub fn run(ctx: &RunCtx, args: &TailArgs, out: &mut dyn Write) -> anyhow::Result
     let filter = build_filter(&args.filter, None, None)?;
 
     let path = resolve_log_path(&ctx.dir, args.file.as_deref());
-    let lines = open_tail_reader(&path, args.lines, ctx.max_line_bytes)?;
+    let failures = ReadFailures::default();
+    let lines = open_tail_reader(&path, args.lines, ctx.max_line_bytes, &failures)?;
 
     let printer = args.filter.printer(ctx.color);
     let stream = LogStream::new(lines).unclassified_tracking(args.filter.tracking());
@@ -34,5 +35,7 @@ pub fn run(ctx: &RunCtx, args: &TailArgs, out: &mut dyn Write) -> anyhow::Result
         }
     }
 
-    Ok(())
+    // The follower only ends when the file stops being readable, so a run that
+    // returns has a reason waiting here.
+    failures.check()
 }

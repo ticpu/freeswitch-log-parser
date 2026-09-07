@@ -12,7 +12,7 @@ use freeswitch_log_parser::{
     decode_log_line, read_log_line_capped, read_log_lines_capped, trim_capped_tail, OverCap,
     Utf8Decode,
 };
-use log::{error, warn};
+use log::warn;
 use xz2::read::XzDecoder;
 
 use super::display_name;
@@ -71,9 +71,15 @@ pub fn open_log_file(path: &Path) -> anyhow::Result<Box<dyn BufRead>> {
 pub fn open_log_reader(
     path: &Path,
     max_line_bytes: usize,
+    failures: &ReadFailures,
 ) -> anyhow::Result<Box<dyn Iterator<Item = String>>> {
     let reader = open_log_file(path)?;
-    Ok(lossy_line_iter(reader, display_name(path), max_line_bytes))
+    Ok(lossy_line_iter(
+        reader,
+        display_name(path),
+        max_line_bytes,
+        failures.clone(),
+    ))
 }
 
 /// Yield log lines as `String`, replacing invalid UTF-8 with U+FFFD instead of
@@ -87,8 +93,9 @@ pub fn lossy_line_iter(
     reader: Box<dyn BufRead>,
     name: String,
     max_line_bytes: usize,
+    failures: ReadFailures,
 ) -> Box<dyn Iterator<Item = String>> {
-    let mut cap_report = CapReport::new(name);
+    let mut cap_report = CapReport::new(name.clone());
     Box::new(read_log_lines_capped(reader, max_line_bytes).map_while(
         move |decoded| match decoded {
             Ok(capped) => {
@@ -101,7 +108,7 @@ pub fn lossy_line_iter(
                 Some(capped.line.text)
             }
             Err(e) => {
-                error!("read error: {e}");
+                failures.record(anyhow::Error::new(e).context(format!("reading {name}")));
                 None
             }
         },
@@ -159,7 +166,7 @@ impl Iterator for LazyLogReader {
 
     fn next(&mut self) -> Option<String> {
         if self.inner.is_none() {
-            match open_log_reader(&self.path, self.max_line_bytes) {
+            match open_log_reader(&self.path, self.max_line_bytes, &self.failures) {
                 Ok(reader) => self.inner = Some(reader),
                 Err(e) => {
                     self.failures.record(e);
@@ -185,10 +192,11 @@ struct TailLines<R: BufRead> {
     path: PathBuf,
     max_line_bytes: usize,
     cap_report: CapReport,
+    failures: ReadFailures,
 }
 
 impl TailLines<BufReader<fs::File>> {
-    fn new(file: fs::File, path: PathBuf, max_line_bytes: usize) -> Self {
+    fn new(file: fs::File, path: PathBuf, max_line_bytes: usize, failures: ReadFailures) -> Self {
         let cap_report = CapReport::new(display_name(&path));
         TailLines {
             reader: BufReader::new(file),
@@ -197,6 +205,7 @@ impl TailLines<BufReader<fs::File>> {
             path,
             max_line_bytes,
             cap_report,
+            failures,
         }
     }
 }
@@ -213,7 +222,9 @@ impl<R: BufRead> Iterator for TailLines<R> {
             ) {
                 Ok(read) => read,
                 Err(e) => {
-                    error!("tail read error on {}, stopping: {e}", self.path.display());
+                    self.failures.record(
+                        anyhow::Error::new(e).context(format!("tailing {}", self.path.display())),
+                    );
                     return None;
                 }
             };
@@ -270,12 +281,15 @@ fn read_tail_context(
             .with_context(|| format!("seeking to {seek_pos} in {}", path.display()))?;
     }
 
+    let failures = ReadFailures::default();
     let mut lines: Vec<String> = lossy_line_iter(
         Box::new(BufReader::new(file)),
         display_name(path),
         max_line_bytes,
+        failures.clone(),
     )
     .collect();
+    failures.check()?;
 
     if seek_pos > 0 && !lines.is_empty() {
         lines.remove(0);
@@ -292,6 +306,7 @@ pub fn open_tail_reader(
     path: &Path,
     initial_lines: usize,
     max_line_bytes: usize,
+    failures: &ReadFailures,
 ) -> anyhow::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 
@@ -301,7 +316,7 @@ pub fn open_tail_reader(
         fs::File::open(path).with_context(|| format!("opening log file {}", path.display()))?;
     file.seek(SeekFrom::Start(file_len))
         .with_context(|| format!("seeking to the end of {}", path.display()))?;
-    let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes);
+    let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes, failures.clone());
 
     Ok(Box::new(context.into_iter().chain(tail)))
 }
@@ -310,6 +325,7 @@ pub fn open_tail_reader(
 pub fn open_full_tail_reader(
     path: &Path,
     max_line_bytes: usize,
+    failures: &ReadFailures,
 ) -> anyhow::Result<Box<dyn Iterator<Item = String>>> {
     use std::io::{Seek, SeekFrom};
 
@@ -318,13 +334,13 @@ pub fn open_full_tail_reader(
         .and_then(|f| f.metadata())
         .with_context(|| format!("stat {}", path.display()))?
         .len();
-    let lines = lossy_line_iter(reader, display_name(path), max_line_bytes);
+    let lines = lossy_line_iter(reader, display_name(path), max_line_bytes, failures.clone());
 
     let mut file =
         fs::File::open(path).with_context(|| format!("opening log file {}", path.display()))?;
     file.seek(SeekFrom::Start(end_pos))
         .with_context(|| format!("seeking to the end of {}", path.display()))?;
-    let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes);
+    let tail = TailLines::new(file, path.to_path_buf(), max_line_bytes, failures.clone());
 
     Ok(Box::new(lines.chain(tail)))
 }
@@ -349,6 +365,7 @@ mod tests {
             path: PathBuf::from("test.log"),
             max_line_bytes,
             cap_report: CapReport::new("test.log".to_string()),
+            failures: ReadFailures::default(),
         }
     }
 

@@ -25,7 +25,7 @@ use ratatui::Terminal;
 use freeswitch_log_parser::{LogStream, SessionTracker, TrackedChain};
 
 use crate::config;
-use crate::files::{open_log_reader, resolve_log_path};
+use crate::files::{open_log_reader, resolve_log_path, ReadFailures};
 
 use input::{execute_action, handle_key};
 use model::{AppState, ContextFilter, UiMode};
@@ -58,7 +58,8 @@ fn process_log(
     max_line_bytes: usize,
     linger: Duration,
 ) -> anyhow::Result<AppState> {
-    let segments = monitor_segments(dir, path, open_log_reader, max_line_bytes)?;
+    let failures = ReadFailures::default();
+    let segments = monitor_segments(dir, path, open_log_reader, max_line_bytes, &failures)?;
 
     let (chain, _) = TrackedChain::new(segments);
     let stream = LogStream::new(chain);
@@ -71,6 +72,7 @@ fn process_log(
             apply_update(&mut state, msg);
         }
     }
+    failures.check()?;
 
     Ok(state)
 }

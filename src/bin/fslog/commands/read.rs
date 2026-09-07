@@ -3,13 +3,16 @@
 use std::io::{self, Write};
 
 use crate::cli::{build_filter, ReadArgs};
-use crate::files::{display_name, lossy_line_iter, open_log_reader, resolve_log_path};
+use crate::files::{
+    display_name, lossy_line_iter, open_log_reader, resolve_log_path, ReadFailures,
+};
 use crate::run::{pattern_flag, print_epilogue, print_hidden, run_output, RunCtx, RunPlan};
 
 pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> anyhow::Result<()> {
     let (dir, max_line_bytes) = (ctx.dir.as_path(), ctx.max_line_bytes);
     let filter = build_filter(&args.filter, None, None)?;
 
+    let failures = ReadFailures::default();
     let (name, lines): (String, Box<dyn Iterator<Item = String>>) = match args.file.as_deref() {
         Some("-") => (
             "-".to_string(),
@@ -17,11 +20,15 @@ pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> anyhow::Result
                 Box::new(io::stdin().lock()),
                 "-".to_string(),
                 max_line_bytes,
+                failures.clone(),
             ),
         ),
         file => {
             let p = resolve_log_path(dir, file);
-            (display_name(&p), open_log_reader(&p, max_line_bytes)?)
+            (
+                display_name(&p),
+                open_log_reader(&p, max_line_bytes, &failures)?,
+            )
         }
     };
 
@@ -34,6 +41,7 @@ pub fn run(ctx: &RunCtx, args: &ReadArgs, out: &mut dyn Write) -> anyhow::Result
         after: 0,
     };
     let run = run_output(out, vec![(name, lines)], &plan)?;
+    failures.check()?;
 
     print_hidden(
         &filter,

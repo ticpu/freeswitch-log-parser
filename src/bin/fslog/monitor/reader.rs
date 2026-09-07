@@ -14,7 +14,9 @@ use freeswitch_log_parser::{
     MessageKind, SessionState, SessionTracker, SofiaVariable, TrackedChain,
 };
 
-use crate::files::{discover_log_files, display_name, open_full_tail_reader, open_log_reader};
+use crate::files::{
+    discover_log_files, display_name, open_full_tail_reader, open_log_reader, ReadFailures,
+};
 
 use super::model::{AppState, CallEnd, CallEvent, CallFields, CallRow, ReaderMsg};
 
@@ -112,15 +114,16 @@ pub(super) type LineIter = Box<dyn Iterator<Item = String>>;
 pub(super) fn monitor_segments(
     dir: &Path,
     path: &Path,
-    open_current: fn(&Path, usize) -> anyhow::Result<LineIter>,
+    open_current: fn(&Path, usize, &ReadFailures) -> anyhow::Result<LineIter>,
     max_line_bytes: usize,
+    failures: &ReadFailures,
 ) -> anyhow::Result<Vec<(String, LineIter)>> {
     let mut segments: Vec<(String, LineIter)> = Vec::new();
 
     match discover_log_files(dir) {
         Ok(files) => {
             if let Some(prev) = files.iter().rev().find(|f| f.date.is_some()) {
-                match open_log_reader(&prev.path, max_line_bytes) {
+                match open_log_reader(&prev.path, max_line_bytes, failures) {
                     Ok(reader) => {
                         segments.push((display_name(&prev.path), reader));
                     }
@@ -137,7 +140,7 @@ pub(super) fn monitor_segments(
         ),
     }
 
-    let current = open_current(path, max_line_bytes)?;
+    let current = open_current(path, max_line_bytes, failures)?;
     segments.push((display_name(path), current));
     Ok(segments)
 }
@@ -156,10 +159,17 @@ pub(super) fn spawn_reader(
         ));
     }
     let handle = std::thread::spawn(move || {
-        let segments = match monitor_segments(&dir, &path, open_full_tail_reader, max_line_bytes) {
+        let failures = ReadFailures::default();
+        let segments = match monitor_segments(
+            &dir,
+            &path,
+            open_full_tail_reader,
+            max_line_bytes,
+            &failures,
+        ) {
             Ok(s) => s,
             Err(e) => {
-                error!("reader failed to open {}: {e}", path.display());
+                error!("monitor reader could not start: {e:#}");
                 return;
             }
         };
@@ -175,6 +185,12 @@ pub(super) fn spawn_reader(
                     break;
                 }
             }
+        }
+
+        // A TUI thread has nowhere to return one, and the follower only ends
+        // when the file stops being readable.
+        if let Err(e) = failures.check() {
+            error!("monitor reader stopped: {e:#}");
         }
     });
     Ok(handle)

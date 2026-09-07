@@ -342,137 +342,108 @@ fn video_negotiation_classified_on_pbx_fixture() {
 
 /// A span must be usable: in bounds, on character boundaries, non-empty, ordered
 /// container-first, and never partially overlapping a sibling.
-#[test]
-fn field_spans_are_well_formed() {
-    let mut total: u64 = 0;
-    let violations = for_each_entry(BUSY, |_, entry| {
-        let mut bad = Vec::new();
-        let fields = entry.fields();
-        total += fields.len() as u64;
-
-        let text_of = |at: FieldLocation| -> Option<&str> {
-            match at {
-                FieldLocation::Message => Some(entry.message.as_str()),
-                FieldLocation::Attached(i) => entry.attached.get(i),
-            }
-        };
-
-        let mut prev: Option<&Field> = None;
-        for f in &fields {
-            let where_ = format!("{BUSY} L{} {}", entry.line_number, f.kind);
-            let Some(text) = text_of(f.at) else {
-                bad.push(format!("{where_}: names a missing attached line"));
-                continue;
-            };
-            if f.range.is_empty() {
-                bad.push(format!("{where_}: empty range"));
-                continue;
-            }
-            if f.range.end > text.len() {
-                bad.push(format!("{where_}: {:?} past {} bytes", f.range, text.len()));
-                continue;
-            }
-            if !text.is_char_boundary(f.range.start) || !text.is_char_boundary(f.range.end) {
-                bad.push(format!("{where_}: {:?} splits a character", f.range));
-                continue;
-            }
-            if f.kind == FieldKind::Uuid && !is_uuid(&text[f.range.clone()]) {
-                bad.push(format!("{where_}: not a uuid"));
-            }
-
-            if let Some(p) = prev.filter(|p| p.at == f.at) {
-                if p.range.start > f.range.start {
-                    bad.push(format!("{where_}: out of order after {:?}", p.range));
-                } else if f.range.start < p.range.end && f.range.end > p.range.end {
-                    bad.push(format!(
-                        "{where_}: {:?} partially overlaps {:?}",
-                        f.range, p.range
-                    ));
-                }
-            }
-            prev = Some(f);
+fn check_field_spans(at: &str, entry: &LogEntry, fields: &[Field]) -> Vec<String> {
+    let mut bad = Vec::new();
+    let text_of = |loc: FieldLocation| -> Option<&str> {
+        match loc {
+            FieldLocation::Message => Some(entry.message.as_str()),
+            FieldLocation::Attached(i) => entry.attached.get(i),
         }
-        bad
-    });
-    assert!(total > 0, "{BUSY} should yield field spans");
-    assert_no_violations(violations, "malformed field spans");
+    };
+
+    let mut prev: Option<&Field> = None;
+    for f in fields {
+        let where_ = format!("{at} {}", f.kind);
+        let Some(text) = text_of(f.at) else {
+            bad.push(format!("{where_}: names a missing attached line"));
+            continue;
+        };
+        if f.range.is_empty() {
+            bad.push(format!("{where_}: empty range"));
+            continue;
+        }
+        if f.range.end > text.len() {
+            bad.push(format!("{where_}: {:?} past {} bytes", f.range, text.len()));
+            continue;
+        }
+        if !text.is_char_boundary(f.range.start) || !text.is_char_boundary(f.range.end) {
+            bad.push(format!("{where_}: {:?} splits a character", f.range));
+            continue;
+        }
+        if f.kind == FieldKind::Uuid && !is_uuid(&text[f.range.clone()]) {
+            bad.push(format!("{where_}: not a uuid"));
+        }
+
+        if let Some(p) = prev.filter(|p| p.at == f.at) {
+            if p.range.start > f.range.start {
+                bad.push(format!("{where_}: out of order after {:?}", p.range));
+            } else if f.range.start < p.range.end && f.range.end > p.range.end {
+                bad.push(format!(
+                    "{where_}: {:?} partially overlaps {:?}",
+                    f.range, p.range
+                ));
+            }
+        }
+        prev = Some(f);
+    }
+    bad
 }
 
 /// Every cut text must be one the entry has, must answer to a warning naming a
 /// cut, and a warned variable must have left one behind.
-#[test]
-fn cut_spans_agree_with_truncation_warnings() {
-    let mut truncated_spans: u64 = 0;
-    let violations = for_each_entry(CUT, |_, entry| {
-        let mut bad = Vec::new();
-        let at = format!("{CUT} L{}", entry.line_number);
-
-        for loc in &entry.cut_texts {
-            if let FieldLocation::Attached(i) = loc {
-                if entry.attached.get(*i).is_none() {
-                    bad.push(format!("{at}: cut text names missing attached line {i}"));
-                }
+fn check_cut_spans(at: &str, entry: &LogEntry) -> Vec<String> {
+    let mut bad = Vec::new();
+    for loc in &entry.cut_texts {
+        if let FieldLocation::Attached(i) = loc {
+            if entry.attached.get(*i).is_none() {
+                bad.push(format!("{at}: cut text names missing attached line {i}"));
             }
         }
+    }
 
-        let warned = entry
-            .warnings
-            .iter()
-            .any(|w| matches!(w, ParseWarning::TruncatedVariable { .. }));
-        if warned && entry.cut_texts.is_empty() {
-            bad.push(format!("{at}: variable cut but no text recorded as cut"));
-        }
-        // Contention splits a line without truncating anything, so a cut text
-        // with no warning naming a cut is the flag reaching past its evidence.
-        let cut_warned = entry.warnings.iter().any(|w| {
-            matches!(
-                w,
-                ParseWarning::CutLine | ParseWarning::TruncatedVariable { .. }
-            )
-        });
-        if !entry.cut_texts.is_empty() && !cut_warned {
-            bad.push(format!("{at}: text recorded as cut but nothing warned"));
-        }
-
-        truncated_spans += entry
-            .fields()
-            .iter()
-            .filter(|f| entry.is_truncated(f))
-            .count() as u64;
-        bad
+    let warned = entry
+        .warnings
+        .iter()
+        .any(|w| matches!(w, ParseWarning::TruncatedVariable { .. }));
+    if warned && entry.cut_texts.is_empty() {
+        bad.push(format!("{at}: variable cut but no text recorded as cut"));
+    }
+    // Contention splits a line without truncating anything, so a cut text with
+    // no warning naming a cut is the flag reaching past its evidence.
+    let cut_warned = entry.warnings.iter().any(|w| {
+        matches!(
+            w,
+            ParseWarning::CutLine | ParseWarning::TruncatedVariable { .. }
+        )
     });
-    assert!(truncated_spans > 0, "{CUT} should carry cut spans");
-    assert_no_violations(violations, "cut span disagreements");
+    if !entry.cut_texts.is_empty() && !cut_warned {
+        bad.push(format!("{at}: text recorded as cut but nothing warned"));
+    }
+    bad
 }
 
 /// The applier must survive both directions: replacing nothing is a
 /// byte-identical round trip, replacing everything never conflicts.
-#[test]
-fn render_with_round_trips_and_replaces() {
-    let violations = for_each_entry(BUSY, |_, entry| {
-        let mut bad = Vec::new();
-        let at = format!("{BUSY} L{}", entry.line_number);
-
-        match entry.render_with(|_, _| None) {
-            Ok(out) => {
-                if out.message != entry.message {
-                    bad.push(format!("{at}: identity rewrite changed the message"));
-                }
-                for (i, line) in out.attached.iter().enumerate() {
-                    if entry.attached.get(i) != Some(line.as_str()) {
-                        bad.push(format!("{at}: identity rewrite changed attached line {i}"));
-                    }
+fn check_render_with(at: &str, entry: &LogEntry) -> Vec<String> {
+    let mut bad = Vec::new();
+    match entry.render_with(|_, _| None) {
+        Ok(out) => {
+            if out.message != entry.message {
+                bad.push(format!("{at}: identity rewrite changed the message"));
+            }
+            for (i, line) in out.attached.iter().enumerate() {
+                if entry.attached.get(i) != Some(line.as_str()) {
+                    bad.push(format!("{at}: identity rewrite changed attached line {i}"));
                 }
             }
-            Err(e) => bad.push(format!("{at}: identity rewrite failed: {e}")),
         }
+        Err(e) => bad.push(format!("{at}: identity rewrite failed: {e}")),
+    }
 
-        if let Err(e) = entry.render_with(|f, _| Some(format!("<{}>", f.kind))) {
-            bad.push(format!("{at}: full rewrite failed: {e}"));
-        }
-        bad
-    });
-    assert_no_violations(violations, "render_with failures");
+    if let Err(e) = entry.render_with(|f, _| Some(format!("<{}>", f.kind))) {
+        bad.push(format!("{at}: full rewrite failed: {e}"));
+    }
+    bad
 }
 
 /// The one full-corpus pass: every check that needs more than a single file
@@ -482,6 +453,11 @@ fn corpus_sweep() {
     let mut accounting = Vec::new();
     let mut bare_blocks = Vec::new();
     let mut blocks_with_bare: u64 = 0;
+    let mut span_violations = Vec::new();
+    let mut cut_violations = Vec::new();
+    let mut render_violations = Vec::new();
+    let mut spans: u64 = 0;
+    let mut truncated_spans: u64 = 0;
     #[cfg(feature = "sdp")]
     let mut sdp_failures = Vec::new();
     #[cfg(feature = "sdp")]
@@ -493,6 +469,14 @@ fn corpus_sweep() {
             let mut stream = LogStream::new(lines_from_file(file));
 
             for entry in stream.by_ref() {
+                let at = format!("{corpus}/{name} L{}", entry.line_number);
+                let fields = entry.fields();
+                spans += fields.len() as u64;
+                truncated_spans += fields.iter().filter(|f| entry.is_truncated(f)).count() as u64;
+                span_violations.extend(check_field_spans(&at, &entry, &fields));
+                cut_violations.extend(check_cut_spans(&at, &entry));
+                render_violations.extend(check_render_with(&at, &entry));
+
                 // mod_logfile stops prepending the UUID mid-dump; the bare
                 // variable_ lines that follow must still land in the block.
                 if let Some(Block::ChannelData { fields, variables }) = &entry.block {
@@ -569,8 +553,13 @@ fn corpus_sweep() {
         blocks_with_bare > 0,
         "corpus should contain CHANNEL_DATA blocks with bare continuations"
     );
+    assert!(spans > 0, "corpus should yield field spans");
+    assert!(truncated_spans > 0, "corpus should carry cut spans");
     assert_no_violations(accounting, "line accounting invariant violated");
     assert_no_violations(bare_blocks, "bare continuations not accumulated");
+    assert_no_violations(span_violations, "malformed field spans");
+    assert_no_violations(cut_violations, "cut span disagreements");
+    assert_no_violations(render_violations, "render_with failures");
     #[cfg(feature = "sdp")]
     {
         assert!(sdp_parsed > 0, "corpus should contain SDP blocks");

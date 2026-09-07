@@ -270,6 +270,8 @@ Sessions are never automatically cleaned up — consumer calls `remove_session(u
 
 Production log fixtures live in `tests/fixtures/` (xz-compressed rotated files + uncompressed `freeswitch.log`). They are gitignored, so `tests/production_log.rs` is gated behind the `fixtures` feature — off, it compiles to nothing and CI stays green without a corpus; on, the corpus is mandatory and every missing path is a hard failure.
 
+`corpus` gates the one test that walks every fixture. It answers a different question from the rest of the file — whether an invariant holds across the whole corpus rather than on a shape one file carries — and it costs minutes rather than a fraction of a second, which is more than a commit can carry. The commit hook runs `fixtures`; `/release`'s pre-release checks run `corpus`. A per-entry check belongs in the sweep only when a single fixture cannot exercise it; anything else goes in a named-fixture test and stays on the commit path.
+
 **Always prefer `fslog` over raw grep/rg** when investigating log data:
 ```
 ./target/release/fslog --dir tests/fixtures/ search --from YYYY-MM-DD -u <uuid> --session --blocks
@@ -286,7 +288,7 @@ Never copy production log lines verbatim into source.
 
 ### Workflow
 - **`hooks/pre-commit` is the verification.** Run `cargo clippy --fix --allow-dirty --message-format=short && cargo fmt`, then commit and let the hook gate it. It runs `cargo fmt --check`, `cargo clippy --all-targets --features tui -D warnings`, `cargo test --release --features tui,fixtures` and gitleaks — do not re-run any of those by hand
-- `tui → cli → sdp`, so the hook's one test run already covers every feature the crate has. `fixtures` is orthogonal: it gates `tests/production_log.rs` alone, and with it on a missing or empty `tests/fixtures/` fails the run instead of skipping it. There is no `--all-features` run to add, and no `cargo build` to add
+- `tui → cli → sdp`, so the hook's one test run already covers every feature the crate has. `fixtures` is orthogonal: it gates `tests/production_log.rs` alone, and with it on a missing or empty `tests/fixtures/` fails the run instead of skipping it. `corpus` implies it and adds the whole-corpus sweep, which only `/release` runs. There is no `--all-features` run to add, and no `cargo build` to add
 - `cargo test --release` on its own only when iterating on a failing test — never in debug, xz-compressed production fixture tests are far too slow there
 - `cargo build --release --features tui` when you actually need the `fslog` binary to run against fixtures; `tui` enables the monitor subcommand (ratatui, serde, serde_yml), `sdp` gates `Block::sdp_codecs()`
 - **Cargo.lock is never committed** — this is a library crate, Cargo.lock stays in .gitignore

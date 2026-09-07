@@ -5,9 +5,11 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "corpus")]
+use freeswitch_log_parser::{is_uuid, Field, FieldKind, FieldLocation, ParseWarning};
 use freeswitch_log_parser::{
-    is_uuid, parse_line, read_log_lines, Block, CodecMedia, Field, FieldKind, FieldLocation,
-    LineKind, LogEntry, LogStream, MessageKind, ParseWarning, SessionTracker,
+    parse_line, read_log_lines, Block, CodecMedia, LineKind, LogEntry, LogStream, MessageKind,
+    SessionTracker,
 };
 use xz2::read::XzDecoder;
 
@@ -45,11 +47,13 @@ fn lines_from_file(path: &Path) -> Box<dyn Iterator<Item = String>> {
     Box::new(read_log_lines(BufReader::new(reader)).map(|d| d.expect("read fixture").text))
 }
 
+#[cfg(feature = "corpus")]
 fn is_log_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     name.ends_with(".xz") || name.ends_with(".log") || name.ends_with(".1")
 }
 
+#[cfg(feature = "corpus")]
 fn log_files_in(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
@@ -61,6 +65,7 @@ fn log_files_in(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+#[cfg(feature = "corpus")]
 fn fixture_corpora() -> Vec<(String, Vec<PathBuf>)> {
     let dir = Path::new(FIXTURES_DIR);
     let mut corpora: Vec<(String, Vec<PathBuf>)> = std::fs::read_dir(dir)
@@ -342,6 +347,7 @@ fn video_negotiation_classified_on_pbx_fixture() {
 
 /// A span must be usable: in bounds, on character boundaries, non-empty, ordered
 /// container-first, and never partially overlapping a sibling.
+#[cfg(feature = "corpus")]
 fn check_field_spans(at: &str, entry: &LogEntry, fields: &[Field]) -> Vec<String> {
     let mut bad = Vec::new();
     let text_of = |loc: FieldLocation| -> Option<&str> {
@@ -391,6 +397,7 @@ fn check_field_spans(at: &str, entry: &LogEntry, fields: &[Field]) -> Vec<String
 
 /// Every cut text must be one the entry has, must answer to a warning naming a
 /// cut, and a warned variable must have left one behind.
+#[cfg(feature = "corpus")]
 fn check_cut_spans(at: &str, entry: &LogEntry) -> Vec<String> {
     let mut bad = Vec::new();
     for loc in &entry.cut_texts {
@@ -424,6 +431,7 @@ fn check_cut_spans(at: &str, entry: &LogEntry) -> Vec<String> {
 
 /// The applier must survive both directions: replacing nothing is a
 /// byte-identical round trip, replacing everything never conflicts.
+#[cfg(feature = "corpus")]
 fn check_render_with(at: &str, entry: &LogEntry) -> Vec<String> {
     let mut bad = Vec::new();
     match entry.render_with(|_, _| None) {
@@ -447,8 +455,10 @@ fn check_render_with(at: &str, entry: &LogEntry) -> Vec<String> {
 }
 
 /// The one full-corpus pass: every check that needs more than a single file
-/// runs off the same decompression.
+/// runs off the same decompression. Two minutes over 337 MB, so it answers to
+/// `corpus` rather than to `fixtures`, and runs before a release.
 #[test]
+#[cfg(feature = "corpus")]
 fn corpus_sweep() {
     let mut accounting = Vec::new();
     let mut bare_blocks = Vec::new();

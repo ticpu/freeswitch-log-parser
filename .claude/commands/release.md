@@ -13,7 +13,8 @@ Optional override: $ARGUMENTS (format: vX.Y.Z). If provided, use that version.
 
 ## Pre-release checks
 
-Run in sequence — stop and report on any failure:
+Run in sequence — stop and report on any failure. The `corpus` run is the
+whole-fixture-set sweep the commit hook is too short-lived to carry:
 
 ```sh
 cargo fmt --all
@@ -21,6 +22,7 @@ cargo clippy --fix --allow-dirty --message-format=short
 cargo check --features cli
 cargo check --features tui
 cargo test --release -- --quiet
+cargo test --release --features tui,corpus --test production_log
 cargo semver-checks check-release
 cargo publish --dry-run
 ```

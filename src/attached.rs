@@ -1,14 +1,6 @@
 //! Compact contiguous storage for the raw continuation lines that follow a
 //! primary log entry.
 //!
-//! Replaces the historical `Vec<String>` shape, which on real production
-//! CHANNEL_DATA dumps (140+ attached lines per entry, tens of thousands of
-//! entries per rotated log file) paid one heap allocation per attached line
-//! plus capacity-doubling reallocations on the outer `Vec`. The new shape
-//! amortizes both into a single growing `String` buffer plus a `Vec<u32>`
-//! offset table — typically two allocations per entry regardless of line
-//! count, dominated by buffer doubling rather than per-element churn.
-//!
 //! Lines are stored end-to-end in `buf` separated by `\n`. The separator is
 //! never exposed to callers — [`AttachedLines::iter`] and
 //! [`AttachedLines::get`] return `&str` slices that exclude it.

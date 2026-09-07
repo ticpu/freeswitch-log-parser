@@ -48,10 +48,8 @@ pub(crate) fn is_channel_variable_narration(rest: &str) -> bool {
 }
 
 pub(super) fn classify_channel_prefixed(channel_part: &str, rest: &str) -> MessageKind {
-    // Sofia INVITE lines — typed extraction of (direction, profile, call-id).
-    // Must run before the ChannelLifecycle fallback; sofia always logs these
-    // for every inbound and outbound call regardless of dialplan, making them
-    // the canonical primitive for sip_call_id ↔ channel_uuid correlation.
+    // Ahead of the lifecycle fallback, which would swallow the one line that
+    // correlates a SIP call-id to this channel.
     if let Some(direction) = sip_invite_direction(rest) {
         let profile = extract_sofia_profile(channel_part).unwrap_or_default();
         let call_id = extract_call_id(rest);

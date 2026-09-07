@@ -27,9 +27,8 @@ pub(crate) fn execute_parts(msg: &str) -> ExecuteParts<'_> {
 
     let after_bracket = rest.find("] ").map(|p| &rest[p + 2..]).unwrap_or("");
 
-    // Lowercase "Execute [depth=N] app(args)" has no channel.
-    // Uppercase "EXECUTE [depth=N] channel app(args)" has channel before app.
-    // Detect by checking if first token contains '(' (app) or '/' (channel path).
+    // Only the uppercase trace names a channel, and an endpoint path is what
+    // tells it from the lowercase form's application token.
     let (channel, app_part) = match after_bracket.find(' ') {
         Some(p) => {
             let first_token = &after_bracket[..p];
@@ -201,11 +200,8 @@ pub(crate) struct SetExportParts<'a> {
 }
 
 pub(crate) fn set_export_parts(msg: &str) -> Option<SetExportParts<'_>> {
-    // SET|PUSH|UNSHIFT channel [name]=[value]
-    // EXPORT (export_vars) [(REMOTE ONLY) ][name]=[value]
-    // channel EXPORTING[export_vars] [name]=[value] to event|channel
-    // channel setting variable [name]=[value]
-    // Find "]=[" which uniquely identifies the [name]=[value] boundary
+    // `]=[` is the one token every narration of this shape shares, whatever
+    // precedes it.
     let sep_pos = msg.find("]=[")?;
     let name_start = msg[..sep_pos].rfind('[')?;
     let name = &msg[name_start + 1..sep_pos];

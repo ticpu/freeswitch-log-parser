@@ -113,7 +113,6 @@ pub fn classify_message(msg: &str) -> MessageKind {
         return parse_unset(msg);
     }
 
-    // Pre-dialplan set action: "set variable name=value"
     if let Some(rest) = msg.strip_prefix("set variable ") {
         if let Some((name, value)) = rest.split_once('=') {
             return MessageKind::Variable {
@@ -130,7 +129,6 @@ pub fn classify_message(msg: &str) -> MessageKind {
         };
     }
 
-    // (channel) State STATE — parenthesized channel state
     if msg.starts_with('(') {
         if msg.contains(") State ") {
             return MessageKind::StateChange {
@@ -140,14 +138,12 @@ pub fn classify_message(msg: &str) -> MessageKind {
         return channel_lifecycle(msg);
     }
 
-    // SOFIA STATE (no channel prefix) — e.g. "SOFIA EXCHANGE_MEDIA"
     if msg.starts_with("SOFIA ") {
         return MessageKind::StateChange {
             detail: msg.to_string(),
         };
     }
 
-    // Pre-dialplan: checking condition / action results from sofia_pre_dialplan.c
     if msg.starts_with("checking condition") || msg.starts_with("action(") {
         return channel_lifecycle(msg);
     }
@@ -158,7 +154,6 @@ pub fn classify_message(msg: &str) -> MessageKind {
         };
     }
 
-    // Media patterns (no channel prefix)
     if let Some(kind) = detect_media(msg) {
         return kind;
     }
@@ -167,18 +162,16 @@ pub fn classify_message(msg: &str) -> MessageKind {
         return kind;
     }
 
-    // Channel lifecycle patterns (no channel prefix)
     if let Some(kind) = detect_channel_lifecycle(msg) {
         return kind;
     }
 
-    // Channel-prefixed messages: sofia/..., loopback/... prefix
     if let Some((channel_part, rest)) = strip_channel_prefix(msg) {
         return classify_channel_prefixed(channel_part, rest);
     }
 
-    // Channel-* fields and other Key: [value] patterns from CHANNEL_DATA dumps
-    // Must come after more specific checks to avoid false positives
+    // Last: `Key: [value]` is the loosest shape here, and every arm above
+    // would otherwise lose its lines to it.
     if let Some((name, value)) = parse_bracketed_value(msg, 0) {
         let name_bytes = name.as_bytes();
         if !name_bytes.is_empty()

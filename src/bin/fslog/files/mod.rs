@@ -11,6 +11,7 @@ pub use discover::{discover_log_files, filter_files_by_date, LogFile};
 pub use read::open_full_tail_reader;
 pub use read::{
     lazy_log_reader, lossy_line_iter, open_log_file, open_log_reader, open_tail_reader,
+    ReadFailures,
 };
 
 /// Bytes of one physical line a reader will materialize. A collided or verbatim

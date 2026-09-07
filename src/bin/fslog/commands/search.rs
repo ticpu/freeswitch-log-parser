@@ -6,7 +6,8 @@ use anyhow::Context;
 
 use crate::cli::{build_filter, SearchArgs};
 use crate::files::{
-    self, discover_log_files, filter_files_by_date, format_size, lazy_log_reader, Segment,
+    self, discover_log_files, filter_files_by_date, format_size, lazy_log_reader, ReadFailures,
+    Segment,
 };
 use crate::prescan;
 use crate::related;
@@ -91,13 +92,14 @@ fn resolve_search_files(
 fn build_segments(
     files: &[Segment],
     max_line_bytes: usize,
+    failures: &ReadFailures,
 ) -> Vec<(String, Box<dyn Iterator<Item = String>>)> {
     files
         .iter()
         .map(|s| {
             (
                 s.name.clone(),
-                lazy_log_reader(s.path.clone(), max_line_bytes),
+                lazy_log_reader(s.path.clone(), max_line_bytes, failures.clone()),
             )
         })
         .collect()
@@ -158,6 +160,7 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
     }
 
     let printer = args.filter.printer(ctx.color);
+    let failures = ReadFailures::default();
 
     // The narrowed set is sound for discovery, which matches the seed the prescan
     // looked for. It is not sound for output: `--related` re-keys the filter onto
@@ -165,9 +168,10 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
     let mut rendered = seeded;
     if args.related {
         let legs = related::discover(
-            build_segments(&rendered, ctx.max_line_bytes),
+            build_segments(&rendered, ctx.max_line_bytes, &failures),
             &filter.for_discovery(),
         );
+        failures.check()?;
         if legs.is_empty() {
             report_empty();
             return Ok(());
@@ -185,7 +189,16 @@ pub fn run(ctx: &RunCtx, args: &SearchArgs, out: &mut dyn Write) -> anyhow::Resu
         before: args.before(),
         after: args.after(),
     };
-    let run = run_output(out, build_segments(&rendered, ctx.max_line_bytes), &plan)?;
+    let run = run_output(
+        out,
+        build_segments(&rendered, ctx.max_line_bytes, &failures),
+        &plan,
+    )?;
+
+    // Before the counts are reported: a file the scan could not open makes every
+    // one of them, "no matching entries" most of all, an answer about less than
+    // the operator asked for.
+    failures.check()?;
 
     if run.matched == 0 {
         report_empty();

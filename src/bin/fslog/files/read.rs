@@ -1,9 +1,11 @@
 //! Turning a log file into lines: the decompressing reader, the follower, and
 //! the read cap they share.
 
+use std::cell::RefCell;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use anyhow::Context;
 use freeswitch_log_parser::{
@@ -106,11 +108,42 @@ pub fn lossy_line_iter(
     ))
 }
 
-pub fn lazy_log_reader(path: PathBuf, max_line_bytes: usize) -> Box<dyn Iterator<Item = String>> {
+/// Where a reader parks a failure it cannot return. The parser takes an
+/// `Iterator<Item = String>`, so a file that dies mid-scan has no way back to
+/// the caller — and a scan that quietly covered fewer files than it was asked to
+/// prints an empty result that reads exactly like a real one.
+#[derive(Clone, Default)]
+pub struct ReadFailures(Rc<RefCell<Vec<anyhow::Error>>>);
+
+impl ReadFailures {
+    pub fn record(&self, err: anyhow::Error) {
+        self.0.borrow_mut().push(err);
+    }
+
+    /// The first failure recorded so far, counting the rest, and clear them.
+    pub fn check(&self) -> anyhow::Result<()> {
+        let mut held = self.0.borrow_mut();
+        let extra = held.len().saturating_sub(1);
+        let Some(first) = held.drain(..).next() else {
+            return Ok(());
+        };
+        match extra {
+            0 => Err(first),
+            n => Err(first.context(format!("{n} further file(s) also failed to be read"))),
+        }
+    }
+}
+
+pub fn lazy_log_reader(
+    path: PathBuf,
+    max_line_bytes: usize,
+    failures: ReadFailures,
+) -> Box<dyn Iterator<Item = String>> {
     Box::new(LazyLogReader {
         path,
         inner: None,
         max_line_bytes,
+        failures,
     })
 }
 
@@ -118,6 +151,7 @@ struct LazyLogReader {
     path: PathBuf,
     inner: Option<Box<dyn Iterator<Item = String>>>,
     max_line_bytes: usize,
+    failures: ReadFailures,
 }
 
 impl Iterator for LazyLogReader {
@@ -128,7 +162,7 @@ impl Iterator for LazyLogReader {
             match open_log_reader(&self.path, self.max_line_bytes) {
                 Ok(reader) => self.inner = Some(reader),
                 Err(e) => {
-                    warn!("skipping {}: open failed: {e}", self.path.display());
+                    self.failures.record(e);
                     return None;
                 }
             }

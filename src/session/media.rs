@@ -28,9 +28,8 @@ impl MediaCodecs {
 /// A codec implementation the engine reports it is running, as distinct from a
 /// [`CodecOffer`] read off the wire.
 ///
-/// Every field but the name is optional because each line that produces one
-/// carries a different subset — an engine line naming no payload type must not
-/// be forced to claim one, which is what sharing `CodecOffer` did.
+/// Only the name is required: each line that produces one carries a different
+/// subset, and an engine line naming no payload type must not claim one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CodecImpl {

@@ -136,10 +136,8 @@ impl SessionState {
         self.variables.get(var.as_str()).map(String::as_str)
     }
 
-    /// Destructured rather than field-by-field: the snapshot mirrors this struct
-    /// by hand, and without an exhaustive binding a field added to one and
-    /// forgotten in the other compiles silently. The two `_` bindings are the
-    /// deliberate omissions.
+    /// Bound exhaustively so a field added here and forgotten in the snapshot
+    /// fails to compile; the two `_` bindings are the deliberate omissions.
     pub(super) fn snapshot(&self) -> SessionSnapshot {
         let SessionState {
             channel_name,

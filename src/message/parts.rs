@@ -79,6 +79,41 @@ pub(crate) fn dialplan_parts(msg: &str) -> (&str, &str) {
         None => (rest, ""),
     }
 }
+/// The offset of the `close` matching a delimiter already open at `from`,
+/// scanning forward.
+fn matching_close(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 1u32;
+    for (i, &b) in bytes.iter().enumerate().skip(from) {
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+/// The offset of the `open` matching a `close` at `from`, scanning backward.
+fn matching_open(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 1u32;
+    let mut i = from;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == close {
+            depth += 1;
+        } else if bytes[i] == open {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
 /// The parts of a dialplan `Regex` condition trace, from [`regex_condition_parts`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -102,27 +137,11 @@ pub fn regex_condition_parts(detail: &str) -> Option<RegexCondition<'_>> {
     // A value can carry the separator; an expression realistically cannot.
     let head = &head[..head.rfind(" =~ /")?];
     let close = head.strip_suffix(')')?.len();
-
-    let bytes = head.as_bytes();
-    let mut depth = 1u32;
-    let mut i = close;
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b')' => depth += 1,
-            b'(' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(RegexCondition {
-                        field: &head[..i],
-                        value: &head[i + 1..close],
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    let open = matching_open(head.as_bytes(), close, b'(', b')')?;
+    Some(RegexCondition {
+        field: &head[..open],
+        value: &head[open + 1..close],
+    })
 }
 
 pub(crate) fn parse_bracketed_value(s: &str, prefix_len: usize) -> Option<(&str, &str)> {
@@ -167,16 +186,10 @@ pub(crate) fn strip_channel_prefix(msg: &str) -> Option<(&str, &str)> {
     }
     let bytes = msg.as_bytes();
     let mut i = 0;
-    let mut bracket_depth: u32 = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'[' => bracket_depth += 1,
-            b']' => {
-                bracket_depth = bracket_depth.saturating_sub(1);
-            }
-            b' ' if bracket_depth == 0 => {
-                return Some((&msg[..i], &msg[i + 1..]));
-            }
+            b'[' => i = matching_close(bytes, i + 1, b'[', b']')?,
+            b' ' => return Some((&msg[..i], &msg[i + 1..])),
             _ => {}
         }
         i += 1;
@@ -191,25 +204,6 @@ pub(crate) struct SetExportParts<'a> {
     pub(crate) value: &'a str,
 }
 
-/// The offset of the `]` closing a value that opened at `from`, matching nested
-/// brackets so a value containing one is not cut at it.
-fn value_close(msg: &str, from: usize) -> Option<usize> {
-    let mut depth = 1u32;
-    for (i, b) in msg.as_bytes().iter().enumerate().skip(from) {
-        match b {
-            b'[' => depth += 1,
-            b']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 pub(crate) fn set_export_parts(msg: &str) -> Option<SetExportParts<'_>> {
     // SET|PUSH|UNSHIFT channel [name]=[value]
     // EXPORT (export_vars) [(REMOTE ONLY) ][name]=[value]
@@ -220,7 +214,7 @@ pub(crate) fn set_export_parts(msg: &str) -> Option<SetExportParts<'_>> {
     let name_start = msg[..sep_pos].rfind('[')?;
     let name = &msg[name_start + 1..sep_pos];
     let val_start = sep_pos + 3; // skip "]=["
-    let val_end = value_close(msg, val_start).unwrap_or(msg.len());
+    let val_end = matching_close(msg.as_bytes(), val_start, b'[', b']').unwrap_or(msg.len());
     let value = &msg[val_start..val_end];
 
     // Only verb-first shapes name a channel, and not always: `SET GLOBAL` is a

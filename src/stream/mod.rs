@@ -25,17 +25,24 @@ use collision::{WriteCursor, DECODE_DRIFT};
 pub use entry::{Block, LogEntry, ParseWarning, SessionReading};
 pub use stats::{ParseStats, UnclassifiedLine, UnclassifiedReason, UnclassifiedTracking};
 
+/// `YYYY-MM-DD HH:MM:SS.ffffff` and the space after it — what a log header
+/// opens with, and so the least a matched header occupies.
+const TIMESTAMP_FIELD_LEN: usize = 27;
+
+/// A Format A line's header: session UUID prefix, then timestamp field.
+const FULL_HEADER_LEN: usize = UUID_PREFIX_LEN + TIMESTAMP_FIELD_LEN;
+
 /// Bytes of the line's own header, which the heuristic must not match inside or
 /// every line would split on itself.
 fn header_len(bytes: &[u8]) -> usize {
     if is_uuid_at(bytes, 0) {
         if bytes.len() > UUID_PREFIX_LEN && bytes[UUID_PREFIX_LEN].is_ascii_digit() {
-            64 // Full line: UUID + timestamp
+            FULL_HEADER_LEN
         } else {
-            UUID_PREFIX_LEN // UUID continuation
+            UUID_PREFIX_LEN
         }
     } else if is_date_at(bytes, 0) {
-        27 // System line: skip own timestamp
+        TIMESTAMP_FIELD_LEN
     } else {
         0
     }
@@ -98,12 +105,12 @@ fn scan_splits(
                 chunk_start = split_at;
                 next_boundary =
                     WriteCursor::boundary_after(is_uuid_at(bytes, split_at), split_at, end);
-                offset += 27;
+                offset += TIMESTAMP_FIELD_LEN;
             } else {
                 // Header at the current chunk's own start, already accounted
                 // for. The max guarantees forward progress when the
                 // UUID-prefix check rewinds split_at behind us.
-                offset = (offset + 27).max(offset + 1);
+                offset = (offset + TIMESTAMP_FIELD_LEN).max(offset + 1);
             }
             continue;
         }

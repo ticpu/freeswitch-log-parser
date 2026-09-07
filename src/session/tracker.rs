@@ -6,7 +6,7 @@ use crate::message::MessageKind;
 use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
 use super::conference::{self, ConferenceEvent, ConferenceMembership, ConferenceRegistry};
-use super::index::{deindex, IndexedFieldChanges, IndexedFields};
+use super::index::{deindex, IndexedFields};
 use super::loopback;
 use super::parse::parse_new_channel;
 use super::state::{SessionSnapshot, SessionState};
@@ -120,9 +120,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
         // Removal is the every-field-to-None diff, so it goes through the same
         // bracket as every other mutation rather than unwinding each index by
         // hand — a field indexed later cannot then be forgotten here.
-        let changes =
-            IndexedFieldChanges::diff(IndexedFields::of(&state), &SessionState::default());
-        self.apply_index_changes(uuid, &changes);
+        self.apply_index_changes(uuid, IndexedFields::of(&state), IndexedFields::default());
         // The peer's own pointer at this session is not in that diff, and left
         // standing it back-links the next channel to reuse the uuid.
         self.by_other_leg.remove(uuid);
@@ -352,9 +350,9 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         }
 
         let state = self.sessions.entry(uuid.clone()).or_default();
-        let changes = IndexedFieldChanges::diff(old, state);
+        let new = IndexedFields::of(state);
         let snapshot = state.snapshot();
-        self.apply_index_changes(&uuid, &changes);
+        self.apply_index_changes(&uuid, old, new);
         entry.warnings.extend(unreadable);
 
         Some(EnrichedEntry {

@@ -18,17 +18,26 @@ pub(super) fn deindex(map: &mut HashMap<String, HashSet<String>>, key: &str, uui
     }
 }
 
-/// Changes to indexed fields, diffed across hooks and built-in extraction
-/// for index maintenance.
-#[derive(Default)]
-pub(super) struct IndexedFieldChanges {
-    channel_name: Option<(Option<String>, Option<String>)>,
-    pending_bridge_target: Option<(Option<String>, Option<String>)>,
-    other_leg_uuid: Option<(Option<String>, Option<String>)>,
-    conference: Option<(Option<ConferenceMembership>, Option<ConferenceMembership>)>,
+/// One indexed field on either side of the mutation bracket.
+pub(super) struct Change<T> {
+    old: Option<T>,
+    new: Option<T>,
 }
 
-/// Indexed fields as they stood before the pre-hook, held for the post-hook diff.
+/// Move `uuid` between the sets a set-valued index keys by name.
+fn reindex(map: &mut HashMap<String, HashSet<String>>, uuid: &str, change: Change<String>) {
+    if change.old == change.new {
+        return;
+    }
+    if let Some(old) = change.old {
+        deindex(map, &old, uuid);
+    }
+    if let Some(new) = change.new {
+        map.entry(new).or_default().insert(uuid.to_string());
+    }
+}
+
+/// Indexed fields as they stood at one end of the bracket.
 #[derive(Default)]
 pub(super) struct IndexedFields {
     channel_name: Option<String>,
@@ -48,79 +57,63 @@ impl IndexedFields {
     }
 }
 
-impl IndexedFieldChanges {
-    pub(super) fn diff(old: IndexedFields, state: &SessionState) -> Self {
-        let IndexedFields {
-            channel_name: old_channel_name,
-            pending_bridge_target: old_pending_bridge_target,
-            other_leg_uuid: old_other_leg_uuid,
-            conference: old_conference,
-        } = old;
-        let mut changes = IndexedFieldChanges::default();
-        if state.conference != old_conference {
-            changes.conference = Some((old_conference, state.conference.clone()));
-        }
-        if state.channel_name != old_channel_name {
-            changes.channel_name = Some((old_channel_name, state.channel_name.clone()));
-        }
-        if state.pending_bridge_target != old_pending_bridge_target {
-            changes.pending_bridge_target = Some((
-                old_pending_bridge_target,
-                state.pending_bridge_target.clone(),
-            ));
-        }
-        if state.other_leg_uuid != old_other_leg_uuid {
-            changes.other_leg_uuid = Some((old_other_leg_uuid, state.other_leg_uuid.clone()));
-        }
-        changes
-    }
-}
-
 impl<I: Iterator<Item = String>> SessionTracker<I> {
-    pub(super) fn apply_index_changes(&mut self, uuid: &str, changes: &IndexedFieldChanges) {
-        if let Some((old, new)) = &changes.channel_name {
-            if let Some(old_name) = old {
-                deindex(&mut self.by_channel_name, old_name, uuid);
-            }
-            if let Some(new_name) = new {
-                self.by_channel_name
-                    .entry(new_name.clone())
-                    .or_default()
-                    .insert(uuid.to_string());
-            }
-        }
-        if let Some((old, new)) = &changes.pending_bridge_target {
-            if let Some(old_target) = old {
-                deindex(&mut self.by_pending_target, old_target, uuid);
-            }
-            if let Some(new_target) = new {
-                self.by_pending_target
-                    .entry(new_target.clone())
-                    .or_default()
-                    .insert(uuid.to_string());
-            }
-        }
-        if let Some((old, new)) = &changes.other_leg_uuid {
-            match new {
-                Some(new_leg) => self.index_other_leg(uuid, old.clone(), new_leg),
+    /// Bring every index in line with one bracket's worth of mutation.
+    pub(super) fn apply_index_changes(
+        &mut self,
+        uuid: &str,
+        old: IndexedFields,
+        new: IndexedFields,
+    ) {
+        reindex(
+            &mut self.by_channel_name,
+            uuid,
+            Change {
+                old: old.channel_name,
+                new: new.channel_name,
+            },
+        );
+        reindex(
+            &mut self.by_pending_target,
+            uuid,
+            Change {
+                old: old.pending_bridge_target,
+                new: new.pending_bridge_target,
+            },
+        );
+
+        let leg = Change {
+            old: old.other_leg_uuid,
+            new: new.other_leg_uuid,
+        };
+        if leg.old != leg.new {
+            match leg.new {
+                Some(new_leg) => self.index_other_leg(uuid, leg.old, &new_leg),
                 None => {
-                    if let Some(old_leg) = old {
-                        self.deindex_other_leg(old_leg, uuid);
+                    if let Some(old_leg) = leg.old {
+                        self.deindex_other_leg(&old_leg, uuid);
                     }
                 }
             }
         }
-        if let Some((old, new)) = &changes.conference {
-            let same_instance =
-                matches!((old, new), (Some(o), Some(n)) if o.instance == n.instance);
-            if !same_instance {
-                if let Some(old_conf) = old {
-                    self.conferences.leave(&old_conf.name, uuid);
-                }
-                if let Some(new_conf) = new {
-                    self.conferences
-                        .join(&new_conf.name, &new_conf.instance, uuid);
-                }
+
+        let conference = Change {
+            old: old.conference,
+            new: new.conference,
+        };
+        // A membership whose instance is unchanged is the same seat: only its
+        // profile or member id moved, and re-registering it would churn.
+        let same_instance = matches!(
+            (&conference.old, &conference.new),
+            (Some(o), Some(n)) if o.instance == n.instance
+        );
+        if !same_instance {
+            if let Some(old_conf) = conference.old {
+                self.conferences.leave(&old_conf.name, uuid);
+            }
+            if let Some(new_conf) = conference.new {
+                self.conferences
+                    .join(&new_conf.name, &new_conf.instance, uuid);
             }
         }
     }

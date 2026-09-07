@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use crate::message::MessageKind;
 use crate::stream::{LogEntry, LogStream, ParseStats, UnclassifiedLine};
 
-use super::conference::{self, ConferenceEvent, ConferenceMembership, ConferenceRegistry};
+use super::conference::{
+    self, ConferenceEvent, ConferenceMembership, ConferenceRegistry, ConferenceTarget,
+};
 use super::index::{deindex, IndexedFields};
 use super::loopback;
 use super::parse::parse_new_channel;
@@ -141,7 +143,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
     /// written here; the registry is updated from the post-hook diff, so a
     /// hook-set membership is registered the same way this one is.
     fn update_conference(&mut self, uuid: &str, entry: &LogEntry) {
-        let target = match conference::detect(entry) {
+        let joined = match conference::detect(entry) {
             Some(ConferenceEvent::Leave) => {
                 if let Some(state) = self.sessions.get_mut(uuid) {
                     state.conference = None;
@@ -152,27 +154,23 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             None => None,
         };
 
-        let Some(state) = self.sessions.get(uuid) else {
-            return;
-        };
-        let Some(target) = target.or_else(|| conference::target_from_variables(&state.variables))
-        else {
-            if let Some(state) = self.sessions.get_mut(uuid) {
-                let SessionState {
-                    conference,
-                    variables,
-                    ..
-                } = state;
-                if let Some(membership) = conference {
-                    conference::refresh(membership, variables);
-                }
-            }
-            return;
-        };
+        let seat = self.conference_seat(uuid, joined);
+        if let Some(state) = self.sessions.get_mut(uuid) {
+            seat_conference(state, seat);
+        }
+    }
 
-        // Staying in the same conference keeps the instance already recorded;
-        // otherwise adopt the live instance for that name, or open one keyed on
-        // this session because it is the first member.
+    /// The conference this entry puts `uuid` in, paired with the instance
+    /// identity to use. Staying in the same conference keeps the instance
+    /// already recorded; otherwise adopt the live instance for that name, or
+    /// open one keyed on this session because it is the first member.
+    fn conference_seat(
+        &self,
+        uuid: &str,
+        joined: Option<ConferenceTarget>,
+    ) -> Option<(ConferenceTarget, String)> {
+        let state = self.sessions.get(uuid)?;
+        let target = joined.or_else(|| conference::target_from_variables(&state.variables))?;
         let instance = match state.conference.as_ref() {
             Some(current) if current.name == target.name => current.instance.clone(),
             _ => self
@@ -181,32 +179,7 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                 .map(str::to_string)
                 .unwrap_or_else(|| uuid.to_string()),
         };
-
-        let Some(state) = self.sessions.get_mut(uuid) else {
-            return;
-        };
-        let SessionState {
-            conference,
-            variables,
-            ..
-        } = state;
-        let joining_elsewhere = conference.as_ref().is_none_or(|c| c.name != target.name);
-        if joining_elsewhere {
-            *conference = Some(ConferenceMembership {
-                name: target.name,
-                profile: target.profile.clone(),
-                instance,
-                member_id: None,
-                conference_uuid: None,
-            });
-        }
-        let Some(membership) = conference.as_mut() else {
-            return;
-        };
-        if target.profile.is_some() {
-            membership.profile = target.profile;
-        }
-        conference::refresh(membership, variables);
+        Some((target, instance))
     }
 
     /// The one live session among `candidates` other than `exclude`, or `None`
@@ -309,6 +282,33 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
             }
             _ => {}
         }
+    }
+}
+
+/// Seat the session in the conference resolved for it, then refresh whatever
+/// membership it holds against its variables.
+fn seat_conference(state: &mut SessionState, seat: Option<(ConferenceTarget, String)>) {
+    let SessionState {
+        conference,
+        variables,
+        ..
+    } = state;
+    if let Some((target, instance)) = seat {
+        if conference.as_ref().is_none_or(|c| c.name != target.name) {
+            *conference = Some(ConferenceMembership {
+                name: target.name,
+                profile: target.profile.clone(),
+                instance,
+                member_id: None,
+                conference_uuid: None,
+            });
+        }
+        if let (Some(membership), Some(profile)) = (conference.as_mut(), target.profile) {
+            membership.profile = Some(profile);
+        }
+    }
+    if let Some(membership) = conference.as_mut() {
+        conference::refresh(membership, variables);
     }
 }
 

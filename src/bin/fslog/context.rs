@@ -6,7 +6,7 @@ use freeswitch_log_parser::{
 };
 
 use crate::output::{EntryPrinter, FilterConfig, Hidden, Verdict};
-use crate::separator_entry;
+use crate::run::separator_entry;
 
 /// Entries the filter rejected on a scope boundary alone, by the scope that
 /// would have admitted them.

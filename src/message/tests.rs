@@ -82,25 +82,29 @@ fn dialplan_parsing() {
 }
 
 #[test]
-fn dialplan_regex() {
-    let msg = "Dialplan: sofia/internal/+15550001234@192.0.2.1 Regex (PASS) [global_routing] destination_number(18001234567) =~ /^1?(\\d{10})$/ break=on-false";
-    match classify_message(msg) {
-        MessageKind::Dialplan { channel, detail } => {
-            assert_eq!(channel, "sofia/internal/+15550001234@192.0.2.1");
-            assert!(detail.starts_with("Regex (PASS)"));
+fn dialplan_and_chatplan_regex() {
+    for prefix in ["Dialplan", "Chatplan"] {
+        let msg = format!("{prefix}: sofia/internal/+15550001234@192.0.2.1 Regex (PASS) [global_routing] destination_number(18001234567) =~ /^1?(\\d{{10}})$/ break=on-false");
+        match classify_message(&msg) {
+            MessageKind::Dialplan { channel, detail } => {
+                assert_eq!(channel, "sofia/internal/+15550001234@192.0.2.1");
+                assert!(detail.starts_with("Regex (PASS)"));
+            }
+            other => panic!("expected Dialplan, got {other:?}"),
         }
-        other => panic!("expected Dialplan, got {other:?}"),
     }
 }
 
 #[test]
-fn dialplan_action() {
-    let msg = "Dialplan: sofia/internal/+15550001234@192.0.2.1 Action set(call_direction=inbound)";
-    match classify_message(msg) {
-        MessageKind::Dialplan { detail, .. } => {
-            assert!(detail.starts_with("Action "));
+fn dialplan_and_chatplan_action() {
+    for prefix in ["Dialplan", "Chatplan"] {
+        let msg = format!(
+            "{prefix}: sofia/internal/+15550001234@192.0.2.1 Action set(call_direction=inbound)"
+        );
+        match classify_message(&msg) {
+            MessageKind::Dialplan { detail, .. } => assert!(detail.starts_with("Action ")),
+            other => panic!("expected Dialplan, got {other:?}"),
         }
-        other => panic!("expected Dialplan, got {other:?}"),
     }
 }
 
@@ -508,29 +512,6 @@ fn channel_answered_is_lifecycle() {
 }
 
 #[test]
-fn chatplan_regex() {
-    let msg = "Chatplan: sofia/internal/+15550001234@192.0.2.1 Regex (PASS) [global_routing] destination_number(18001234567) =~ /^1?(\\d{10})$/ break=on-false";
-    match classify_message(msg) {
-        MessageKind::Dialplan { channel, detail } => {
-            assert_eq!(channel, "sofia/internal/+15550001234@192.0.2.1");
-            assert!(detail.starts_with("Regex (PASS)"));
-        }
-        other => panic!("expected Dialplan, got {other:?}"),
-    }
-}
-
-#[test]
-fn chatplan_action() {
-    let msg = "Chatplan: sofia/internal/+15550001234@192.0.2.1 Action set(call_direction=inbound)";
-    match classify_message(msg) {
-        MessageKind::Dialplan { detail, .. } => {
-            assert!(detail.starts_with("Action "));
-        }
-        other => panic!("expected Dialplan, got {other:?}"),
-    }
-}
-
-#[test]
 fn chatplan_anti_action() {
     let msg = "Chatplan: sofia/internal/+15550001234@192.0.2.1 ANTI-Action log(WARNING no match)";
     match classify_message(msg) {
@@ -542,46 +523,18 @@ fn chatplan_anti_action() {
 }
 
 #[test]
-fn standard_execute_is_state_change() {
-    let msg = "sofia/internal/+15550001234@192.0.2.1 Standard EXECUTE";
-    match classify_message(msg) {
-        MessageKind::StateChange { detail } => {
-            assert_eq!(detail, "Standard EXECUTE");
+fn state_machine_execute_variants_are_state_change() {
+    for suffix in [
+        "Standard EXECUTE",
+        "SOFIA EXECUTE",
+        "RTC EXECUTE",
+        "Standard SOFT_EXECUTE",
+    ] {
+        let msg = format!("sofia/internal/+15550001234@192.0.2.1 {suffix}");
+        match classify_message(&msg) {
+            MessageKind::StateChange { detail } => assert_eq!(detail, suffix),
+            other => panic!("expected StateChange, got {other:?}"),
         }
-        other => panic!("expected StateChange, got {other:?}"),
-    }
-}
-
-#[test]
-fn sofia_execute_is_state_change() {
-    let msg = "sofia/internal/+15550001234@192.0.2.1 SOFIA EXECUTE";
-    match classify_message(msg) {
-        MessageKind::StateChange { detail } => {
-            assert_eq!(detail, "SOFIA EXECUTE");
-        }
-        other => panic!("expected StateChange, got {other:?}"),
-    }
-}
-
-#[test]
-fn rtc_execute_is_state_change() {
-    let msg = "sofia/internal/+15550001234@192.0.2.1 RTC EXECUTE";
-    match classify_message(msg) {
-        MessageKind::StateChange { detail } => {
-            assert_eq!(detail, "RTC EXECUTE");
-        }
-        other => panic!("expected StateChange, got {other:?}"),
-    }
-}
-
-#[test]
-fn standard_soft_execute_is_state_change() {
-    let msg = "sofia/internal/+15550001234@192.0.2.1 Standard SOFT_EXECUTE";
-    match classify_message(msg) {
-        MessageKind::StateChange { detail } => {
-            assert_eq!(detail, "Standard SOFT_EXECUTE");
-        }
-        other => panic!("expected StateChange, got {other:?}"),
     }
 }
 
@@ -766,46 +719,17 @@ fn dtmf_sip_info() {
 }
 
 #[test]
-fn dtmf_star() {
-    let msg = "RECV DTMF *:2080";
-    match classify_message(msg) {
-        MessageKind::Dtmf { digit, .. } => {
-            assert_eq!(digit, '*');
+fn dtmf_digit_variants() {
+    for (msg, want) in [
+        ("RECV DTMF *:2080", '*'),
+        ("RECV DTMF #:560", '#'),
+        ("RECV DTMF F:2080", 'F'),
+        ("RTP RECV DTMF A:1360", 'A'),
+    ] {
+        match classify_message(msg) {
+            MessageKind::Dtmf { digit, .. } => assert_eq!(digit, want),
+            other => panic!("expected Dtmf, got {other:?}"),
         }
-        other => panic!("expected Dtmf, got {other:?}"),
-    }
-}
-
-#[test]
-fn dtmf_hash() {
-    let msg = "RECV DTMF #:560";
-    match classify_message(msg) {
-        MessageKind::Dtmf { digit, .. } => {
-            assert_eq!(digit, '#');
-        }
-        other => panic!("expected Dtmf, got {other:?}"),
-    }
-}
-
-#[test]
-fn dtmf_flash() {
-    let msg = "RECV DTMF F:2080";
-    match classify_message(msg) {
-        MessageKind::Dtmf { digit, .. } => {
-            assert_eq!(digit, 'F');
-        }
-        other => panic!("expected Dtmf, got {other:?}"),
-    }
-}
-
-#[test]
-fn dtmf_letter_a() {
-    let msg = "RTP RECV DTMF A:1360";
-    match classify_message(msg) {
-        MessageKind::Dtmf { digit, .. } => {
-            assert_eq!(digit, 'A');
-        }
-        other => panic!("expected Dtmf, got {other:?}"),
     }
 }
 

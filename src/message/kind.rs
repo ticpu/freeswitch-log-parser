@@ -98,7 +98,8 @@ impl fmt::Display for LifecycleEvent {
 pub enum MessageKind {
     /// Dialplan application execution trace (`EXECUTE [depth=N] channel app(args)`).
     Execute {
-        depth: u32,
+        /// `None` when the trace's `[depth=N]` field is missing or unreadable.
+        depth: Option<u32>,
         channel: String,
         application: String,
         arguments: String,

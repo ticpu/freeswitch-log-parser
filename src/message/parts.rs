@@ -4,7 +4,7 @@
 /// The subslices an `EXECUTE`/`Execute` line decomposes into. `channel` is
 /// empty for the lowercase shape, which carries none.
 pub(crate) struct ExecuteParts<'a> {
-    pub(crate) depth: u32,
+    pub(crate) depth: Option<u32>,
     pub(crate) channel: &'a str,
     pub(crate) application: &'a str,
     pub(crate) arguments: &'a str,
@@ -13,21 +13,17 @@ pub(crate) struct ExecuteParts<'a> {
 pub(crate) fn execute_parts(msg: &str) -> ExecuteParts<'_> {
     let rest = &msg["EXECUTE ".len()..];
 
-    let depth = if rest.starts_with("[depth=") {
-        let end = rest.find(']').unwrap_or(0);
-        if end > 7 {
-            rest[7..end].parse::<u32>().unwrap_or(0)
-        } else {
-            0
-        }
-    } else {
+    let Some(after) = rest.strip_prefix("[depth=") else {
         return ExecuteParts {
-            depth: 0,
+            depth: None,
             channel: "",
             application: "",
             arguments: rest,
         };
     };
+    let depth = after
+        .find(']')
+        .and_then(|end| after[..end].parse::<u32>().ok());
 
     let after_bracket = rest.find("] ").map(|p| &rest[p + 2..]).unwrap_or("");
 

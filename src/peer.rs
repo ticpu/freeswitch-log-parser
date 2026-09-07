@@ -192,7 +192,7 @@ mod tests {
     fn harvests_from_set_and_bridge() {
         let set = entry(
             MessageKind::Execute {
-                depth: 0,
+                depth: Some(0),
                 channel: "sofia/internal/1001".to_string(),
                 application: "set".to_string(),
                 arguments: format!("last_bridge_to={PEER}"),
@@ -204,7 +204,7 @@ mod tests {
         let bridge = |args: String| {
             entry(
                 MessageKind::Execute {
-                    depth: 0,
+                    depth: Some(0),
                     channel: "sofia/internal/1001".to_string(),
                     application: "bridge".to_string(),
                     arguments: args,
@@ -231,7 +231,7 @@ mod tests {
     fn att_xfer_names_its_leg_the_same_way() {
         let e = entry(
             MessageKind::Execute {
-                depth: 0,
+                depth: Some(0),
                 channel: "sofia/internal/1001".to_string(),
                 application: "att_xfer".to_string(),
                 arguments: format!("[origination_uuid={PEER}]sofia/internal/1002"),

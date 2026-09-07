@@ -92,7 +92,7 @@ mod tests {
         LogEntry {
             uuid: Some("self".to_string()),
             message_kind: MessageKind::Execute {
-                depth: 0,
+                depth: Some(0),
                 channel: "sofia/internal/1001".to_string(),
                 application: "set".to_string(),
                 arguments: format!("{name}={value}"),

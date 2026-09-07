@@ -124,7 +124,7 @@ mod tests {
 
     fn execute(application: &str, arguments: &str) -> MessageKind {
         MessageKind::Execute {
-            depth: 0,
+            depth: Some(0),
             channel: "sofia/internal/1001".to_string(),
             application: application.to_string(),
             arguments: arguments.to_string(),

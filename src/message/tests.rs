@@ -9,7 +9,7 @@ fn execute_full() {
     assert_eq!(
         kind,
         MessageKind::Execute {
-            depth: 0,
+            depth: Some(0),
             channel: "sofia/internal/+15550001234@192.0.2.1".to_string(),
             application: "db".to_string(),
             arguments: "insert/ng_a1b2c3d4/city/ST GEORGES".to_string(),
@@ -27,7 +27,7 @@ fn execute_nested_depth() {
             arguments,
             ..
         } => {
-            assert_eq!(depth, 2);
+            assert_eq!(depth, Some(2));
             assert_eq!(application, "set");
             assert_eq!(arguments, "x=y");
         }
@@ -48,6 +48,22 @@ fn execute_no_arguments() {
             assert_eq!(arguments, "");
         }
         other => panic!("expected Execute, got {other:?}"),
+    }
+}
+
+/// A depth the trace does not spell is absent, not zero — a real `depth=0` is
+/// the top of the dialplan and says something different.
+#[test]
+fn an_unreadable_execute_depth_is_none() {
+    for msg in [
+        "EXECUTE [depth=] sofia/internal/1001 answer",
+        "EXECUTE [depth=x] sofia/internal/1001 answer",
+        "EXECUTE sofia/internal/1001 answer",
+    ] {
+        match classify_message(msg) {
+            MessageKind::Execute { depth, .. } => assert_eq!(depth, None, "failed for {msg}"),
+            other => panic!("expected Execute for {msg}, got {other:?}"),
+        }
     }
 }
 
@@ -355,7 +371,7 @@ fn execute_lowercase() {
             arguments,
             ..
         } => {
-            assert_eq!(depth, 2);
+            assert_eq!(depth, Some(2));
             assert_eq!(application, "set");
             assert_eq!(arguments, "RECORD_STEREO=true");
         }
@@ -791,7 +807,7 @@ fn dtmf_label() {
 fn every_message_kind_label_is_listed_in_all_labels() {
     let exemplars = [
         MessageKind::Execute {
-            depth: 0,
+            depth: Some(0),
             channel: String::new(),
             application: String::new(),
             arguments: String::new(),

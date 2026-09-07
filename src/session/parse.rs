@@ -57,17 +57,12 @@ pub(super) fn parse_state_change(detail: &str) -> Option<StateChange<'_>> {
     }
 }
 
+/// The cause in the last bracket of a `Hangup <channel> [<state>] [<cause>]`
+/// detail. The line's shape is the classifier's finding, not this one's.
 pub(super) fn parse_hangup(detail: &str) -> Option<&str> {
-    if !detail.contains("Hangup ") {
-        return None;
-    }
     let start = detail.rfind('[')?;
     let end = detail[start..].find(']')?;
     Some(&detail[start + 1..start + end])
-}
-
-pub(super) fn is_answered(detail: &str) -> bool {
-    detail.contains("has been answered")
 }
 
 /// Extract `origination_uuid` and the bridge target channel from bridge() arguments.

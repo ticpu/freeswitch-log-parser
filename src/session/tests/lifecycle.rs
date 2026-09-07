@@ -4,7 +4,7 @@ use freeswitch_types::{CallState, ChannelState, HangupCause};
 
 use crate::stream::{ParseWarning, SessionReading};
 
-use super::super::parse::{is_answered, parse_hangup};
+use super::super::parse::parse_hangup;
 use super::*;
 
 #[test]
@@ -240,14 +240,6 @@ fn parse_hangup_extracts_cause() {
         Some("USER_BUSY")
     );
     assert_eq!(parse_hangup("Some other message"), None);
-    assert_eq!(parse_hangup("New Channel sofia/internal/1234 [uuid]"), None);
-}
-
-#[test]
-fn is_answered_detects_answer_event() {
-    assert!(is_answered("sofia/internal/1234 has been answered"));
-    assert!(!is_answered("sofia/internal/1234 is ringing"));
-    assert!(!is_answered("New Channel sofia/internal/1234"));
 }
 
 #[test]

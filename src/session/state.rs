@@ -10,13 +10,13 @@ use freeswitch_types::{
 };
 
 use crate::line::parse_line;
-use crate::message::{classify_message, MessageKind};
+use crate::message::{classify_message, LifecycleEvent, MessageKind};
 use crate::stream::{Block, LogEntry, ParseWarning, SessionReading};
 
 use super::conference::ConferenceMembership;
 use super::media::SessionMedia;
 use super::parse::{
-    is_answered, parse_bridge_args, parse_dialplan_context, parse_hangup, parse_new_channel,
+    parse_bridge_args, parse_dialplan_context, parse_hangup, parse_new_channel,
     parse_processing_line, parse_state_change, StateChange,
 };
 
@@ -257,22 +257,28 @@ impl SessionState {
                 }
                 _ => {}
             },
-            MessageKind::ChannelLifecycle { detail, .. } => {
-                if self.channel_name.is_none() {
-                    self.channel_name = parse_new_channel(detail).map(str::to_string);
+            MessageKind::ChannelLifecycle { event, detail } => match event {
+                LifecycleEvent::NewChannel => {
+                    if self.channel_name.is_none() {
+                        self.channel_name = parse_new_channel(detail).map(str::to_string);
+                    }
                 }
-                if let Some(cause) = parse_hangup(detail) {
-                    read(
-                        &mut self.hangup_cause,
-                        cause,
-                        SessionReading::HangupCause,
-                        &mut warnings,
-                    );
+                LifecycleEvent::Hangup => {
+                    if let Some(cause) = parse_hangup(detail) {
+                        read(
+                            &mut self.hangup_cause,
+                            cause,
+                            SessionReading::HangupCause,
+                            &mut warnings,
+                        );
+                    }
                 }
-                if is_answered(detail) && self.answered_at.is_none() {
-                    self.answered_at = Some(entry.timestamp.clone());
+                LifecycleEvent::Answered => {
+                    self.answered_at
+                        .get_or_insert_with(|| entry.timestamp.clone());
                 }
-            }
+                _ => {}
+            },
             kind => self.apply_kind(kind, &mut warnings),
         }
 

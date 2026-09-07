@@ -17,41 +17,61 @@ use xz2::read::XzDecoder;
 
 use super::display_name;
 
-/// One file's over-cap lines: the first is reported as it happens, the rest
-/// counted into a single summary when the reader is dropped.
-struct CapReport {
+/// One file's line-level anomalies. The first of each kind is reported where it
+/// happens, the rest counted into a single summary when the reader is dropped —
+/// a corrupt file otherwise emits the same warning once per line, thousands of
+/// times, and buries every other diagnostic under it.
+struct LineReport {
     name: String,
-    count: u64,
+    over_cap: u64,
     largest: usize,
+    invalid_utf8: u64,
 }
 
-impl CapReport {
+impl LineReport {
     fn new(name: String) -> Self {
-        CapReport {
+        LineReport {
             name,
-            count: 0,
+            over_cap: 0,
             largest: 0,
+            invalid_utf8: 0,
         }
     }
 
-    fn record(&mut self, over: OverCap) {
-        self.count += 1;
+    fn record_over_cap(&mut self, over: OverCap) {
+        self.over_cap += 1;
         self.largest = self.largest.max(over.line_bytes);
-        if self.count == 1 {
+        if self.over_cap == 1 {
             warn!(
                 "{}: line of {} bytes read only to {}, remainder dropped",
                 self.name, over.line_bytes, over.cap
             );
         }
     }
+
+    fn record_invalid_utf8(&mut self, at: usize) {
+        self.invalid_utf8 += 1;
+        if self.invalid_utf8 == 1 {
+            warn!(
+                "{}: invalid UTF-8 byte at offset {at}, recovered with U+FFFD",
+                self.name
+            );
+        }
+    }
 }
 
-impl Drop for CapReport {
+impl Drop for LineReport {
     fn drop(&mut self) {
-        if self.count > 1 {
+        if self.over_cap > 1 {
             warn!(
                 "{}: {} lines exceeded the read cap, largest {} bytes",
-                self.name, self.count, self.largest
+                self.name, self.over_cap, self.largest
+            );
+        }
+        if self.invalid_utf8 > 1 {
+            warn!(
+                "{}: {} lines held invalid UTF-8, recovered with U+FFFD",
+                self.name, self.invalid_utf8
             );
         }
     }
@@ -95,15 +115,15 @@ pub fn lossy_line_iter(
     max_line_bytes: usize,
     failures: ReadFailures,
 ) -> Box<dyn Iterator<Item = String>> {
-    let mut cap_report = CapReport::new(name.clone());
+    let mut report = LineReport::new(name.clone());
     Box::new(read_log_lines_capped(reader, max_line_bytes).map_while(
         move |decoded| match decoded {
             Ok(capped) => {
                 if let Some(over) = capped.over_cap {
-                    cap_report.record(over);
+                    report.record_over_cap(over);
                 }
                 if let Utf8Decode::InvalidBytes { at } = capped.line.decode {
-                    warn!("invalid UTF-8 byte at offset {at}, recovered with U+FFFD");
+                    report.record_invalid_utf8(at);
                 }
                 Some(capped.line.text)
             }
@@ -191,20 +211,20 @@ struct TailLines<R: BufRead> {
     pending_bytes: usize,
     path: PathBuf,
     max_line_bytes: usize,
-    cap_report: CapReport,
+    report: LineReport,
     failures: ReadFailures,
 }
 
 impl TailLines<BufReader<fs::File>> {
     fn new(file: fs::File, path: PathBuf, max_line_bytes: usize, failures: ReadFailures) -> Self {
-        let cap_report = CapReport::new(display_name(&path));
+        let report = LineReport::new(display_name(&path));
         TailLines {
             reader: BufReader::new(file),
             pending: Vec::new(),
             pending_bytes: 0,
             path,
             max_line_bytes,
-            cap_report,
+            report,
             failures,
         }
     }
@@ -237,18 +257,15 @@ impl<R: BufRead> Iterator for TailLines<R> {
                 continue;
             }
             if self.pending_bytes > self.max_line_bytes {
-                self.cap_report
-                    .record(OverCap::new(self.max_line_bytes, self.pending_bytes));
+                self.report
+                    .record_over_cap(OverCap::new(self.max_line_bytes, self.pending_bytes));
                 trim_capped_tail(&mut self.pending);
             }
             let decoded = decode_log_line(&self.pending);
             self.pending.clear();
             self.pending_bytes = 0;
             if let Utf8Decode::InvalidBytes { at } = decoded.decode {
-                warn!(
-                    "invalid UTF-8 byte at offset {at} while tailing {}, recovered with U+FFFD",
-                    self.path.display()
-                );
+                self.report.record_invalid_utf8(at);
             }
             return Some(decoded.text);
         }
@@ -364,7 +381,7 @@ mod tests {
             pending_bytes: 0,
             path: PathBuf::from("test.log"),
             max_line_bytes,
-            cap_report: CapReport::new("test.log".to_string()),
+            report: LineReport::new("test.log".to_string()),
             failures: ReadFailures::default(),
         }
     }

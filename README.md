@@ -27,7 +27,8 @@ positional fields (UUID, timestamp, log level, source, message).
 values, and classifies messages into semantic `MessageKind` variants:
 `Execute`, `Dialplan`, `ChannelData`, `ChannelField`, `Variable`,
 `SdpMarker`, `StateChange`, `CodecNegotiation`, `Media`,
-`ChannelLifecycle`, `SipInvite`, `EventSocket`, `General`, plus the
+`ChannelLifecycle`, `OriginateSuccess`, `SipInvite`, `EventSocket`,
+`General`, plus the
 synthetic `FileChange`/`DateChange` markers. `SipInvite` is the
 canonical `sip_call_id ↔ channel_uuid` correlation primitive — sofia
 emits it for every inbound and outbound call regardless of dialplan.

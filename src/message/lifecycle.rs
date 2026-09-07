@@ -3,9 +3,25 @@
 use super::kind::{LifecycleEvent, MessageKind, SipInviteDirection};
 use super::media::detect_media;
 use super::parts::set_export_parts;
+use crate::uuid::is_uuid;
 
-/// Whether what follows a channel name is one of the core `[name]=[value]`
-/// narrations. Only the shape is matched here; [`set_export_parts`] slices it.
+/// The originating leg's success line, whose channel name can itself hold a
+/// UUID — so the peer is read from after the marker, never scanned for.
+pub(super) fn originate_success(msg: &str) -> Option<MessageKind> {
+    let rest = msg.strip_prefix("Originate Resulted in Success: ")?;
+    let inner = rest.strip_prefix('[')?;
+    let close = inner.find(']')?;
+    let peer_uuid = inner[close..]
+        .split_once("Peer UUID: ")
+        .map(|(_, u)| u.trim())
+        .filter(|u| is_uuid(u))
+        .map(str::to_string);
+    Some(MessageKind::OriginateSuccess {
+        channel: inner[..close].to_string(),
+        peer_uuid,
+    })
+}
+
 /// A lifecycle message with its step resolved from the text.
 pub(crate) fn channel_lifecycle(detail: &str) -> MessageKind {
     let event = if detail.starts_with("New Channel ") {
@@ -25,6 +41,8 @@ pub(crate) fn channel_lifecycle(detail: &str) -> MessageKind {
     }
 }
 
+/// Whether what follows a channel name is one of the core `[name]=[value]`
+/// narrations. Only the shape is matched here; [`set_export_parts`] slices it.
 pub(crate) fn is_channel_variable_narration(rest: &str) -> bool {
     rest.starts_with("EXPORTING[") || rest.starts_with("setting variable [")
 }

@@ -268,6 +268,34 @@ fn hangup_is_channel_lifecycle() {
     }
 }
 
+/// The bracketed channel can itself be a UUID, so a whole-message scan would
+/// hand back the wrong leg.
+#[test]
+fn originate_success_reads_the_peer_after_its_marker() {
+    let peer = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+    let chan = "loopback/a1b2c3d4-e5f6-7890-abcd-ef1234567890-b";
+    assert_eq!(
+        classify_message(&format!(
+            "Originate Resulted in Success: [{chan}] Peer UUID: {peer}"
+        )),
+        MessageKind::OriginateSuccess {
+            channel: chan.to_string(),
+            peer_uuid: Some(peer.to_string()),
+        }
+    );
+}
+
+#[test]
+fn originate_success_without_the_suffix_keeps_its_channel() {
+    assert_eq!(
+        classify_message("Originate Resulted in Success: [sofia/custom/6244]"),
+        MessageKind::OriginateSuccess {
+            channel: "sofia/custom/6244".to_string(),
+            peer_uuid: None,
+        }
+    );
+}
+
 #[test]
 fn a_lifecycle_line_names_its_step() {
     for (msg, event) in [
@@ -797,6 +825,10 @@ fn every_message_kind_label_is_listed_in_all_labels() {
             event: LifecycleEvent::Other,
             detail: String::new(),
         },
+        MessageKind::OriginateSuccess {
+            channel: String::new(),
+            peer_uuid: None,
+        },
         MessageKind::SipInvite {
             direction: SipInviteDirection::Receiving,
             profile: String::new(),
@@ -828,6 +860,7 @@ fn every_message_kind_label_is_listed_in_all_labels() {
             | MessageKind::CodecNegotiation { .. }
             | MessageKind::Media { .. }
             | MessageKind::ChannelLifecycle { .. }
+            | MessageKind::OriginateSuccess { .. }
             | MessageKind::SipInvite { .. }
             | MessageKind::EventSocket { .. }
             | MessageKind::Dtmf { .. }

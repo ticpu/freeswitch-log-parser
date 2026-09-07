@@ -126,6 +126,14 @@ pub enum MessageKind {
         event: LifecycleEvent,
         detail: String,
     },
+    /// `Originate Resulted in Success: [<channel>] Peer UUID: <uuid>`
+    /// (`switch_ivr_originate.c`) — the originating leg naming what it reached.
+    OriginateSuccess {
+        /// The bracketed target channel name, which may itself hold a UUID.
+        channel: String,
+        /// The reached leg's UUID; `None` on builds whose line omits the suffix.
+        peer_uuid: Option<String>,
+    },
     /// Sofia logged a SIP INVITE on this channel — the line is one of:
     /// - `sofia/<profile>/<endpoint> receiving invite from <ip>:<port> ... call-id: <id>`
     /// - `sofia/<profile>/<endpoint> sending invite [version: ...] [call-id: <id>]`
@@ -176,6 +184,7 @@ impl MessageKind {
         "codec-negotiation",
         "media",
         "channel-lifecycle",
+        "originate-success",
         "sip-invite",
         "event-socket",
         "dtmf",
@@ -197,6 +206,7 @@ impl MessageKind {
             MessageKind::CodecNegotiation { .. } => "codec-negotiation",
             MessageKind::Media { .. } => "media",
             MessageKind::ChannelLifecycle { .. } => "channel-lifecycle",
+            MessageKind::OriginateSuccess { .. } => "originate-success",
             MessageKind::SipInvite { .. } => "sip-invite",
             MessageKind::EventSocket { .. } => "event-socket",
             MessageKind::Dtmf { .. } => "dtmf",
@@ -222,6 +232,7 @@ impl fmt::Display for MessageKind {
             }
             MessageKind::Media { .. } => f.pad("media"),
             MessageKind::ChannelLifecycle { .. } => f.pad("channel-lifecycle"),
+            MessageKind::OriginateSuccess { .. } => f.pad("originate-success"),
             MessageKind::SipInvite { .. } => f.pad("sip-invite"),
             MessageKind::EventSocket { .. } => f.pad("event-socket"),
             MessageKind::Dtmf {

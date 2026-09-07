@@ -7,7 +7,9 @@ use crate::codec::CodecMedia;
 
 use super::dtmf::parse_dtmf;
 use super::kind::MessageKind;
-use super::lifecycle::{channel_lifecycle, classify_channel_prefixed, detect_channel_lifecycle};
+use super::lifecycle::{
+    channel_lifecycle, classify_channel_prefixed, detect_channel_lifecycle, originate_success,
+};
 use super::media::{detect_media, detect_sdp_direction};
 use super::parts::{
     dialplan_parts, execute_parts, parse_bracketed_value, set_export_parts, strip_channel_prefix,
@@ -158,6 +160,10 @@ pub fn classify_message(msg: &str) -> MessageKind {
 
     // Media patterns (no channel prefix)
     if let Some(kind) = detect_media(msg) {
+        return kind;
+    }
+
+    if let Some(kind) = originate_success(msg) {
         return kind;
     }
 

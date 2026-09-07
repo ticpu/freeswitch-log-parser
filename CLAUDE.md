@@ -171,6 +171,7 @@ Endpoint-specific: `"%s SOFIA EXECUTE\n"` (mod_sofia.c:232), `"%s RTC EXECUTE\n"
 - `variable_name: [value]` → channel variable within a dump; `MessageKind::Variable.name` is the bare name, whichever narration spelled it
 - `Local SDP:` / `Remote SDP:` → start of SDP body block
 - `State Change ...` → channel state transition
+- `Originate Resulted in Success: [channel] Peer UUID: uuid` → originate success, peer read from after the marker
 - Everything else → `General`
 
 Exposed as a public function so Layer 1 consumers can call it directly on `RawLine.message` without using the stream parser.

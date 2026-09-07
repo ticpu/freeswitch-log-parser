@@ -2,7 +2,30 @@
 
 use freeswitch_types::ChannelState;
 
+use crate::stream::LogEntry;
+
 use super::*;
+
+/// A post-hook mimicking a Lua `uuid_bridge` API result: extracts the peer
+/// UUID from `set(api_result=+OK <uuid> ...)` unless a built-in source
+/// already set it.
+fn api_result_hook(entry: &LogEntry, state: &mut SessionState) {
+    if let MessageKind::Execute {
+        application,
+        arguments,
+        ..
+    } = &entry.message_kind
+    {
+        if application == "set" {
+            if let Some(value) = arguments.strip_prefix("api_result=+OK ") {
+                let uuid = value.split_whitespace().next().unwrap_or("");
+                if uuid.len() == 36 && state.other_leg_uuid.is_none() {
+                    state.other_leg_uuid = Some(uuid.to_string());
+                }
+            }
+        }
+    }
+}
 
 #[test]
 fn post_hook_sets_other_leg_uuid() {
@@ -13,23 +36,7 @@ fn post_hook_sets_other_leg_uuid() {
         ),
     ];
     let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {
-        if let MessageKind::Execute {
-            application,
-            arguments,
-            ..
-        } = &entry.message_kind
-        {
-            if application == "set" {
-                if let Some(value) = arguments.strip_prefix("api_result=+OK ") {
-                    let uuid = value.split_whitespace().next().unwrap_or("");
-                    if uuid.len() == 36 && state.other_leg_uuid.is_none() {
-                        state.other_leg_uuid = Some(uuid.to_string());
-                    }
-                }
-            }
-        }
-    });
+    let mut tracker = SessionTracker::new(stream).with_post_hook(api_result_hook);
 
     let entries: Vec<_> = tracker.by_ref().collect();
     assert_eq!(entries.len(), 2);
@@ -52,23 +59,7 @@ fn post_hook_does_not_override_builtin() {
         ),
     ];
     let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {
-        if let MessageKind::Execute {
-            application,
-            arguments,
-            ..
-        } = &entry.message_kind
-        {
-            if application == "set" {
-                if let Some(value) = arguments.strip_prefix("api_result=+OK ") {
-                    let uuid = value.split_whitespace().next().unwrap_or("");
-                    if uuid.len() == 36 && state.other_leg_uuid.is_none() {
-                        state.other_leg_uuid = Some(uuid.to_string());
-                    }
-                }
-            }
-        }
-    });
+    let mut tracker = SessionTracker::new(stream).with_post_hook(api_result_hook);
 
     let entries: Vec<_> = tracker.by_ref().collect();
     assert_eq!(entries.len(), 2);
@@ -132,23 +123,7 @@ fn post_hook_other_leg_uuid_maintains_index_for_backlink() {
         ),
     ];
     let stream = LogStream::new(lines.into_iter());
-    let mut tracker = SessionTracker::new(stream).with_post_hook(|entry, state| {
-        if let MessageKind::Execute {
-            application,
-            arguments,
-            ..
-        } = &entry.message_kind
-        {
-            if application == "set" {
-                if let Some(value) = arguments.strip_prefix("api_result=+OK ") {
-                    let uuid = value.split_whitespace().next().unwrap_or("");
-                    if uuid.len() == 36 && state.other_leg_uuid.is_none() {
-                        state.other_leg_uuid = Some(uuid.to_string());
-                    }
-                }
-            }
-        }
-    });
+    let mut tracker = SessionTracker::new(stream).with_post_hook(api_result_hook);
     let _: Vec<_> = tracker.by_ref().collect();
 
     let a_leg = tracker.sessions().get(UUID1).unwrap();

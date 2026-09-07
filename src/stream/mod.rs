@@ -31,6 +31,105 @@ fn arm_boundary(prepended: bool, at: usize, line_len: usize) -> Option<usize> {
     (prepended && at + WRITE_LIMIT <= line_len).then_some(at + WRITE_LIMIT)
 }
 
+/// Bytes of the line's own header, which the heuristic must not match inside or
+/// every line would split on itself.
+fn header_len(bytes: &[u8]) -> usize {
+    if is_uuid_at(bytes, 0) {
+        if bytes.len() > UUID_PREFIX_LEN && bytes[UUID_PREFIX_LEN].is_ascii_digit() {
+            64 // Full line: UUID + timestamp
+        } else {
+            UUID_PREFIX_LEN // UUID continuation
+        }
+    } else if is_date_at(bytes, 0) {
+        27 // System line: skip own timestamp
+    } else {
+        0
+    }
+}
+
+/// Walk `bytes` once, collecting every offset a record starts at after the
+/// first, and per resulting chunk whether the write ended there at its spent
+/// budget rather than at a header the heuristic found.
+///
+/// Two mechanisms split, and the difference is the whole point: the budget
+/// (Format E) may only fire in the few bytes `first_boundary` and its
+/// successors point at, and is what earns a bare UUID — the parser's weakest
+/// signature — the right to split. `is_log_header_at` fires anywhere past
+/// `min_scan`, because write contention concatenates verbatim records at
+/// arbitrary offsets; those records were each written whole, so it never
+/// reports a cut.
+///
+/// Returns one more verdict than there are splits: the trailing chunk's, true
+/// when a boundary the walk passed found nothing recognisable on it — the
+/// write was cut and its remainder lost rather than glued to a named successor.
+fn scan_splits(
+    bytes: &[u8],
+    min_scan: usize,
+    first_boundary: Option<usize>,
+) -> (Vec<usize>, Vec<bool>) {
+    let end = bytes.len();
+    let mut next_boundary = first_boundary;
+    let mut splits: Vec<usize> = Vec::new();
+    let mut cut_verdicts: Vec<bool> = Vec::new();
+    let mut chunk_start = 0usize;
+    let mut offset = 0usize;
+    while offset <= end {
+        if let Some(boundary) = next_boundary {
+            if offset >= boundary && offset <= boundary + DECODE_DRIFT {
+                let uuid = is_uuid_at(bytes, offset);
+                if uuid || is_log_header_at(bytes, offset) {
+                    splits.push(offset);
+                    cut_verdicts.push(true);
+                    chunk_start = offset;
+                    next_boundary = arm_boundary(uuid, offset, end);
+                    offset += UUID_PREFIX_LEN;
+                    continue;
+                }
+            }
+        }
+        // `min_scan` guards only the heuristic: on the second and later
+        // lines of one write the boundary sits early, often inside the
+        // header the heuristic has to skip.
+        if offset >= min_scan && is_log_header_at(bytes, offset) {
+            let split_at = if offset >= chunk_start + UUID_PREFIX_LEN
+                && is_uuid_at(bytes, offset - UUID_PREFIX_LEN)
+            {
+                offset - UUID_PREFIX_LEN
+            } else {
+                offset
+            };
+            if split_at > chunk_start {
+                splits.push(split_at);
+                cut_verdicts.push(false);
+                chunk_start = split_at;
+                next_boundary = arm_boundary(is_uuid_at(bytes, split_at), split_at, end);
+                offset += 27;
+            } else {
+                // Header at the current chunk's own start, already accounted
+                // for. The max guarantees forward progress when the
+                // UUID-prefix check rewinds split_at behind us.
+                offset = (offset + 27).max(offset + 1);
+            }
+            continue;
+        }
+        offset += 1;
+    }
+    cut_verdicts.push(next_boundary.is_some());
+    (splits, cut_verdicts)
+}
+
+/// Cut `line` at each offset in `splits`, returning the leading chunk and the
+/// rest in order. Built right to left with `split_off`, which copies nothing.
+fn split_chunks(line: String, splits: &[usize]) -> (String, Vec<String>) {
+    let mut head = line;
+    let mut chunks: Vec<String> = Vec::with_capacity(splits.len());
+    for &at in splits.iter().rev() {
+        chunks.push(head.split_off(at));
+    }
+    chunks.reverse();
+    (head, chunks)
+}
+
 /// The entry being assembled, together with the block it owns. Pairing them
 /// is what keeps a block from outliving or preceding its entry.
 struct Pending {
@@ -275,28 +374,11 @@ impl<I: Iterator<Item = String>> LogStream<I> {
 }
 
 impl<I: Iterator<Item = String>> LogStream<I> {
-    /// Detect same-line collisions where multiple log entries were concatenated
-    /// without a newline separator.
+    /// Split a physical line holding more than one record, keeping the write
+    /// cursor and the per-chunk cut verdicts in step with what was split.
     ///
-    /// Two collision mechanisms exist in production:
-    ///
-    /// 1. **Buffer truncation** (Format E): a `mod_logfile` write spends the
-    ///    whole 2047-byte budget, so the `\n` it still owed never fits and the
-    ///    next write lands on the same physical line. The offset is exact —
-    ///    `WriteCursor` tracks how much of the budget the write in progress has
-    ///    spent — and a write may span a prefixed line plus the bare ones after
-    ///    it, so the cut often falls on a short line.
-    ///
-    /// 2. **Write contention**: multiple threads writing to the log file can
-    ///    interleave output, producing concatenated entries at any line length.
-    ///    Common with system lines (Format B) that lack UUID prefixes.
-    ///
-    /// A UUID splits only at the exact boundary; a full timestamp header splits
-    /// anywhere, since contention answers to no budget.
-    ///
-    /// Returns the (possibly truncated) line. If a collision is detected,
-    /// the suffix is stored in `split_pending` for processing in the next
-    /// iteration. Recursive: split suffixes pass through this function again.
+    /// Returns the leading chunk; the rest are queued in `split_pending` and
+    /// never re-scanned, since [`scan_splits`] already found every offset.
     fn detect_collision(&mut self, line: String, on_disk_len: usize) -> String {
         let bytes = line.as_bytes();
         let prepended = is_uuid_at(bytes, 0);
@@ -310,91 +392,8 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             self.cursor.lose();
         }
 
-        // Skip past the line's own header to avoid matching itself.
-        let min_scan = if prepended {
-            if bytes.len() > UUID_PREFIX_LEN && bytes[UUID_PREFIX_LEN].is_ascii_digit() {
-                64 // Full line: UUID + timestamp
-            } else {
-                UUID_PREFIX_LEN // UUID continuation
-            }
-        } else if is_date_at(bytes, 0) {
-            27 // System line: skip own timestamp
-        } else {
-            0
-        };
-
-        let end = bytes.len();
-
-        // Single linear pass collecting every split point. Two collision
-        // mechanisms handled in one walk:
-        //
-        //   * the write budget (Format E), checked only in the few bytes
-        //     the cursor points at. A bare UUID is the parser's weakest
-        //     signature; the boundary is what earns it the right to split,
-        //     which is also why this check runs first at a shared offset.
-        //
-        //   * `is_log_header_at`: timestamp header (Format B write
-        //     contention, Full/System line collisions). Fast-fails after
-        //     one byte for non-digit input, so the per-offset cost stays
-        //     low even on hundreds-of-KB lines.
-        //
-        // Collecting all splits in one pass (rather than splitting,
-        // re-feeding the suffix, and re-scanning from scratch) is the
-        // structural fix for the prior O(n²) behavior.
-        let mut next_boundary = self.cursor.boundary_in(end);
-        let mut splits: Vec<usize> = Vec::new();
-        // Per chunk, whether it ends where the write spent its budget rather
-        // than at a header the heuristic found. Only the first is a cut.
-        let mut cut_verdicts: Vec<bool> = Vec::new();
-        let mut chunk_start = 0usize;
-        let mut offset = 0usize;
-        while offset <= end {
-            if let Some(boundary) = next_boundary {
-                if offset >= boundary && offset <= boundary + DECODE_DRIFT {
-                    let uuid = is_uuid_at(bytes, offset);
-                    if uuid || is_log_header_at(bytes, offset) {
-                        splits.push(offset);
-                        cut_verdicts.push(true);
-                        chunk_start = offset;
-                        next_boundary = arm_boundary(uuid, offset, end);
-                        offset += UUID_PREFIX_LEN;
-                        continue;
-                    }
-                }
-            }
-            // `min_scan` guards only the heuristic: on the second and later
-            // lines of one write the boundary sits early, often inside the
-            // header the heuristic has to skip.
-            if offset >= min_scan && is_log_header_at(bytes, offset) {
-                let split_at = if offset >= chunk_start + UUID_PREFIX_LEN
-                    && is_uuid_at(bytes, offset - UUID_PREFIX_LEN)
-                {
-                    offset - UUID_PREFIX_LEN
-                } else {
-                    offset
-                };
-                if split_at > chunk_start {
-                    splits.push(split_at);
-                    cut_verdicts.push(false);
-                    chunk_start = split_at;
-                    next_boundary = arm_boundary(is_uuid_at(bytes, split_at), split_at, end);
-                    offset += 27;
-                } else {
-                    // Header at current chunk's own start — already
-                    // accounted for. Step past it without recording a
-                    // split. The max guarantees forward progress when
-                    // the UUID-prefix check rewinds split_at behind us.
-                    offset = (offset + 27).max(offset + 1);
-                }
-                continue;
-            }
-            offset += 1;
-        }
-
-        // A boundary still armed is one the walk passed with nothing
-        // recognisable on it: the write was cut and its remainder lost rather
-        // than glued to a successor we could name.
-        cut_verdicts.push(next_boundary.is_some());
+        let boundary = self.cursor.boundary_in(bytes.len());
+        let (splits, cut_verdicts) = scan_splits(bytes, header_len(bytes), boundary);
         self.cut_verdicts = cut_verdicts.into();
 
         // The trailing chunk carries the write state into the next line.
@@ -407,23 +406,16 @@ impl<I: Iterator<Item = String>> LogStream<I> {
             }
         }
         // On-disk cost of the trailing chunk, newline included — which is what
-        // `advance` adds back, and which the trimmed `end` no longer carries.
+        // `advance` adds back, and which the trimmed length no longer carries.
         self.cursor.advance(on_disk_len - last_start - 1);
 
         if splits.is_empty() {
             return line;
         }
 
-        // First chunk returned; the rest queued for subsequent iterations.
-        // Building right-to-left with split_off avoids intermediate copies.
-        let mut tail = line;
-        let mut chunks: Vec<String> = Vec::with_capacity(splits.len());
-        for &at in splits.iter().rev() {
-            chunks.push(tail.split_off(at));
-        }
-        chunks.reverse();
+        let (head, chunks) = split_chunks(line, &splits);
         self.split_pending.extend(chunks);
-        tail
+        head
     }
 }
 

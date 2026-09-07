@@ -61,6 +61,8 @@ mod peer;
 mod session;
 mod stamp;
 mod stream;
+#[cfg(test)]
+mod testdata;
 mod uuid;
 
 pub use attached::{AttachedLines, AttachedLinesIter, AttachedOverflow};

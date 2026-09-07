@@ -225,7 +225,7 @@ fn collect_typed(msg: &str, out: &mut Vec<Field>) {
     match classify_message(msg) {
         MessageKind::Execute { .. } => push_channel(out, msg, execute_parts(msg).channel),
         MessageKind::Dialplan { .. } => collect_dialplan(msg, out),
-        MessageKind::Variable { name, .. } => collect_variable(msg, &name, out),
+        MessageKind::Variable { name, .. } => collect_variable(msg, name.bare(), out),
         MessageKind::ChannelField { name, .. } => collect_channel_field(msg, &name, out),
         MessageKind::SipInvite { direction, .. } => collect_invite(msg, direction, out),
         MessageKind::StateChange { .. } | MessageKind::Media { .. } => {

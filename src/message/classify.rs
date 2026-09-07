@@ -14,6 +14,7 @@ use super::media::{detect_media, detect_sdp_direction};
 use super::parts::{
     dialplan_parts, execute_parts, parse_bracketed_value, set_export_parts, strip_channel_prefix,
 };
+use super::varname::VarName;
 
 fn parse_execute(msg: &str) -> MessageKind {
     let parts = execute_parts(msg);
@@ -66,7 +67,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
     if msg.starts_with(VARIABLE_PREFIX) {
         if let Some((name, value)) = parse_bracketed_value(msg, VARIABLE_PREFIX.len()) {
             return MessageKind::Variable {
-                name: name.to_string(),
+                name: VarName::new(name),
                 value: value.to_string(),
             };
         }
@@ -116,7 +117,7 @@ pub fn classify_message(msg: &str) -> MessageKind {
     if let Some(rest) = msg.strip_prefix("set variable ") {
         if let Some((name, value)) = rest.split_once('=') {
             return MessageKind::Variable {
-                name: name.to_string(),
+                name: VarName::new(name),
                 value: value.to_string(),
             };
         }
@@ -193,13 +194,13 @@ fn parse_core_session_set_variable(msg: &str) -> MessageKind {
     if let Some(end) = rest.strip_suffix(')') {
         if let Some(comma) = end.find(", ") {
             return MessageKind::Variable {
-                name: end[..comma].to_string(),
+                name: VarName::new(&end[..comma]),
                 value: end[comma + 2..].to_string(),
             };
         }
     }
     MessageKind::Variable {
-        name: String::new(),
+        name: VarName::new(""),
         value: msg.to_string(),
     }
 }
@@ -212,7 +213,7 @@ fn parse_unset(msg: &str) -> MessageKind {
         rest
     };
     MessageKind::Variable {
-        name: name.to_string(),
+        name: VarName::new(name),
         value: String::new(),
     }
 }
@@ -227,7 +228,7 @@ fn parse_dialplan_processing(msg: &str) -> MessageKind {
 fn parse_set_or_export(msg: &str) -> Option<MessageKind> {
     let parts = set_export_parts(msg)?;
     Some(MessageKind::Variable {
-        name: parts.name.to_string(),
+        name: VarName::new(parts.name),
         value: parts.value.to_string(),
     })
 }

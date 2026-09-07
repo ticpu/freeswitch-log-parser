@@ -163,7 +163,7 @@ fn channel_field_name() {
 
 fn variable_parts(msg: &str) -> (String, String) {
     match classify_message(msg) {
-        MessageKind::Variable { name, value } => (name, value),
+        MessageKind::Variable { name, value } => (name.bare().to_string(), value),
         other => panic!("expected Variable, got {other:?}"),
     }
 }
@@ -837,7 +837,7 @@ fn every_message_kind_label_is_listed_in_all_labels() {
             value: String::new(),
         },
         MessageKind::Variable {
-            name: String::new(),
+            name: VarName::new(""),
             value: String::new(),
         },
         MessageKind::SdpMarker {

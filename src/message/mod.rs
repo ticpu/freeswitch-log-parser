@@ -9,6 +9,7 @@ mod media;
 mod parts;
 #[cfg(test)]
 mod tests;
+mod varname;
 
 pub use classify::classify_message;
 pub use kind::{DtmfSource, LifecycleEvent, MessageKind, SdpDirection, SipInviteDirection};
@@ -18,3 +19,4 @@ pub(crate) use parts::{
     parse_bracketed_value, set_export_parts, strip_channel_prefix,
 };
 pub use parts::{regex_condition_parts, RegexCondition};
+pub use varname::VarName;

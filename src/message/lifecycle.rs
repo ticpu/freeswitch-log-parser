@@ -3,6 +3,7 @@
 use super::kind::{LifecycleEvent, MessageKind, SipInviteDirection};
 use super::media::detect_media;
 use super::parts::set_export_parts;
+use super::varname::VarName;
 
 /// The originating leg's success line, whose channel name can itself hold a
 /// UUID — so the peer is read from after the marker, never scanned for.
@@ -62,7 +63,7 @@ pub(super) fn classify_channel_prefixed(channel_part: &str, rest: &str) -> Messa
     if is_channel_variable_narration(rest) {
         if let Some(parts) = set_export_parts(rest) {
             return MessageKind::Variable {
-                name: parts.name.to_string(),
+                name: VarName::new(parts.name),
                 value: parts.value.to_string(),
             };
         }

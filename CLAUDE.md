@@ -37,7 +37,7 @@ check it *before* evaluating the request's mechanics.
 - `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`; the header slicer that reads timestamp, idle percentage, level and source, and `level_from_bracketed` for the log's upper-case `[LEVEL]`
 - `src/mask.rs` — `Mask`, the fixed-width-token shape UUID and timestamp recognition share
 - `src/uuid.rs` — positional UUID recognition, `find_uuids`/`is_uuid`
-- `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`, `LifecycleEvent`, `DtmfSource`; `parts.rs` holds the positional slicers `fields/` reuses
+- `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`, `LifecycleEvent`, `DtmfSource`, `VarName`; `parts.rs` holds the positional slicers `fields/` reuses
 - `src/fields/` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
 - `src/attached.rs` — `AttachedLines`, the contiguous bounded buffer holding an entry's raw continuation lines
 - `src/stream/` — `LogStream`, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`; `block.rs` holds `BlockBuilder`, `collision.rs` the write budget and `WriteCursor`
@@ -176,7 +176,7 @@ Endpoint-specific: `"%s SOFIA EXECUTE\n"` (mod_sofia.c:232), `"%s RTC EXECUTE\n"
 - `Dialplan: channel ...` / `Chatplan: channel ...` → `Dialplan`
 - `CHANNEL_DATA` → `ChannelData`, start of a channel variable dump block
 - `Channel-Name: [value]` → `ChannelField`, a hyphenated field within a dump
-- `variable_name: [value]` → `Variable`. **`name` is the bare name — the dump's `variable_` prefix is already stripped**, whichever narration spelled it. `freeswitch_types::variable_key` spells the prefixed form back
+- `variable_name: [value]` → `Variable`. **`name` is a `VarName`, holding the bare name** whichever narration spelled it; `Display`/`to_prefixed()` render the dump's `variable_` form. It implements no `Deref`, `AsRef<str>`, `Borrow<str>` or `PartialEq<str>`, so a consumer comparing against a prefixed literal fails to compile instead of silently matching nothing — do not add one
 - `Local SDP:` / `Remote SDP:` → `SdpMarker`, start of an SDP body block
 - `State Change ...`, `Callstate Change ...`, a `SOFIA` state line → `StateChange`
 - `Audio Codec Compare ...` → `CodecNegotiation`, carrying the media type
@@ -254,7 +254,7 @@ Counters: `lines_processed` (every physical line), `lines_in_entries` (lines in 
 - `channel_state` (`CS_*`) and `call_state` — separate vocabularies, separate typed fields; neither displaces the other
 - `hangup_cause`, `call_direction` — typed from `freeswitch-types`. A value none of these vocabularies knows raises `ParseWarning::UnreadableValue` on the entry and leaves the last resolved value standing
 - `dialplan_context` — from dialplan processing messages; `dialplan_from`/`dialplan_to` carry the caller/dialed pair of a `Processing` line only, never a `parsing [ctx->ext]` context
-- `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines. Keys have the `variable_` prefix stripped; `SessionState::variable(V: VariableName)` hides that and takes any `freeswitch-types` variable-name enum
+- `variables: HashMap<String, String>` — all variables from CHANNEL_DATA dumps, `set()`, `export()`, variable lines. Keys are bare, the spelling `VarName::bare` hands over; `SessionState::variable(V: VariableName)` hides that and takes any `freeswitch-types` variable-name enum
 - `conference` — name and instance from `conference()` / a transfer to an inline `conference:` extension; member id and conference UUID only when a dump supplies them
 - `media` — matched codec and deduped remote offer set per media type, plus the engine's read implementation. FreeSWITCH logs no write codec at DEBUG, so none is modelled
 
@@ -308,5 +308,5 @@ Never copy production log lines verbatim into source.
 - `LogLevel` and `ParseLogLevelError` are re-exports, not local types. `freeswitch-types` generates both through `wire_enum!`, which marks them, so a downstream match on a level still needs a wildcard arm
 - `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests. `SessionState`/`SessionSnapshot` are the same: build one from a tracker, or from `Default` plus field assignment. Hooks still get plain `&mut` field access
 - `LogEntry` is not marked, but `LogEntry::synthetic` exists so a consumer needing one does not spell out every field
-- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)
+- NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`), `VarName` (tuple struct with a private field — a literal construction is already impossible)
 - New public enums should be `#[non_exhaustive]` by default unless the set is definitively closed

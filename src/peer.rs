@@ -96,7 +96,7 @@ pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
 
     match &entry.message_kind {
         MessageKind::Variable { name, value } => {
-            if wanted(name) {
+            if wanted(name.bare()) {
                 harvest(value);
             }
         }
@@ -128,6 +128,7 @@ pub fn for_each_peer_uuid_with<F: FnMut(&str)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::VarName;
 
     const PEER: &str = "11111111-2222-3333-4444-555555555555";
 
@@ -143,7 +144,7 @@ mod tests {
     fn var(name: &str, value: &str) -> LogEntry {
         entry(
             MessageKind::Variable {
-                name: name.to_string(),
+                name: VarName::new(name),
                 value: value.to_string(),
             },
             None,

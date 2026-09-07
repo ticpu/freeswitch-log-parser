@@ -125,7 +125,7 @@ impl BlockBuilder {
                 match classify_message(msg) {
                     MessageKind::ChannelField { name, value } => fields.push((name, value)),
                     MessageKind::Variable { name, value } => {
-                        let name = freeswitch_types::variable_key(&name);
+                        let name = name.to_prefixed();
                         if !msg.ends_with(']') && msg.contains(": [") {
                             *open_var = Some(OpenVar {
                                 name,

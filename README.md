@@ -38,11 +38,11 @@ canonical `sip_call_id ↔ channel_uuid` correlation primitive — sofia
 emits it for every inbound and outbound call regardless of dialplan.
 Every entry carries both a typed `Block` and raw `attached` lines.
 
-`MessageKind::Variable` carries the bare variable name: the dump's
-`variable_` prefix is stripped before the variant is built, so downstream
-code stripping it a second time compiles and silently does nothing. Use
-`freeswitch_types::variable_key` when you need the prefixed spelling
-back.
+`MessageKind::Variable` carries a `VarName`, not a string: it stores the
+bare name, and `Display`/`to_prefixed()` render the dump's `variable_`
+spelling. The type compares against no `&str` on purpose — a consumer
+written against the prefixed literal, or one stripping the prefix a second
+time, has to be fixed rather than silently matching nothing.
 
 `attached` is `AttachedLines`, a bounded buffer. A line past
 `LogStream::max_attached_bytes` — or past the 4 GiB its offsets address —

@@ -316,7 +316,8 @@ impl SessionState {
                 }
             }
             MessageKind::Variable { name, value } => {
-                self.variables.insert(name.clone(), value.clone());
+                self.variables
+                    .insert(name.bare().to_string(), value.clone());
             }
             MessageKind::ChannelField { name, value } => {
                 self.apply_channel_field(name, value, warnings)

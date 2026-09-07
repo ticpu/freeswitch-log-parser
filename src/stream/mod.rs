@@ -48,21 +48,8 @@ fn header_len(bytes: &[u8]) -> usize {
     }
 }
 
-/// Walk `bytes` once, collecting every offset a record starts at after the
-/// first, and per resulting chunk whether the write ended there at its spent
-/// budget rather than at a header the heuristic found.
-///
-/// Two mechanisms split, and the difference is the whole point: the budget
-/// (Format E) may only fire in the few bytes `first_boundary` and its
-/// successors point at, and is what earns a bare UUID — the parser's weakest
-/// signature — the right to split. `is_log_header_at` fires anywhere past
-/// `min_scan`, because write contention concatenates verbatim records at
-/// arbitrary offsets; those records were each written whole, so it never
-/// reports a cut.
-///
-/// Returns one more verdict than there are splits: the trailing chunk's, true
-/// when a boundary the walk passed found nothing recognisable on it — the
-/// write was cut and its remainder lost rather than glued to a named successor.
+/// Every offset a record starts at after the first, plus one verdict per
+/// resulting chunk — true only where the write's spent budget ended it.
 fn scan_splits(
     bytes: &[u8],
     min_scan: usize,
@@ -88,9 +75,8 @@ fn scan_splits(
                 }
             }
         }
-        // `min_scan` guards only the heuristic: on the second and later
-        // lines of one write the boundary sits early, often inside the
-        // header the heuristic has to skip.
+        // `min_scan` guards only the heuristic: past the first line of a write
+        // the boundary sits early, often inside the header this must skip.
         if offset >= min_scan && is_log_header_at(bytes, offset) {
             let split_at = if offset >= chunk_start + UUID_PREFIX_LEN
                 && is_uuid_at(bytes, offset - UUID_PREFIX_LEN)
@@ -107,9 +93,8 @@ fn scan_splits(
                     WriteCursor::boundary_after(is_uuid_at(bytes, split_at), split_at, end);
                 offset += TIMESTAMP_FIELD_LEN;
             } else {
-                // Header at the current chunk's own start, already accounted
-                // for. The max guarantees forward progress when the
-                // UUID-prefix check rewinds split_at behind us.
+                // The chunk's own header. The max keeps the walk moving when
+                // the UUID-prefix check rewound split_at behind us.
                 offset = (offset + TIMESTAMP_FIELD_LEN).max(offset + 1);
             }
             continue;
@@ -132,11 +117,8 @@ fn split_chunks(line: String, splits: &[usize]) -> (String, Vec<String>) {
     (head, chunks)
 }
 
-/// What the physical line in hand says about truncation, and the warning that
-/// says it, held until the entry that ends up owning the line claims them.
-///
-/// Emitting the warning on arrival would pin it on the pending entry, which for
-/// a line that starts a new one is the wrong entry entirely.
+/// The current line's cut verdict, held until the entry owning that line claims
+/// it — emitted on arrival the warning would land on the entry before it.
 #[derive(Default)]
 struct LineVerdict {
     /// Per chunk of the line, whether it ends at the write's spent budget. One

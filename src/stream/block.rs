@@ -29,9 +29,8 @@ pub(super) struct OpenVar {
     cut: bool,
 }
 
-/// Whether a CHANNEL_DATA line opens a name of its own, which is what bounds
-/// the join after a cut. Only the bracketed shapes count — the looser
-/// [`parse_field_line`] fallback matches SDP and header lines inside a value.
+/// Whether a CHANNEL_DATA line opens a name of its own, which bounds the join
+/// after a cut. The looser [`parse_field_line`] would match inside a value.
 fn opens_own_name(msg: &str) -> bool {
     matches!(
         classify_message(msg),

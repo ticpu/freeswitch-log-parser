@@ -233,11 +233,11 @@ fn snapshot_reflects_cumulative_state() {
 fn parse_hangup_extracts_cause() {
     assert_eq!(
         parse_hangup("Hangup sofia/internal/1234 [NORMAL_CLEARING]"),
-        Some("NORMAL_CLEARING".to_string())
+        Some("NORMAL_CLEARING")
     );
     assert_eq!(
         parse_hangup("Hangup sofia/internal/1234 [USER_BUSY]"),
-        Some("USER_BUSY".to_string())
+        Some("USER_BUSY")
     );
     assert_eq!(parse_hangup("Some other message"), None);
     assert_eq!(parse_hangup("New Channel sofia/internal/1234 [uuid]"), None);

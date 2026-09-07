@@ -35,8 +35,8 @@ pub(super) fn parse_processing_line(msg: &str) -> Option<DialplanContext> {
     })
 }
 
-pub(super) fn parse_new_channel(detail: &str) -> Option<String> {
-    new_channel_name(detail).map(str::to_string)
+pub(super) fn parse_new_channel(detail: &str) -> Option<&str> {
+    new_channel_name(detail)
 }
 
 /// Which of the two state vocabularies a `... Change <old> -> <new>` line speaks.
@@ -57,13 +57,13 @@ pub(super) fn parse_state_change(detail: &str) -> Option<StateChange<'_>> {
     }
 }
 
-pub(super) fn parse_hangup(detail: &str) -> Option<String> {
+pub(super) fn parse_hangup(detail: &str) -> Option<&str> {
     if !detail.contains("Hangup ") {
         return None;
     }
     let start = detail.rfind('[')?;
     let end = detail[start..].find(']')?;
-    Some(detail[start + 1..start + end].to_string())
+    Some(&detail[start + 1..start + end])
 }
 
 pub(super) fn is_answered(detail: &str) -> bool {

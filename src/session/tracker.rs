@@ -271,8 +271,8 @@ impl<I: Iterator<Item = String>> SessionTracker<I> {
                         .by_other_leg
                         .get(uuid)
                         .cloned()
-                        .or_else(|| self.unique_pending_leg(&channel_name, uuid))
-                        .or_else(|| self.loopback_a_leg(&channel_name, uuid))
+                        .or_else(|| self.unique_pending_leg(channel_name, uuid))
+                        .or_else(|| self.loopback_a_leg(channel_name, uuid))
                         .filter(|a| a.as_str() != uuid);
 
                     if let Some(a_uuid) = a_uuid {
@@ -341,15 +341,16 @@ impl<I: Iterator<Item = String>> Iterator for SessionTracker<I> {
         self.update_conference(&uuid, &entry);
         self.link_legs(&uuid, &entry);
 
-        // `entry().or_default()` rather than an unwrapped lookup: the session was
-        // inserted above and nothing here removes it, but re-asserting that with a
-        // panic buys nothing when the map can simply hand back the same state.
-        if let Some(hook) = &self.post_hook {
-            let state = self.sessions.entry(uuid.clone()).or_default();
+        let post_hook = self.post_hook.as_ref();
+        // Inserted above, and nothing between here removes a session.
+        let state = self
+            .sessions
+            .get_mut(&uuid)
+            .expect("the session this entry opened is still tracked");
+        if let Some(hook) = post_hook {
             hook(&entry, state);
         }
 
-        let state = self.sessions.entry(uuid.clone()).or_default();
         let new = IndexedFields::of(state);
         let snapshot = state.snapshot();
         self.apply_index_changes(&uuid, old, new);

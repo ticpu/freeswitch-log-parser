@@ -252,15 +252,13 @@ impl SessionState {
                 _ => {}
             },
             MessageKind::ChannelLifecycle { detail, .. } => {
-                if let Some(name) = parse_new_channel(detail) {
-                    if self.channel_name.is_none() {
-                        self.channel_name = Some(name);
-                    }
+                if self.channel_name.is_none() {
+                    self.channel_name = parse_new_channel(detail).map(str::to_string);
                 }
                 if let Some(cause) = parse_hangup(detail) {
                     read(
                         &mut self.hangup_cause,
-                        &cause,
+                        cause,
                         SessionReading::HangupCause,
                         &mut warnings,
                     );
@@ -322,14 +320,12 @@ impl SessionState {
     /// hunt on both primary and attached lines; anchored on raw text because
     /// `classify_message` folds it into `Dialplan` with the prefix stripped.
     fn apply_processing(&mut self, msg: &str) {
-        if msg.contains("Processing ") && msg.contains(" in context ") {
-            if let Some(dp) = parse_processing_line(msg) {
-                self.initial_context.get_or_insert(dp.context.clone());
-                self.initial_destination.get_or_insert(dp.to.clone());
-                self.dialplan_context = Some(dp.context);
-                self.dialplan_from = Some(dp.from);
-                self.dialplan_to = Some(dp.to);
-            }
+        if let Some(dp) = parse_processing_line(msg) {
+            self.initial_context.get_or_insert(dp.context.clone());
+            self.initial_destination.get_or_insert(dp.to.clone());
+            self.dialplan_context = Some(dp.context);
+            self.dialplan_from = Some(dp.from);
+            self.dialplan_to = Some(dp.to);
         }
     }
 

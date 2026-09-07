@@ -7,7 +7,7 @@ Library crate for parsing FreeSWITCH log files. Three-layer design:
 - **Layer 2**: Structural state machine (`LogStream`) — groups continuations, classifies messages (`MessageKind`), detects block boundaries (CHANNEL_DATA, SDP), tracks unclassified lines
 - **Layer 3**: Per-session state machine (`SessionTracker`) — tracks per-UUID state (dialplan context, channel state, variables), propagates context across entries
 
-Single dependency: `freeswitch-types` (same author) for typed enums (`CallDirection`, `ChannelState`, `CallState`). No regex — all positional byte parsing.
+Single library dependency: `freeswitch-types` (same author) for the typed vocabulary — `CallDirection`, `ChannelState`, `CallState`, `HangupCause`, `LogLevel`, the variable-name enums and `VARIABLE_PREFIX`, `EventHeader`, and the loopback channel-name parser. No regex — all positional byte parsing.
 
 ## Architecture
 
@@ -33,15 +33,23 @@ check it *before* evaluating the request's mechanics.
 
 ### Key Files
 
-- `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`
-- `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`; `parts.rs` holds the positional slicers `fields/` reuses
+- `src/decode.rs` — Layer 0 byte→line reading: `read_log_lines`, the capped readers, `Utf8Decode` for the truncated-codepoint verdict, `OverCap`/`LineRead`
+- `src/line.rs` — `parse_line()` stateless parser, `RawLine`, `LineKind`; the header slicer that reads timestamp, idle percentage, level and source, and `level_from_bracketed` for the log's upper-case `[LEVEL]`
+- `src/mask.rs` — `Mask`, the fixed-width-token shape UUID and timestamp recognition share
+- `src/uuid.rs` — positional UUID recognition, `find_uuids`/`is_uuid`
+- `src/message/` — `classify_message()` pure function, `MessageKind`, `SdpDirection`, `LifecycleEvent`, `DtmfSource`; `parts.rs` holds the positional slicers `fields/` reuses
 - `src/fields/` — `Field`/`FieldKind` byte spans over raw line text, `message_fields()`, `apply_fields()`
-- `src/stream/` — `LogStream` state machine, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`; `collision.rs` holds the write budget and `WriteCursor`
+- `src/attached.rs` — `AttachedLines`, the contiguous bounded buffer holding an entry's raw continuation lines
+- `src/stream/` — `LogStream`, `LogEntry`, `Block`, `ParseStats`, `UnclassifiedTracking`; `block.rs` holds `BlockBuilder`, `collision.rs` the write budget and `WriteCursor`
 - `src/session/` — `SessionTracker` (`tracker.rs`), `SessionState` (`state.rs`), the secondary indexes (`index.rs`), line shapes (`parse.rs`)
 - `src/codec.rs` — `CodecOffer`/`CodecMedia`, the bracketed token in codec-negotiation traces
 - `src/session/conference.rs` — `ConferenceMembership`, conference join/leave detection
 - `src/session/media.rs` — `SessionMedia`, negotiated/offered codecs per media type
 - `src/session/loopback.rs` — mod_loopback A/B leg pairing
+- `src/peer.rs` — the channel variables that name another leg, `for_each_peer_uuid`
+- `src/chain.rs` — `TrackedChain`/`SegmentTracker`, named input segments concatenated into one iterator
+- `src/stamp.rs` — rotation filenames and entry timestamps normalised into one comparable form, plus the partial-date bounds
+- `src/testdata.rs` — shared UUID and timestamp constants for the in-crate tests, `#[cfg(test)]` only
 - `src/lib.rs` — public API re-exports
 
 ## FreeSWITCH Log Format
@@ -164,43 +172,43 @@ Endpoint-specific: `"%s SOFIA EXECUTE\n"` (mod_sofia.c:232), `"%s RTC EXECUTE\n"
 
 `classify_message()` is a pure function using positional byte checks:
 
-- `EXECUTE [depth=N] channel app(args)` → execution trace
-- `Dialplan: channel ...` / `Chatplan: channel ...` → dialplan processing
-- `CHANNEL_DATA` → start of channel variable dump block
-- `Channel-Name: [value]` → channel field within a dump
-- `variable_name: [value]` → channel variable within a dump; `MessageKind::Variable.name` is the bare name, whichever narration spelled it
-- `Local SDP:` / `Remote SDP:` → start of SDP body block
-- `State Change ...` → channel state transition
-- `Originate Resulted in Success: [channel] Peer UUID: uuid` → originate success, peer read from after the marker
+- `EXECUTE [depth=N] channel app(args)` → `Execute`. `depth` is `Option<u32>` — `None` when the trace's `[depth=N]` field is missing or unreadable
+- `Dialplan: channel ...` / `Chatplan: channel ...` → `Dialplan`
+- `CHANNEL_DATA` → `ChannelData`, start of a channel variable dump block
+- `Channel-Name: [value]` → `ChannelField`, a hyphenated field within a dump
+- `variable_name: [value]` → `Variable`. **`name` is the bare name — the dump's `variable_` prefix is already stripped**, whichever narration spelled it. `freeswitch_types::variable_key` spells the prefixed form back
+- `Local SDP:` / `Remote SDP:` → `SdpMarker`, start of an SDP body block
+- `State Change ...`, `Callstate Change ...`, a `SOFIA` state line → `StateChange`
+- `Audio Codec Compare ...` → `CodecNegotiation`, carrying the media type
+- RTP, RTCP, recording and other media narration → `Media`
+- new/close/hangup, bridge, ring, REFER, CANCEL, BYE → `ChannelLifecycle`, carrying a typed `LifecycleEvent` (`NewChannel`, `Hangup`, `Destroy`, `Answered`, `Other`) beside the raw detail
+- `Originate Resulted in Success: [channel] Peer UUID: uuid` → `OriginateSuccess`; `peer_uuid` is `None` on builds whose line omits the suffix
+- `sofia/profile/endpoint receiving|sending invite ...` → `SipInvite`, with profile and `call_id`
+- `mod_event_socket` command output → `EventSocket`
+- `RECV DTMF d:ms`, `INFO DTMF(d)` → `Dtmf`, carrying a typed `DtmfSource`
 - Everything else → `General`
+
+`FileChange` and `DateChange` are the two remaining `MessageKind` variants; they are synthetic markers a consumer emits at file and date boundaries and never come out of `classify_message`. `MessageKind::ALL_LABELS` is the authoritative list of category strings, in declaration order.
 
 Exposed as a public function so Layer 1 consumers can call it directly on `RawLine.message` without using the stream parser.
 
-### Block detection state machine
+### Block detection
 
-`LogStream` tracks block boundaries with explicit `StreamState`:
+`LogStream` holds one `Pending` at a time — the entry being assembled and the `BlockBuilder` that owns its block. Pairing them is what keeps a block from outliving or preceding its entry, and it leaves no stream-level state that could disagree with the entry in hand.
 
-```
-Idle → CHANNEL_DATA primary → InChannelData
-Idle → SDP marker primary   → InSdp
+`BlockBuilder` (`src/stream/block.rs`) has one variant per `Block` variant plus `Idle` for an entry that opens no block. `BlockBuilder::open` reads the primary line's `MessageKind`: CHANNEL_DATA opens the field/variable accumulator, an SDP marker opens a body, a codec-negotiation line opens a comparison run. Later lines go to `push_continuation`, or to `push_codec_trace` for a run, and `finish` hands back the block together with whatever warnings the accumulation raised.
 
-InChannelData:
-  Channel-X or variable_ continuation → accumulate into block
-  Bare continuation while value "open" ([ without ]) → append to value
-  Primary line or different UUID → finalize Block::ChannelData, yield, transition
+A CHANNEL_DATA value whose `[` has not closed is held in `open_var` — one field, so a half-open variable cannot be represented — and continuation lines join it with `\n` until the `]` arrives. A cut write may lose that `]` entirely, so `mark_variable_cut` bounds the join at the first line opening a name of its own. Raw lines stay in `attached` for consumers needing the original format.
 
-InSdp:
-  SDP line continuation → accumulate into body
-  Primary line or non-SDP → finalize Block::Sdp, yield, transition
-```
+A codec trace is the one primary line that does not close the pending entry: `merge_codec_run` folds it in only when its UUID and its media type both match the open run, so a video negotiation never joins an audio one.
 
-Multi-line variable values (e.g., embedded SDP) are reassembled: parser tracks open brackets and concatenates continuation lines with `\n` separators. Raw lines remain in `attached` for consumers needing the original format.
+Two per-line pieces of state sit beside the pending entry. `LineVerdict` carries one cut verdict per chunk of the physical line in hand and holds it until the entry owning that chunk claims it, so `ParseWarning::CutLine` lands on the entry the cut ended rather than the one before it. `WriteCursor` (`src/stream/collision.rs`) tracks how much of the write budget the write in progress has spent.
 
 Every `LogEntry` carries both `block: Option<Block>` (typed, parsed) and `attached: AttachedLines` (raw continuation lines).
 
 ### Continuation grouping
 
-The iterator buffers one entry at a time. A new "primary" line (Full, System, Truncated) finalizes any in-progress block, yields the buffered entry, and starts a new one. Continuation lines append to both the raw `attached` vec and the appropriate block accumulator.
+The iterator buffers one entry at a time. A new "primary" line (Full, System, Truncated) finalizes any in-progress block, yields the buffered entry, and starts a new one. Continuation lines go to both the block builder and `AttachedLines`, which is bounded: past `LogStream::max_attached_bytes`, or past the 4 GiB its `u32` offsets address, it refuses the line, and the refusal is reported as `ParseWarning::AttachedOverflow` and counted in `lines_dropped` rather than stored.
 
 UUID continuation with a *different* UUID also triggers yielding — the UUID change means a different session's output.
 
@@ -285,7 +293,7 @@ Never copy production log lines verbatim into source.
 - `fslog monitor --dump` prints the call table to stdout (no TUI), useful for testing and scripting
 
 ### Style
-- Minimal dependencies (`freeswitch-types` only) — do not add crates without discussion
+- The library keeps its single dependency, `freeswitch-types`. Everything else in Cargo.toml is optional and reached only through a binary feature — `cli` pulls anyhow, clap, xz2, regex, rayon, jiff, aho-corasick and the loggers, `tui` adds ratatui and serde. Do not add to the library's own dependencies without discussion
 - No regex — all parsing is positional byte checks
 - FreeSWITCH channel variable names come from `freeswitch-types`' variable enums (`ChannelVariable`, `SofiaVariable`, `CoreMediaVariable`, `LoopbackVariable`, `ConferenceVariable`), never string literals — those enums carry drift checks against FreeSWITCH source
 - `pub use` re-exports in `lib.rs` for clean public API
@@ -294,7 +302,8 @@ Never copy production log lines verbatim into source.
 
 ### Semver and `#[non_exhaustive]`
 - Public enums that are likely to grow get `#[non_exhaustive]` so adding variants is not a breaking change
-- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`, `RegexCondition`, `LifecycleEvent`
+- Currently marked: `MessageKind`, `Block`, `LineKind`, `UnclassifiedReason`, `SipInviteDirection`, `Utf8Decode`, `OverCap`, `LineRead`, `DtmfSource`, `CodecMedia`, `CodecOffer`, `CodecParseError`, `FieldKind`, `RenderError`, `ParseWarning`, `SessionReading`, `BridgeInfo`, `CodecImpl`, `SessionState`, `SessionSnapshot`, `ConferenceMembership`, `RegexCondition`, `LifecycleEvent`
+- `LogLevel` and `ParseLogLevelError` are re-exports, not local types. `freeswitch-types` generates both through `wire_enum!`, which marks them, so a downstream match on a level still needs a wildcard arm
 - `CodecOffer` being `#[non_exhaustive]` means the binary cannot build one literally — construct via `CodecOffer::parse`, including in tests. `SessionState`/`SessionSnapshot` are the same: build one from a tracker, or from `Default` plus field assignment. Hooks still get plain `&mut` field access
 - `LogEntry` is not marked, but `LogEntry::synthetic` exists so a consumer needing one does not spell out every field
 - NOT marked: `SdpDirection` (small fixed set, downstream match is valuable), `UnclassifiedTracking` (fixed tiers), `FieldLocation` (message or attached, nothing else exists), `Field` (consumers construct their own to feed `apply_fields`)

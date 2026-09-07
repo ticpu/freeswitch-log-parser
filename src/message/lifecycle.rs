@@ -149,14 +149,9 @@ pub(super) fn detect_channel_lifecycle(msg: &str) -> Option<MessageKind> {
         "Redirecting to",
         "subscribing to",
         "Queue digit delay",
+        "Channel ",
     ];
-    for prefix in &lifecycle_prefixes {
-        if msg.starts_with(prefix) {
-            return Some(channel_lifecycle(msg));
-        }
-    }
-
-    if msg.starts_with("Channel ") {
+    if lifecycle_prefixes.iter().any(|p| msg.starts_with(p)) {
         return Some(channel_lifecycle(msg));
     }
 

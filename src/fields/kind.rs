@@ -1,6 +1,7 @@
 //! The span vocabulary: what a located field is, where it lives, and how a
 //! rewrite of it can fail.
 
+use std::cmp::{Ordering, Reverse};
 use std::fmt;
 use std::ops::Range;
 
@@ -24,10 +25,6 @@ pub enum FieldKind {
     CallId,
     /// A channel UUID appearing anywhere in the text.
     Uuid,
-    /// A SIP URI. No shape emits one yet — the variant is reserved for URI
-    /// positions FreeSWITCH itself frames; URIs in channel-variable values are
-    /// deliberately not classified here.
-    SipUri,
     /// An IP address, at positions the classifier frames (a channel name's host,
     /// an inbound INVITE's source).
     IpAddr,
@@ -48,7 +45,6 @@ impl FieldKind {
             FieldKind::DestinationNumber => "destination-number",
             FieldKind::CallId => "call-id",
             FieldKind::Uuid => "uuid",
-            FieldKind::SipUri => "sip-uri",
             FieldKind::IpAddr => "ip-addr",
             FieldKind::VariableValue => "variable-value",
         }
@@ -152,16 +148,26 @@ pub struct RenderedEntry {
 }
 /// Rank deciding which kind sorts first when two spans start together; the more
 /// specific kind wins, so a contained generic span follows its container.
-pub(super) fn kind_rank(kind: FieldKind) -> u8 {
+fn kind_rank(kind: FieldKind) -> u8 {
     match kind {
         FieldKind::ChannelName => 0,
         FieldKind::CallerIdName => 1,
         FieldKind::CallerIdNumber => 2,
         FieldKind::DestinationNumber => 3,
         FieldKind::CallId => 4,
-        FieldKind::SipUri => 5,
-        FieldKind::IpAddr => 6,
-        FieldKind::VariableValue => 7,
-        FieldKind::Uuid => 8,
+        FieldKind::IpAddr => 5,
+        FieldKind::VariableValue => 6,
+        FieldKind::Uuid => 7,
     }
+}
+
+/// Order spans by start ascending then width descending, so a containing span
+/// always precedes the spans inside it.
+pub(super) fn span_order(a: &Range<usize>, b: &Range<usize>) -> Ordering {
+    (a.start, Reverse(a.end)).cmp(&(b.start, Reverse(b.end)))
+}
+
+/// [`span_order`], with the more specific kind first where two spans coincide.
+pub(super) fn field_order(a: &Field, b: &Field) -> Ordering {
+    span_order(&a.range, &b.range).then(kind_rank(a.kind).cmp(&kind_rank(b.kind)))
 }

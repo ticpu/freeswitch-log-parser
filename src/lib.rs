@@ -87,8 +87,7 @@ pub use message::{
     RegexCondition, SdpDirection, SipInviteDirection,
 };
 pub use peer::{
-    for_each_peer_uuid, for_each_peer_uuid_with, is_peer_uuid_var, LOOPBACK_PEER_UUID_VARS,
-    PEER_UUID_VARS,
+    for_each_peer_uuid, for_each_peer_uuid_with, LOOPBACK_PEER_UUID_VARS, PEER_UUID_VARS,
 };
 pub use session::{
     conference::ConferenceMembership,

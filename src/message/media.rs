@@ -37,36 +37,18 @@ pub(super) fn detect_media(msg: &str) -> Option<MessageKind> {
         "Stop recording",
         "Engaging Write Buffer",
         "rtcp_stats:",
+        "Setting RTCP",
+        "Setting BUG Codec",
+        "Set ",
+        "Original read codec set to",
+        "Forcing crypto_mode",
+        "Parsing global variables",
+        "Parsing session specific variables",
     ];
-    for prefix in &media_prefixes {
-        if msg.starts_with(prefix) {
-            return Some(MessageKind::Media {
-                detail: msg.to_string(),
-            });
-        }
-    }
-
-    if msg.starts_with("Setting RTCP") || msg.starts_with("Setting BUG Codec") {
-        return Some(MessageKind::Media {
+    media_prefixes
+        .iter()
+        .any(|prefix| msg.starts_with(prefix))
+        .then(|| MessageKind::Media {
             detail: msg.to_string(),
-        });
-    }
-
-    if msg.starts_with("Set ") {
-        return Some(MessageKind::Media {
-            detail: msg.to_string(),
-        });
-    }
-
-    if msg.starts_with("Original read codec set to")
-        || msg.starts_with("Forcing crypto_mode")
-        || msg.starts_with("Parsing global variables")
-        || msg.starts_with("Parsing session specific variables")
-    {
-        return Some(MessageKind::Media {
-            detail: msg.to_string(),
-        });
-    }
-
-    None
+        })
 }

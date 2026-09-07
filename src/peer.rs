@@ -41,7 +41,7 @@ pub const LOOPBACK_PEER_UUID_VARS: &[LoopbackVariable] = &[
 
 /// Whether `name` is one of [`PEER_UUID_VARS`] or [`LOOPBACK_PEER_UUID_VARS`].
 /// Accepts the bare variable name; strip any `variable_` prefix first.
-pub fn is_peer_uuid_var(name: &str) -> bool {
+fn is_peer_uuid_var(name: &str) -> bool {
     ChannelVariable::from_str(name)
         .map(|v| PEER_UUID_VARS.contains(&v))
         .unwrap_or(false)

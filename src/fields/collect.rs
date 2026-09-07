@@ -14,7 +14,7 @@ use crate::message::{
 };
 use crate::uuid::find_uuids;
 
-use super::kind::{kind_rank, Field, FieldKind, FieldLocation};
+use super::kind::{field_order, Field, FieldKind, FieldLocation};
 use super::processing::processing_parts;
 use super::subslice_range;
 
@@ -92,21 +92,8 @@ pub fn message_fields(msg: &str) -> Vec<Field> {
     out
 }
 
-/// Order by start ascending then width descending, so a containing span
-/// always precedes the spans inside it.
 fn sort_spans(fields: &mut [Field]) {
-    fields.sort_by(|a, b| {
-        (
-            a.range.start,
-            std::cmp::Reverse(a.range.end),
-            kind_rank(a.kind),
-        )
-            .cmp(&(
-                b.range.start,
-                std::cmp::Reverse(b.range.end),
-                kind_rank(b.kind),
-            ))
-    });
+    fields.sort_by(field_order);
 }
 
 fn intersects(a: &Range<usize>, b: &Range<usize>) -> bool {

@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use super::collect::{message_fields, raw_line_fields};
-use super::kind::{Field, FieldLocation, RenderError, RenderedEntry};
+use super::kind::{span_order, Field, FieldLocation, RenderError, RenderedEntry};
 
 /// Rewrite the spans of one text, returning the result.
 ///
@@ -46,9 +46,7 @@ pub fn apply_fields<'a>(
         }
     }
 
-    replacements.sort_by(|(_, a, _), (_, b, _)| {
-        (a.start, std::cmp::Reverse(a.end)).cmp(&(b.start, std::cmp::Reverse(b.end)))
-    });
+    replacements.sort_by(|(_, a, _), (_, b, _)| span_order(a, b));
 
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;

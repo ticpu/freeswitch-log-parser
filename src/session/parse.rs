@@ -9,6 +9,10 @@ use crate::message::new_channel_name;
 
 pub(super) struct DialplanContext {
     pub(super) from: String,
+    /// Display name of the caller side, `None` unless the line brackets a number.
+    pub(super) from_name: Option<String>,
+    /// Number inside the caller side's `<>`, brackets excluded.
+    pub(super) from_number: Option<String>,
     pub(super) to: String,
     pub(super) context: String,
 }
@@ -30,6 +34,8 @@ pub(super) fn parse_processing_line(msg: &str) -> Option<DialplanContext> {
     let parts = processing_parts(msg)?;
     Some(DialplanContext {
         from: msg[parts.head].to_string(),
+        from_name: parts.name.map(|r| msg[r].to_string()),
+        from_number: parts.number.map(|r| msg[r].to_string()),
         to: msg[parts.dest].to_string(),
         context: msg[parts.context].to_string(),
     })

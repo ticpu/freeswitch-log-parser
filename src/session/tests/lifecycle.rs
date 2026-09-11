@@ -181,7 +181,7 @@ fn remove_session() {
     let lines = vec![full_line(
         UUID1,
         TS1,
-        "Processing 5551111111->5552222222 in context public",
+        "Processing Jane Doe <5551111111>->5552222222 in context public",
     )];
     let mut tracker = track(lines);
     assert!(tracker.sessions().contains_key(UUID1));
@@ -209,7 +209,7 @@ fn snapshot_reflects_cumulative_state() {
         full_line(
             UUID1,
             TS2,
-            "Processing 5551111111->5552222222 in context public",
+            "Processing Jane Doe <5551111111>->5552222222 in context public",
         ),
     ];
     let entries = collect_enriched(lines);

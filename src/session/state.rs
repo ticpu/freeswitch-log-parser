@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use freeswitch_types::variables::VariableName;
+use freeswitch_types::variables::{SofiaVariable, VariableName};
 use freeswitch_types::{CallDirection, CallState, ChannelState, EventHeader, HangupCause};
 
 use crate::line::parse_line;
@@ -68,6 +68,15 @@ pub struct SessionState {
     /// Destination of the first `Processing` line = the dialed number at ingress;
     /// set once and never overwritten (unlike last-wins `dialplan_to`).
     pub initial_destination: Option<String>,
+    /// Number half of the first `Processing` line's caller side, the caller
+    /// profile's `caller_id_number` at ingress. Set once, and first *seen*: a
+    /// window starting mid-call pins whatever line arrived first in it.
+    pub initial_caller_number: Option<String>,
+    /// Name half of the first `Processing` line's caller side. Set once on the
+    /// same terms as [`initial_caller_number`](Self::initial_caller_number), and
+    /// a rendering rather than the bytes — the line is session-bound, so the
+    /// prefix stage paired off its apostrophes and consumed its backslashes.
+    pub initial_caller_name: Option<String>,
     /// Current dialplan context; updated on each transfer/continue.
     pub dialplan_context: Option<String>,
     /// Caller side of the last `Processing` line — a number, or a display name
@@ -111,6 +120,8 @@ pub struct SessionSnapshot {
     pub call_state: Option<CallState>,
     pub initial_context: Option<String>,
     pub initial_destination: Option<String>,
+    pub initial_caller_number: Option<String>,
+    pub initial_caller_name: Option<String>,
     pub dialplan_context: Option<String>,
     pub dialplan_from: Option<String>,
     pub dialplan_to: Option<String>,
@@ -135,6 +146,33 @@ impl SessionState {
         self.variables.get(var.as_str()).map(String::as_str)
     }
 
+    /// The caller's number, from the most trustworthy source this session saw:
+    /// the dump's `Caller-Caller-ID-Number`, then `sip_from_user`, then the
+    /// first `Processing` line's number half.
+    ///
+    /// Whether a leg dumps depends on the box's dialplan and log verbosity, so
+    /// the lower rungs are what answer for the legs that never do.
+    ///
+    /// Not on [`SessionSnapshot`], which carries no variables and so cannot walk
+    /// the middle rung.
+    pub fn caller_number(&self) -> Option<&str> {
+        self.caller_id_number
+            .as_deref()
+            .or_else(|| self.variable(SofiaVariable::SipFromUser))
+            .or(self.initial_caller_number.as_deref())
+    }
+
+    /// The dialed number, on the same terms as
+    /// [`caller_number`](Self::caller_number): the dump's
+    /// `Caller-Destination-Number`, then `sip_to_user`, then the first
+    /// `Processing` line's destination.
+    pub fn callee_number(&self) -> Option<&str> {
+        self.destination_number
+            .as_deref()
+            .or_else(|| self.variable(SofiaVariable::SipToUser))
+            .or(self.initial_destination.as_deref())
+    }
+
     /// Bound exhaustively so a field added here and forgotten in the snapshot
     /// fails to compile; the two `_` bindings are the deliberate omissions.
     pub(super) fn snapshot(&self) -> SessionSnapshot {
@@ -144,6 +182,8 @@ impl SessionState {
             call_state,
             initial_context,
             initial_destination,
+            initial_caller_number,
+            initial_caller_name,
             dialplan_context,
             dialplan_from,
             dialplan_to,
@@ -166,6 +206,8 @@ impl SessionState {
             call_state: *call_state,
             initial_context: initial_context.clone(),
             initial_destination: initial_destination.clone(),
+            initial_caller_number: initial_caller_number.clone(),
+            initial_caller_name: initial_caller_name.clone(),
             dialplan_context: dialplan_context.clone(),
             dialplan_from: dialplan_from.clone(),
             dialplan_to: dialplan_to.clone(),
@@ -355,6 +397,12 @@ impl SessionState {
         if let Some(dp) = parse_processing_line(msg) {
             self.initial_context.get_or_insert(dp.context.clone());
             self.initial_destination.get_or_insert(dp.to.clone());
+            if let Some(number) = dp.from_number {
+                self.initial_caller_number.get_or_insert(number);
+            }
+            if let Some(name) = dp.from_name {
+                self.initial_caller_name.get_or_insert(name);
+            }
             self.dialplan_context = Some(dp.context);
             self.dialplan_from = Some(dp.from);
             self.dialplan_to = Some(dp.to);

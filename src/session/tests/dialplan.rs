@@ -29,13 +29,18 @@ fn processing_line_extracts_context() {
     let lines = vec![full_line(
         UUID1,
         TS1,
-        "Processing 5551234567->5559876543 in context public",
+        "Processing Jane Doe <5551234567>->5559876543 in context public",
     )];
     let entries = collect_enriched(lines);
     let session = entries[0].session.as_ref().unwrap();
     assert_eq!(session.dialplan_context.as_deref(), Some("public"));
-    assert_eq!(session.dialplan_from.as_deref(), Some("5551234567"));
+    assert_eq!(
+        session.dialplan_from.as_deref(),
+        Some("Jane Doe <5551234567>")
+    );
     assert_eq!(session.dialplan_to.as_deref(), Some("5559876543"));
+    assert_eq!(session.initial_caller_number.as_deref(), Some("5551234567"));
+    assert_eq!(session.initial_caller_name.as_deref(), Some("Jane Doe"));
 }
 
 #[test]
@@ -43,7 +48,7 @@ fn padded_multibyte_context_survives_the_tracker() {
     let lines = vec![full_line(
         UUID1,
         TS1,
-        "Processing 5551234567->5559876543 in context  café",
+        "Processing Jane Doe <5551234567>->5559876543 in context  café",
     )];
     let entries = collect_enriched(lines);
     let session = entries[0].session.as_ref().unwrap();
@@ -56,12 +61,12 @@ fn initial_context_preserved_across_transfers() {
         full_line(
             UUID1,
             TS1,
-            "Processing 5551234567->5559876543 in context public",
+            "Processing Jane Doe <5551234567>->5559876543 in context public",
         ),
         full_line(
             UUID1,
             TS2,
-            "Processing 5551234567->start_recording in context recordings",
+            "Processing Jane Doe <5551234567>->start_recording in context recordings",
         ),
     ];
     let entries = collect_enriched(lines.clone());
@@ -193,4 +198,125 @@ fn initial_destination_first_wins() {
         Some("check_end_call"),
         "dialplan_to is last-wins and gets clobbered by feature-context routing"
     );
+}
+
+#[test]
+fn empty_caller_id_name_still_yields_the_number() {
+    // What FreeSWITCH emits when `caller_id_name` is empty: the format string's
+    // space before `<` survives, so the head reads as a nameless bracketed number.
+    let lines = vec![full_line(
+        UUID1,
+        TS1,
+        "Processing  <5551234567>->5559876543 in context public",
+    )];
+    let tracker = track(lines);
+
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(state.initial_caller_number.as_deref(), Some("5551234567"));
+    assert_eq!(state.initial_caller_name, None);
+}
+
+#[test]
+fn empty_brackets_name_no_number() {
+    let lines = vec![full_line(
+        UUID1,
+        TS1,
+        "Processing Jane Doe <>->5559876543 in context public",
+    )];
+    let tracker = track(lines);
+
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(state.initial_caller_number, None);
+    assert_eq!(state.initial_caller_name.as_deref(), Some("Jane Doe"));
+}
+
+#[test]
+fn bracketless_head_claims_no_caller_number() {
+    // No producer emits this shape, and the field span surface refuses to label
+    // such a head a caller number — the state fields answer the same way.
+    let lines = vec![full_line(
+        UUID1,
+        TS1,
+        "Processing 5551234567->5559876543 in context public",
+    )];
+    let tracker = track(lines);
+
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(state.dialplan_from.as_deref(), Some("5551234567"));
+    assert_eq!(state.initial_caller_number, None);
+    assert_eq!(state.initial_caller_name, None);
+}
+
+#[test]
+fn initial_caller_first_wins() {
+    let lines = vec![
+        full_line(
+            UUID1,
+            TS1,
+            "Processing Jane Doe <5550009999>->5550001234 in context public",
+        ),
+        full_line(
+            UUID1,
+            TS2,
+            "Processing Transfer Target <5550007777>->start_recording in context features",
+        ),
+    ];
+    let tracker = track(lines);
+
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(
+        state.initial_caller_number.as_deref(),
+        Some("5550009999"),
+        "a transfer must not restate the caller as the transfer target's"
+    );
+    assert_eq!(state.initial_caller_name.as_deref(), Some("Jane Doe"));
+    assert_eq!(
+        state.dialplan_from.as_deref(),
+        Some("Transfer Target <5550007777>"),
+        "dialplan_from is last-wins and does move"
+    );
+}
+
+#[test]
+fn caller_and_callee_ladders() {
+    let dialplan_only = vec![full_line(
+        UUID1,
+        TS1,
+        "Processing Jane Doe <5550009999>->5550001234 in context public",
+    )];
+    let tracker = track(dialplan_only);
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(state.caller_number(), Some("5550009999"));
+    assert_eq!(state.callee_number(), Some("5550001234"));
+
+    let with_sip_user = vec![
+        full_line(
+            UUID1,
+            TS1,
+            "Processing Jane Doe <5550009999>->5550001234 in context public",
+        ),
+        format!("{UUID1} variable_sip_from_user: [5550008888]"),
+        format!("{UUID1} variable_sip_to_user: [5550002222]"),
+    ];
+    let tracker = track(with_sip_user);
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(state.caller_number(), Some("5550008888"));
+    assert_eq!(state.callee_number(), Some("5550002222"));
+
+    let with_dump = vec![
+        full_line(
+            UUID1,
+            TS1,
+            "Processing Jane Doe <5550009999>->5550001234 in context public",
+        ),
+        format!("{UUID1} variable_sip_from_user: [5550008888]"),
+        format!("{UUID1} variable_sip_to_user: [5550002222]"),
+        full_line(UUID1, TS2, "CHANNEL_DATA:"),
+        format!("{UUID1} Caller-Caller-ID-Number: [5550001111]"),
+        format!("{UUID1} Caller-Destination-Number: [5550003333]"),
+    ];
+    let tracker = track(with_dump);
+    let state = tracker.sessions().get(UUID1).unwrap();
+    assert_eq!(state.caller_number(), Some("5550001111"));
+    assert_eq!(state.callee_number(), Some("5550003333"));
 }

@@ -157,12 +157,12 @@ fn session_isolation_between_uuids() {
         full_line(
             UUID1,
             TS1,
-            "Processing 5551111111->5552222222 in context public",
+            "Processing Jane Doe <5551111111>->5552222222 in context public",
         ),
         full_line(
             UUID2,
             TS2,
-            "Processing 5553333333->5554444444 in context private",
+            "Processing John Roe <5553333333>->5554444444 in context private",
         ),
     ];
     let tracker = track(lines);
@@ -170,8 +170,10 @@ fn session_isolation_between_uuids() {
     let s2 = tracker.sessions().get(UUID2).unwrap();
     assert_eq!(s1.dialplan_context.as_deref(), Some("public"));
     assert_eq!(s2.dialplan_context.as_deref(), Some("private"));
-    assert_eq!(s1.dialplan_from.as_deref(), Some("5551111111"));
-    assert_eq!(s2.dialplan_from.as_deref(), Some("5553333333"));
+    assert_eq!(s1.dialplan_from.as_deref(), Some("Jane Doe <5551111111>"));
+    assert_eq!(s2.dialplan_from.as_deref(), Some("John Roe <5553333333>"));
+    assert_eq!(s1.initial_caller_number.as_deref(), Some("5551111111"));
+    assert_eq!(s2.initial_caller_number.as_deref(), Some("5553333333"));
 }
 
 #[test]

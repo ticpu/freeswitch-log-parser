@@ -11,7 +11,7 @@ use log::{error, warn};
 
 use freeswitch_log_parser::{
     CallDirection, ChannelState, ChannelVariable, EnrichedEntry, LifecycleEvent, LogStream,
-    MessageKind, SessionState, SessionTracker, SofiaVariable, TrackedChain,
+    MessageKind, SessionState, SessionTracker, TrackedChain,
 };
 
 use crate::files::{
@@ -52,22 +52,8 @@ pub(super) fn build_update(
                     .and_then(|v| CallDirection::from_str(v).ok())
             })
         }),
-        caller: state
-            .and_then(|s| s.caller_id_number.clone())
-            .or_else(|| {
-                state.and_then(|s| {
-                    s.variables
-                        .get(SofiaVariable::SipFromUser.as_str())
-                        .cloned()
-                })
-            })
-            .or_else(|| state.and_then(|s| s.dialplan_from.clone())),
-        callee: state
-            .and_then(|s| s.destination_number.clone())
-            .or_else(|| {
-                state.and_then(|s| s.variables.get(SofiaVariable::SipToUser.as_str()).cloned())
-            })
-            .or_else(|| state.and_then(|s| s.dialplan_to.clone())),
+        caller: state.and_then(|s| s.caller_number().map(str::to_string)),
+        callee: state.and_then(|s| s.callee_number().map(str::to_string)),
     };
 
     // A state change to CS_DESTROY ends the row too: the leg's own lifecycle

@@ -4,12 +4,15 @@ Optional override: $ARGUMENTS (format: vX.Y.Z). If provided, use that version.
 
 ## Version determination
 
+Below 1.0 the minor is the major: a break bumps it, everything else — fixes and
+new API alike — is a patch.
+
 1. Find the last release tag (`git tag --sort=-v:refname | head -1`).
-2. Examine commits since that tag to classify the release type:
-   - **Patch**: only bug fixes, dependency bumps, build changes, docs.
-   - **Minor**: new features (`feat:`), new public API surface.
-   - **Major**: breaking API changes, removed public items, incompatible config changes.
-3. Bump the version accordingly. If **major**, stop and confirm before proceeding.
+2. Put the patch bump in `Cargo.toml`, then let the tool arbitrate rather than
+   commit subjects: `cargo semver-checks check-release`. *No semver update
+   required* and it stands; *requires new major version* and the minor goes up
+   instead — confirm that with me before going further.
+3. An override in `$ARGUMENTS` replaces the default, not the check.
 
 ## Pre-release checks
 
@@ -29,9 +32,10 @@ cargo publish --dry-run
 
 ## Steps
 
-1. Bump `version` in `Cargo.toml`.
+1. Settle the version as above, so `Cargo.toml` already carries it.
 
-2. Run pre-release checks above.
+2. Run pre-release checks above. `cargo publish --dry-run` refuses a dirty tree,
+   so make step 4's `release:` commit before it.
 
 3. Draft a changelog from `git log --oneline <last-tag>..HEAD`.
 
